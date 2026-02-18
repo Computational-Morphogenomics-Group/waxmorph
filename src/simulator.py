@@ -9,10 +9,10 @@ import warp as wp
 ############################################################
 ############################################################
 ############################################################
-FOUR_THIRDS_PI = wp.float32(4.1887902047863905)
-EPS_DIST = wp.float32(2e-1)
-EPS_DEN = wp.float32(1e-9)
-EPS_NORM = wp.float32(1e-9)
+FOUR_THIRDS_PI = 4.1887902047863905
+EPS_DIST = 2e-1
+EPS_DEN = 1e-9
+EPS_NORM = 1e-9
 
 @wp.func
 def safe_div(num: wp.float32, den: wp.float32) -> wp.float32:
@@ -99,7 +99,9 @@ def sticky_sphere_energy(x_i: wp.vec3f, x_j: wp.vec3f, r_i: wp.float32, r_j: wp.
 
 
 @wp.func
-def sticky_sphere_epi_polarity(p_i: wp.vec3f, p_j: wp.vec3f, unit_disp: wp.vec3f):
+def sticky_sphere_epi_polarity(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j: wp.vec3f):
+    unit_disp = wp.normalize(x_i - x_j)
+    
     U_i = (wp.dot(p_i, unit_disp) ** 2.0) / 2.0
     U_j = (wp.dot(p_j, unit_disp) ** 2.0) / 2.0
 
@@ -124,16 +126,25 @@ def sticky_sphere_grads(
     x_i, x_j = X[i], X[j]
 
     # Forces
-    grad_x_i, grad_x_j, _f, _f = wp.grad(sticky_sphere_energy)(x_i, x_j, R[i], R[j])
+    grad_x_i_f, grad_x_j_f, _f, _f = wp.grad(sticky_sphere_energy)(x_i, x_j, R[i], R[j])
 
-    wp.atomic_add(gx, i, grad_x_i) 
-    wp.atomic_add(gx, j, grad_x_j)
+    wp.atomic_add(gx, i, grad_x_i_f) 
+    wp.atomic_add(gx, j, grad_x_j_f)
 
     # Polarities
-    unit_disp = wp.normalize(x_i - x_j)
 
-    grad_p_i, grad_p_j, _v = wp.grad(sticky_sphere_epi_polarity)(P[i], P[j], unit_disp)
+    grad_x_i, grad_x_j, grad_p_i, grad_p_j, = wp.grad(sticky_sphere_epi_polarity)(x_i, x_j, P[i], P[j])
 
+    # Match magnitudes so movement doesn't blink
+    for k in range(3):
+        v_i = wp.abs(grad_x_i_f[k])
+        v_j = wp.abs(grad_x_j_f[k])
+        
+        grad_x_i[k] = wp.clamp(grad_x_i[k], -2. * v_i, 2. * v_i)
+        grad_x_j[k] = wp.clamp(grad_x_j[k], -2. * v_j, 2. * v_j)
+    
+    wp.atomic_add(gx, i, grad_x_i) 
+    wp.atomic_add(gx, j, grad_x_j)
     wp.atomic_add(gp, i, grad_p_i) 
     wp.atomic_add(gp, j, grad_p_j)
 
@@ -162,10 +173,9 @@ def gd_update_normalized(
 ):
 
     i = wp.tid()
-    P_next[i] = wp.normalize(P[i] + lr * gp[i])  # Normals pointing outward! invert + to point inward
+    P_next[i] = wp.normalize(P[i] - lr * gp[i])  # Normals pointing both inward / outward, but direction is used only
 
-
-
+    
 
 def mech_step_sticky(
     X: wp.array(dtype=wp.vec3f),
@@ -200,14 +210,14 @@ def mech_step_sticky(
     wp.launch(
         gd_update,
         dim=particle_count,
-        inputs=[X, gx, wp.float32(dt), X_next],
+        inputs=[X, gx, dt, X_next],
         device=device,
     )
 
     wp.launch(
         gd_update_normalized,
         dim=particle_count,
-        inputs=[P, gp, wp.float32(dt), P_next],
+        inputs=[P, gp, dt, P_next],
         device=device,
     )
 
@@ -257,7 +267,7 @@ def reaction_diffs(
     cAi, cAj = safe_div(A[i], Vi), safe_div(A[j], Vj)
     cIi, cIj = safe_div(I[i], Vi), safe_div(I[j], Vj)
 
-    dist = wp.float32(wp.norm_l2(X[i] - X[j]))
+    dist = wp.norm_l2(X[i] - X[j])
 
     w = adj_weight(dist, Ri, Rj)
 
@@ -366,7 +376,7 @@ def chem_step(
         dim=particle_count,
         inputs=[
             A, I, R, lapA, lapI, S, T,
-            wp.float32(phi), wp.float32(dt)
+            phi, dt
         ],
         outputs=[
             A_next, I_next
@@ -414,7 +424,7 @@ def growth_step(
     wp.launch(
         growth_step_inner,
         dim=particle_count,
-        inputs=[R, R_eq, A, keys, AP, SC, wp.float32(dt), R_next, R_eq_next],
+        inputs=[R, R_eq, A, keys, AP, SC, dt, R_next, R_eq_next],
         device=device,
     )
 
@@ -524,7 +534,7 @@ def division_logic(
     R_eq: wp.array(dtype=wp.float32),
     A: wp.array(dtype=wp.float32),
     I: wp.array(dtype=wp.float32),
-    keys: wp.array(dtype=wp.uint32),
+    P: wp.array(dtype=wp.vec3f), 
     div_slots: wp.array(dtype=wp.int32),
 
 ):
@@ -535,8 +545,6 @@ def division_logic(
     if child == -1:
         return
 
-    key = keys[parent]
-    
     # Split chemical states evenly
     a_p, i_p = A[parent], I[parent]
     A[parent] = 0.5 * a_p
@@ -553,22 +561,20 @@ def division_logic(
     R[parent] = r
     R_eq[parent] = r
 
-    # # Random unit direction via spherical coordinates
-    key, u1 = randf(key, 0.0, 1.0)
-    key, u2 = randf(key, 0.0, 1.0)
+    # Pass parent polarity
+    v = P[parent]
+    P[child] = v
 
-    phi = 2.0 * wp.pi * u1
-    z = 2.0 * u2 - 1.0
-    t = wp.sqrt(wp.max(0.0, 1.0 - z * z))
-    v = wp.vec3f(t * wp.cos(phi), t * wp.sin(phi), z)
+    # Polarized division - divide on perpendicular surface
+    a = wp.vec3f(1.0, 0.0, 0.0)
+    if wp.abs(v[0]) > 0.9:
+        a = wp.vec3f(0.0, 1.0, 0.0)
 
-    keys[parent] = key
-
-    # # separate centers along v so daughters do not overlap
+    u = wp.normalize(wp.cross(v, a))
     x = X[parent]
     sep = 0.8 * r
-    X[parent] = x + v * sep
-    X[child] = x - v * sep
+    X[parent] = x + u * sep
+    X[child] = x - u * sep
 
 
 
