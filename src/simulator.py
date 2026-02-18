@@ -113,6 +113,7 @@ def sticky_sphere_grads(
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
     P: wp.array(dtype=wp.vec3f),
+    CT: wp.array(dtype=wp.uint32),
     gx: wp.array(dtype=wp.vec3f),
     gp: wp.array(dtype=wp.vec3f),
 ):
@@ -124,29 +125,40 @@ def sticky_sphere_grads(
         return
 
     x_i, x_j = X[i], X[j]
+    r_i ,r_j = R[i], R[j]
 
     # Forces
-    grad_x_i_f, grad_x_j_f, _f, _f = wp.grad(sticky_sphere_energy)(x_i, x_j, R[i], R[j])
+    grad_x_i_f, grad_x_j_f, _f, _f = wp.grad(sticky_sphere_energy)(x_i, x_j, r_i ,r_j)
 
     wp.atomic_add(gx, i, grad_x_i_f) 
     wp.atomic_add(gx, j, grad_x_j_f)
 
-    # Polarities
 
-    grad_x_i, grad_x_j, grad_p_i, grad_p_j, = wp.grad(sticky_sphere_epi_polarity)(x_i, x_j, P[i], P[j])
+    # Polarity Neighbors
+    dist = wp.norm_l2(x_i - x_j)
+    w = adj_weight(dist, r_i, r_j)
 
-    # Match magnitudes so movement doesn't blink
-    for k in range(3):
-        v_i = wp.abs(grad_x_i_f[k])
-        v_j = wp.abs(grad_x_j_f[k])
-        
-        grad_x_i[k] = wp.clamp(grad_x_i[k], -2. * v_i, 2. * v_i)
-        grad_x_j[k] = wp.clamp(grad_x_j[k], -2. * v_j, 2. * v_j)
+   
+    if w <= 0.0:
+        return
     
-    wp.atomic_add(gx, i, grad_x_i) 
-    wp.atomic_add(gx, j, grad_x_j)
-    wp.atomic_add(gp, i, grad_p_i) 
-    wp.atomic_add(gp, j, grad_p_j)
+    # Polarities - epithelium
+    if (CT[i] == 1) and (CT[j] == 1):
+    
+        grad_x_i, grad_x_j, grad_p_i, grad_p_j, = wp.grad(sticky_sphere_epi_polarity)(x_i, x_j, P[i], P[j])
+    
+        # Match magnitudes so movement doesn't blink
+        for k in range(3):
+            v_i = wp.abs(grad_x_i_f[k])
+            v_j = wp.abs(grad_x_j_f[k])
+            
+            grad_x_i[k] = wp.clamp(grad_x_i[k], -1.0 * v_i, 1.0 * v_i)
+            grad_x_j[k] = wp.clamp(grad_x_j[k], -1.0 * v_j, 1.0 * v_j)
+        
+        wp.atomic_add(gx, i, grad_x_i) 
+        wp.atomic_add(gx, j, grad_x_j)
+        wp.atomic_add(gp, i, grad_p_i) 
+        wp.atomic_add(gp, j, grad_p_j)
 
 
 
@@ -181,6 +193,7 @@ def mech_step_sticky(
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
     P: wp.array(dtype=wp.vec3f),
+    CT: wp.array(dtype=wp.uint32),
     particle_count: wp.int32,
     dt: float,
     X_next: wp.array(dtype=wp.vec3f),
@@ -197,7 +210,7 @@ def mech_step_sticky(
     wp.launch(
         sticky_sphere_grads,
         dim=(particle_count, particle_count),
-        inputs=[X, R, P],
+        inputs=[X, R, P, CT],
         outputs=[gx, gp],
         device=device,
     )
