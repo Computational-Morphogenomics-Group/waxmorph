@@ -116,6 +116,7 @@ class PyVistaInterface(RenderInterface):
     """
     High-performance renderer using PyVista/VTK.
     - Uses glyphing to draw N spheres as a single GPU-optimized actor.
+    - Optionally glyphs polarity vectors (arrows) as another single actor.
     - Supports static and multi-frame inputs (with an interactive slider).
     """
 
@@ -124,15 +125,18 @@ class PyVistaInterface(RenderInterface):
     def _rgb_from_morph(morphogens: np.ndarray) -> np.ndarray:
         m = np.asarray(morphogens).astype(float)
         m = np.clip(m, 0.0, 1.0)
-        rgb_float = colors.hsv_to_rgb(np.stack([np.ones_like(m), m, np.ones_like(m)], axis=-1))  # (N,3) in [0,1]
+        rgb_float = colors.hsv_to_rgb(
+            np.stack([np.ones_like(m), m, np.ones_like(m)], axis=-1)
+        )  # (N,3) in [0,1]
         return (rgb_float * 255).astype(np.uint8)
 
     @staticmethod
-    def _points_polydata(centers, radii, morphogens, n=None) -> pv.PolyData:
+    def _points_polydata(centers, radii, morphogens, polarities=None, n=None) -> pv.PolyData:
         """
         Build a point-cloud PolyData with per-point arrays:
           - 'radius' (float)
-          - 'rgb' (uint8[3])
+          - 'rgb'    (uint8[3])
+          - 'polarity' (float[3]) optional
         """
         c = np.asarray(centers, dtype=float)
         r = np.asarray(radii, dtype=float).reshape(-1)
@@ -148,49 +152,68 @@ class PyVistaInterface(RenderInterface):
 
         pd = pv.PolyData(pts)
         pd["radius"] = rad
-        pd["rgb"] = rgb  # will be replicated to glyph vertices; used with rgb=True
+        pd["rgb"] = rgb  # used with rgb=True
+
+        if polarities is not None:
+            p = np.asarray(polarities, dtype=float)
+            if p.ndim != 2 or p.shape[1] != 3:
+                raise ValueError(f"polarities must have shape (N,3); got {p.shape}")
+            p = p[:n]
+
+            # (Optional) normalize defensively in case inputs drift from unit length
+            norms = np.linalg.norm(p, axis=1, keepdims=True)
+            p = p / np.clip(norms, 1e-12, None)
+
+            pd["polarity"] = p
+
         return pd
 
     @staticmethod
     def _glyph_spheres(points_pd: pv.PolyData, theta_res=24, phi_res=12) -> pv.PolyData:
-        """
-        Create a glyph dataset instancing a unit sphere at each point, scaled by 'radius'.
-        """
         base = pv.Sphere(radius=1.0, theta_resolution=theta_res, phi_resolution=phi_res)
-        # Orient=False so we don't need normals/tangents per-point; scale by 'radius' directly
         glyphs = points_pd.glyph(geom=base, scale="radius", orient=False)
         return glyphs
 
-    # ---------- public API ----------
     @staticmethod
-    def draw_sphere(
-        plotter: pv.Plotter, center, radius,
-        alpha=0.35, facecolor="blue", edgecolor="red",
-        theta_res=24, phi_res=12, antialiased=True
-    ):
+    def _glyph_polarity_arrows(
+        points_pd: pv.PolyData,
+        *,
+        vector_name: str = "polarity",
+        length: float = 1.0,
+        shaft_radius: float = 0.03,
+        tip_length: float = 0.25,
+        tip_radius: float = 0.06,
+    ) -> pv.PolyData:
         """
-        Add a single sphere actor (useful for quick tests or tiny N).
-        For large N, prefer draw_3d_view() which uses glyphing.
-        """
-        # Normalize facecolor to uint8 RGB
-        if isinstance(facecolor, str):
-            rgb = (np.array(colors.to_rgb(facecolor)) * 255).astype(np.uint8)
-        else:
-            rgb = (np.array(facecolor) * 255).astype(np.uint8)
+        Glyph centered arrows oriented by points_pd[vector_name].
 
-        sphere = pv.Sphere(radius=float(radius), center=np.asarray(center, float),
-                           theta_resolution=theta_res, phi_resolution=phi_res)
-        plotter.add_mesh(
-            sphere,
-            color=tuple(rgb.tolist()),
-            smooth_shading=True,
-            opacity=float(alpha),
-            # lighting params
-            ambient=0.55, diffuse=0.8, specular=0.2, specular_power=8.0,
-            # edges cost perf; keep off
-            show_edges=False,
+        The base arrow is built along +X from 0->1, then translated by -0.5 in X
+        so its midpoint is at the origin. Glyphing then centers each arrow at the point.
+        """
+        if vector_name not in points_pd.array_names:
+            raise ValueError(f"points_pd missing '{vector_name}' array for polarity vectors.")
+
+        # Arrow points along +X by default (direction=(1,0,0)), from start to start+direction.
+        arrow = pv.Arrow(
+            start=(0.0, 0.0, 0.0),
+            direction=(1.0, 0.0, 0.0),
+            tip_length=float(tip_length),
+            tip_radius=float(tip_radius),
+            shaft_radius=float(shaft_radius),
         )
+        # Center it: make the arrow span roughly [-0.5, +0.5] in local X before scaling.
+        arrow.translate((-0.5, 0.0, 0.0), inplace=True)
 
+        # orient by 'polarity', constant scale via factor=length
+        glyphs = points_pd.glyph(
+            geom=arrow,
+            orient=vector_name,
+            scale=False,
+            factor=float(length),
+        )
+        return glyphs
+
+    # ---------- public API ----------
     @staticmethod
     def cleanup(
         plotter: pv.Plotter,
@@ -217,224 +240,61 @@ class PyVistaInterface(RenderInterface):
 
     @staticmethod
     def draw_3d_view(
-        centers, radii, morphogens, particle_count,
+        centers, radii, morphogens, polarities, particle_count,
         blim=-10, tlim=20, theta_res=24, phi_res=12,
-        alpha=0.5
+        alpha=0.5,
+        # polarity rendering controls
+        show_polarities: bool = True,
+        polarity_length: float = 1.0,
+        polarity_color="black",
+        polarity_opacity: float = 1.0,
+        polarity_shaft_radius: float = 0.03,
+        polarity_tip_length: float = 0.25,
+        polarity_tip_radius: float = 0.06,
     ):
         """
-        If arrays for a single frame:
-          - centers: (N, 3), radii: (N,), morphogens: (N,) in [0,1], particle_count: int
-        -> Returns a pv.Plotter with a single glyph actor.
-
-        If sequences (len T) of per-frame arrays:
-          - centers[t]: (N_t,3), radii[t]: (N_t,), morphogens[t]: (N_t,), particle_count[t]: int
-        -> Returns a pv.Plotter with a slider to scrub frames (fast in-place glyph updates).
+        Static inputs:
+          centers: (N,3), radii: (N,), morphogens: (N,), polarities: (N,3), particle_count: int
         """
         plotter = pv.Plotter(notebook=True)
-        is_animated = isinstance(centers, (list, tuple)) and len(centers) > 0 and np.asarray(centers[0]).ndim >= 2
 
-        # Lighting tuned for translucent-ish surfaces
-        # (note: PyVista handles multisample AA internally if available)
-        lighting_kwargs = dict(
+        sphere_kwargs = dict(
             smooth_shading=True,
             opacity=float(alpha),
             ambient=0.55, diffuse=0.2, specular=0.2, specular_power=1.0,
             show_edges=False,
-            rgb=True,  # we will pass per-vertex RGB
+            rgb=True,
         )
 
-        if is_animated:
-            T = len(centers)
+        polarity_kwargs = dict(
+            smooth_shading=True,
+            color=polarity_color,
+            opacity=float(polarity_opacity),
+            ambient=0.25, diffuse=0.75, specular=0.1, specular_power=8.0,
+            show_edges=False,
+        )
 
-            # Build initial frame
-            n0 = int(np.asarray(particle_count[0]))
-            pd0 = PyVistaInterface._points_polydata(centers[0], radii[0], morphogens[0], n=n0)
-            glyphs0 = PyVistaInterface._glyph_spheres(pd0, theta_res, phi_res)
+        
+        n = int(particle_count)
+        pd = PyVistaInterface._points_polydata(
+            centers, radii, morphogens, polarities=polarities, n=n
+        )
 
-            actor = plotter.add_mesh(glyphs0, scalars="rgb", **lighting_kwargs)
+        glyphs = PyVistaInterface._glyph_spheres(pd, theta_res, phi_res)
+        plotter.add_mesh(glyphs, scalars="rgb", **sphere_kwargs)
 
-            # Hold references so they don't get GC'd in callbacks
-            state = {"actor": actor, "glyphs": glyphs0}
-
-            def _update_frame(tfloat):
-                t = int(round(tfloat))
-                t = max(0, min(T - 1, t))
-                n = int(np.asarray(particle_count[t]))
-            
-                pd = PyVistaInterface._points_polydata(centers[t], radii[t], morphogens[t], n=n)
-                new_glyphs = PyVistaInterface._glyph_spheres(pd, theta_res, phi_res)  # -> PolyData
-            
-                mapper = state["actor"].mapper
-            
-                # Feed the new PolyData directly to the (PolyData) mapper
-                try:
-                    mapper.SetInputData(new_glyphs)
-                except Exception:
-                    # Fallback for odd VTK/PyVista combos (rare):
-                    mapper.SetInputData(new_glyphs.cast_to_unstructured_grid())
-            
-                # Make sure RGB coloring stays attached after swapping inputs
-                try:
-                    mapper.ScalarVisibilityOn()
-                    mapper.SetScalarModeToUsePointFieldData()
-                    mapper.SelectColorArray("rgb")
-                    mapper.SetColorModeToDirectScalars()
-                except Exception:
-                    pass
-            
-                mapper.Modified()
-                state["glyphs"] = new_glyphs  # keep a ref so it doesn't get GC'd
-                plotter.render()
-
-
-            plotter.add_slider_widget(
-                _update_frame,
-                rng=[0, max(T - 1, 0)],
-                value=0,
-                title="Frame",
-                pointa=(0.02, 0.06), pointb=(0.98, 0.06),
-                style="modern",
+        if show_polarities and polarities is not None:
+            pol_glyphs = PyVistaInterface._glyph_polarity_arrows(
+                pd,
+                length=polarity_length,
+                shaft_radius=polarity_shaft_radius,
+                tip_length=polarity_tip_length,
+                tip_radius=polarity_tip_radius,
             )
-
-        else:
-            n = int(particle_count)
-            pd = PyVistaInterface._points_polydata(centers, radii, morphogens, n=n)
-            glyphs = PyVistaInterface._glyph_spheres(pd, theta_res, phi_res)
-            plotter.add_mesh(glyphs, scalars="rgb", **lighting_kwargs)
+            plotter.add_mesh(pol_glyphs, **polarity_kwargs)
 
         PyVistaInterface.cleanup(plotter, blim, tlim)
         return plotter
-
-
-    @staticmethod
-    def write_movie(
-        centers_seq,
-        radii_seq,
-        morphogens_seq,
-        particle_count_seq,
-        filename,
-        blim=-10,
-        tlim=20,
-        theta_res=24,
-        phi_res=12,
-        alpha=0.5,
-        fps=60,
-        add_text=False,
-        window_size=(1920, 1080),
-    ):
-        """
-        Write a movie using PyVista's open_movie / write_frame API. Super slow, should be avoided if possible.
-
-        Parameters
-        ----------
-        centers_seq, radii_seq, morphogens_seq, particle_count_seq :
-            Sequences (len T) of per-frame arrays:
-              - centers_seq[t] : (N_t, 3)
-              - radii_seq[t]   : (N_t,)
-              - morphogens_seq[t] : (N_t,) in [0,1]
-              - particle_count_seq[t] : int
-        filename : str
-            Output movie filename (e.g. 'Output/pyvista_movie.mp4').
-        """
-        
-        # Ensure everything has same length
-        T = len(centers_seq)
-        if not (
-            len(radii_seq) == len(morphogens_seq) == len(particle_count_seq) == T
-        ):
-            raise ValueError("All input sequences must have the same length T.")
-
-        # Make sure directory exists
-        dirname = os.path.dirname(filename)
-        if dirname:
-            os.makedirs(dirname, exist_ok=True)
-
-        # Off-screen plotter
-        plotter = pv.Plotter(
-            notebook=True,
-            window_size=window_size,
-        )
-
-        # Open movie file
-        plotter.open_movie(filename, framerate=fps)
-
-        # Lighting / shading settings
-        lighting_kwargs = dict(
-            smooth_shading=True,
-            opacity=float(alpha),
-            ambient=0.55, diffuse=0.2, specular=0.2, specular_power=1.0,
-            show_edges=False,
-            rgb=True,  # use 'rgb' point data as direct colors
-        )
-
-        # ----- Initial frame (t = 0) -----
-        n0 = int(np.asarray(particle_count_seq[0]))
-        pd0 = PyVistaInterface._points_polydata(
-            centers_seq[0], radii_seq[0], morphogens_seq[0], n=n0
-        )
-        glyphs0 = PyVistaInterface._glyph_spheres(pd0, theta_res, phi_res)
-        actor = plotter.add_mesh(glyphs0, scalars="rgb", **lighting_kwargs)
-
-        # Basic scene layout
-        PyVistaInterface.cleanup(
-            plotter,
-            blim=blim,
-            tlim=tlim,
-            show_bounds=False,
-            show_axes=False,
-        )
-
-        # Show once to initialize the render window (no GUI if off_screen)
-        plotter.show(auto_close=False)
-
-        # Optional text label; we update it each frame by reusing the same name
-        if add_text:
-            plotter.add_text("Iteration: 0", name="time-label")
-
-        # Write the initial frame
-        plotter.write_frame()
-
-        # Keep state so glyphs don't get GC'd
-        state = {"actor": actor, "glyphs": glyphs0}
-
-        # ----- Subsequent frames -----
-        for t in trange(1, T):
-            n = int(np.asarray(particle_count_seq[t]))
-            pd = PyVistaInterface._points_polydata(
-                centers_seq[t], radii_seq[t], morphogens_seq[t], n=n
-            )
-            new_glyphs = PyVistaInterface._glyph_spheres(pd, theta_res, phi_res)
-
-            mapper = state["actor"].mapper
-
-            # Swap mapper input to new glyphs
-            try:
-                mapper.SetInputData(new_glyphs)
-            except Exception:
-                mapper.SetInputData(new_glyphs.cast_to_unstructured_grid())
-
-            # Ensure RGB coloring is used
-            try:
-                mapper.ScalarVisibilityOn()
-                mapper.SetScalarModeToUsePointFieldData()
-                mapper.SelectColorArray("rgb")
-                mapper.SetColorModeToDirectScalars()
-            except Exception:
-                pass
-
-            mapper.Modified()
-            state["glyphs"] = new_glyphs
-
-            if add_text:
-                # Update the label with the same name
-                plotter.add_text(f"Iteration: {t}", name="time-label")
-
-            # Write this frame to the movie
-            plotter.write_frame()
-
-        # Close when done
-        plotter.close()
-
 
 
 
