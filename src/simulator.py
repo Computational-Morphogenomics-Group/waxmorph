@@ -10,7 +10,7 @@ import warp as wp
 ############################################################
 ############################################################
 FOUR_THIRDS_PI = wp.float32(4.1887902047863905)
-EPS_DIST = wp.float32(1e-1)
+EPS_DIST = wp.float32(2e-1)
 EPS_DEN = wp.float32(1e-9)
 EPS_NORM = wp.float32(1e-9)
 
@@ -84,8 +84,9 @@ def gen_key_array(size: int, device: str = "cuda") -> wp.array:
 
 @wp.func
 def sticky_sphere_energy(x_i: wp.vec3f, x_j: wp.vec3f, r_i: wp.float32, r_j: wp.float32):
+    
     diff = x_i - x_j
-    dist = wp.length(diff) 
+    dist = wp.length(diff)
 
     rs = r_i + r_j
 
@@ -97,11 +98,21 @@ def sticky_sphere_energy(x_i: wp.vec3f, x_j: wp.vec3f, r_i: wp.float32, r_j: wp.
     return U
 
 
+@wp.func
+def sticky_sphere_epi_polarity(p_i: wp.vec3f, p_j: wp.vec3f, unit_disp: wp.vec3f):
+    U_i = (wp.dot(p_i, unit_disp) ** 2.0) / 2.0
+    U_j = (wp.dot(p_j, unit_disp) ** 2.0) / 2.0
+
+    return U_i + U_j
+
+
 @wp.kernel(enable_backward=False)
 def sticky_sphere_grads(
-    x: wp.array(dtype=wp.vec3f),
-    r: wp.array(dtype=wp.float32),
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
+    P: wp.array(dtype=wp.vec3f),
     gx: wp.array(dtype=wp.vec3f),
+    gp: wp.array(dtype=wp.vec3f),
 ):
 
     i, j = wp.tid()
@@ -110,15 +121,28 @@ def sticky_sphere_grads(
     if j <= i:
         return
 
-    grad_i, grad_j, _, _ = wp.grad(sticky_sphere_energy)(x[i], x[j], r[i], r[j])
+    x_i, x_j = X[i], X[j]
 
-    wp.atomic_add(gx, i, grad_i) 
-    wp.atomic_add(gx, j, grad_j)
+    # Forces
+    grad_x_i, grad_x_j, _f, _f = wp.grad(sticky_sphere_energy)(x_i, x_j, R[i], R[j])
+
+    wp.atomic_add(gx, i, grad_x_i) 
+    wp.atomic_add(gx, j, grad_x_j)
+
+    # Polarities
+    unit_disp = wp.normalize(x_i - x_j)
+
+    grad_p_i, grad_p_j, _v = wp.grad(sticky_sphere_epi_polarity)(P[i], P[j], unit_disp)
+
+    wp.atomic_add(gp, i, grad_p_i) 
+    wp.atomic_add(gp, j, grad_p_j)
+
+
 
 
 
 @wp.kernel
-def gd_update_centers(
+def gd_update(
     X: wp.array(dtype=wp.vec3f),   # (N, 3)
     gx: wp.array(dtype=wp.vec3f),  # (N, 3) gradient of loss w.r.t. x
     lr: wp.float32,
@@ -129,27 +153,42 @@ def gd_update_centers(
     X_next[i] = X[i] - lr * gx[i]
 
 
+@wp.kernel
+def gd_update_normalized(
+    P: wp.array(dtype=wp.vec3f),   # (N, 3)
+    gp: wp.array(dtype=wp.vec3f),  # (N, 3) gradient of loss w.r.t. x
+    lr: wp.float32,
+    P_next: wp.array(dtype=wp.vec3f),   # (N, 3)
+):
+
+    i = wp.tid()
+    P_next[i] = wp.normalize(P[i] + lr * gp[i])  # Normals pointing outward! invert + to point inward
+
+
 
 
 def mech_step_sticky(
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
+    P: wp.array(dtype=wp.vec3f),
     particle_count: wp.int32,
     dt: float,
     X_next: wp.array(dtype=wp.vec3f),
+    P_next: wp.array(dtype=wp.vec3f),
     device: str = "cuda",
     grad_consist: bool = False,
 ):
     
     # Set up gradients
     gx = wp.zeros_like(X, device=device)
+    gp = wp.zeros_like(P, device=device)
 
     # 2D launch required for i,j indexing. 
     wp.launch(
         sticky_sphere_grads,
         dim=(particle_count, particle_count),
-        inputs=[X, R],
-        outputs=[gx],
+        inputs=[X, R, P],
+        outputs=[gx, gp],
         device=device,
     )
 
@@ -159,17 +198,29 @@ def mech_step_sticky(
     
 
     wp.launch(
-        gd_update_centers,
+        gd_update,
         dim=particle_count,
         inputs=[X, gx, wp.float32(dt), X_next],
+        device=device,
+    )
+
+    wp.launch(
+        gd_update_normalized,
+        dim=particle_count,
+        inputs=[P, gp, wp.float32(dt), P_next],
         device=device,
     )
 
     
     if grad_consist:
         X.mark_read()
+        P.mark_read()
         gx.mark_read()
+        gp.mark_read()
+        
         X_next.mark_write()
+        P_next.mark_write()
+
 
     return gx
     
@@ -518,3 +569,9 @@ def division_logic(
     sep = 0.8 * r
     X[parent] = x + v * sep
     X[child] = x - v * sep
+
+
+
+# Reload signal
+wp.clear_kernel_cache()
+wp.clear_lto_cache()
