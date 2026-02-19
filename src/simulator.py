@@ -10,7 +10,7 @@ import warp as wp
 ############################################################
 ############################################################
 FOUR_THIRDS_PI = 4.1887902047863905
-EPS_DIST = 2e-1
+EPS_DIST = 1e-1
 EPS_DEN = 1e-9
 EPS_NORM = 1e-9
 RAND_EPS = 1e-7
@@ -24,8 +24,8 @@ def volume_from_radius(r: wp.float32) -> wp.float32:
     return FOUR_THIRDS_PI * r * r * r
 
 @wp.func
-def adj_weight(dist: wp.float32, ri: wp.float32, rj: wp.float32) -> wp.float32:
-    return wp.float32((dist - (ri + rj)) <= EPS_DIST)
+def adj_weight(dist: wp.float32, ri: wp.float32, rj: wp.float32) -> wp.bool:
+    return wp.bool((dist - (ri + rj)) <= EPS_DIST)
 
 
 @wp.func
@@ -121,7 +121,7 @@ def sticky_sphere_grads(
     i, j = wp.tid()
 
     # Skip self + ensure each unordered pair is counted once.
-    if j <= i:
+    if wp.int32(j) <= wp.int32(i):
         return
 
     x_i, x_j = X[i], X[j]
@@ -139,11 +139,11 @@ def sticky_sphere_grads(
     w = adj_weight(dist, r_i, r_j)
 
    
-    if w <= 0.0:
+    if not wp.bool(w):
         return
     
     # Polarities - epithelium
-    if (CT[i] == 1) and (CT[j] == 1):
+    if (CT[i] == wp.uint32(1)) and (CT[j] == wp.uint32(1)):
     
         grad_x_i, grad_x_j, grad_p_i, grad_p_j, = wp.grad(sticky_sphere_epi_polarity)(x_i, x_j, P[i], P[j])
     
@@ -161,7 +161,7 @@ def sticky_sphere_grads(
         wp.atomic_add(gp, j, grad_p_j)
 
     # Polarities - mesenchyme
-    elif (CT[i] == 0) and (CT[j] == 0):
+    if (CT[i] == wp.uint32(0)) and (CT[j] == wp.uint32(0)):
 
         grad_p_i, grad_p_j, = wp.grad(sticky_sphere_mes_polarity)(P[i], P[j])
         
@@ -280,7 +280,7 @@ def reaction_diffs(
 
     i,j = wp.tid()
 
-    if j <= i:
+    if wp.int32(j) <= wp.int32(i):
         return
 
     Ri, Rj = R[i], R[j]
@@ -293,12 +293,12 @@ def reaction_diffs(
     w = adj_weight(dist, Ri, Rj)
 
     # Prune non neighbors
-    if w <= 0.0:
+    if not wp.bool(w):
         return
 
     # Pairwise flux contribution: w * (c_j - c_i)
-    dA = w * (cAj - cAi)
-    dI = w * (cIj - cIi)
+    dA = wp.float32(w) * (cAj - cAi)
+    dI = wp.float32(w) * (cIj - cIi)
 
     # Symmetric accumulation: +d to i, -d to j
 
@@ -338,7 +338,7 @@ def reaction_step(
     prodA_quad = safe_div(cA2, ciI * ciI)
     
     prodA = prodA_lin
-    if prodA_quad < prodA_lin:
+    if wp.float32(prodA_quad) < wp.float32(prodA_lin):
         prodA = prodA_quad
     
     prodI = cA2
@@ -426,6 +426,53 @@ def chem_step(
 # ############################################################
 # ############################################################
 
+@wp.kernel
+def count_neighbors(
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
+    CT: wp.array(dtype=wp.uint32),
+    n_tot: wp.array(dtype=wp.int32),
+    n_epi: wp.array(dtype=wp.int32),
+    n_mes: wp.array(dtype=wp.int32),
+):
+    i, j = wp.tid()
+    
+    if wp.int32(j) <= wp.int32(i):
+        return
+
+    xi, xj = X[i], X[j]
+    ri, rj = R[i], R[j]
+
+    dist = wp.norm_l2(xi - xj)
+    w = adj_weight(dist, ri, rj)
+    
+    if not wp.bool(w):
+        return
+
+    # total counts
+    wp.atomic_add(n_tot, i, 1)
+    wp.atomic_add(n_tot, j, 1)
+
+    # type-specific (neighbor type)
+    if CT[j] == wp.uint32(1):
+        wp.atomic_add(n_epi, i, 1)
+    else:
+        wp.atomic_add(n_mes, i, 1)
+
+    if CT[i] == wp.uint32(1):
+        wp.atomic_add(n_epi, j, 1)
+    else:
+        wp.atomic_add(n_mes, j, 1)
+
+
+@wp.kernel
+def classify_surface(
+    n_tot: wp.array(dtype=wp.int32),
+    surface: wp.array(dtype=wp.uint32),
+    thresh: wp.int32,
+):
+    i = wp.tid()
+    surface[i] = wp.uint32(n_tot[i] <= thresh)
 
 def growth_step(
     R: wp.array(dtype=wp.float32),
@@ -436,6 +483,8 @@ def growth_step(
     AP: wp.array(dtype=wp.float32),
     SC: wp.array(dtype=wp.float32),
     dt: float,
+    R_ref: wp.float32,
+    R_max: wp.float32,
     particle_count: int,
     R_next: wp.array(dtype=wp.float32),
     R_eq_next: wp.array(dtype=wp.float32), 
@@ -446,7 +495,7 @@ def growth_step(
     wp.launch(
         growth_step_inner,
         dim=particle_count,
-        inputs=[R, R_eq, A, CT, keys, AP, SC, dt, R_next, R_eq_next],
+        inputs=[R, R_eq, A, CT, keys, AP, SC, dt, R_ref, R_max, R_next, R_eq_next],
         device=device,
     )
 
@@ -469,24 +518,30 @@ def growth_step_inner(
     AP: wp.array(dtype=wp.float32),
     SC: wp.array(dtype=wp.float32),
     dt: wp.float32,
+    R_ref: wp.float32,
+    R_max: wp.float32,
     R_next: wp.array(dtype=wp.float32),
     R_eq_next: wp.array(dtype=wp.float32),
 ) -> None:
     i = wp.tid()
 
-    if CT[i] == 1:
-        return
+    if CT[i] == wp.uint32(0):
+        r_i_0, r_eq_i = R[i], wp.min(R_eq[i], R_max)
         
-    V = volume_from_radius(R[i])
-    num = safe_div(A[i], V) ** AP[0]
+        V = volume_from_radius(R[i])
+        num = safe_div(A[i], V) ** AP[0]
+        
+        key = keys[i]
+        lam = wp.randf(key, 0.8, 1.0)
+        frac = safe_div(num, (SC[0]**AP[0]) + num)
     
-    key = keys[i]
-    lam = wp.randf(key, 0.8, 1.0)
-    frac = safe_div(num, (SC[0]**AP[0]) + num)
+        R_eq_next[i] = r_eq_i + frac * lam * dt
+        R_next[i] = r_i_0 + ((1.0 - safe_div(r_i_0, r_eq_i)) ** 2.0) * dt
+        keys[i] = key
 
-    R_eq_next[i] = R_eq[i] + frac * lam * dt
-    R_next[i] = R[i] + ((1.0 - safe_div(R[i], R_eq[i])) ** 2.0) * dt
-    keys[i] = key
+    if CT[i] == wp.uint32(1):
+        r_i_1 = R[i]
+        R_next[i] = r_i_1 + ((1.0 - safe_div(r_i_1, R_ref)) ** 2.0) * dt
 
 
 @wp.func
@@ -527,36 +582,66 @@ def division_losses(
     R: wp.array(dtype=wp.float32),
     CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
+
+    n_epi: wp.array(dtype=wp.int32),
+    n_mes: wp.array(dtype=wp.int32),
+    surface: wp.array(dtype=wp.uint32),
+
     div_count: wp.array(dtype=wp.int32),
     div_slots: wp.array(dtype=wp.int32),
+
     R_div_ref: wp.float32,
+    p_epi: wp.float32,
+    epi_max_neighbors: wp.int32,
+    suppress_mes_surface: wp.int32,
+
     t: wp.float32,
     tmax: wp.float32,
     tau: wp.float32,
     max_particles: wp.int32,
 ):
-    
     parent = wp.tid()
-    
-    if CT[parent] == 1:
-        return
-    
-    # Decide division
-    p = probs(R[parent], R_div_ref)
-    key = keys[parent]
-    
-    key, s_hard, s_soft = st_gumbel_softmax_bernoulli(p, key, t, tmax, tau)
 
+    key = keys[parent]
+
+    p = wp.float32(0.0)
+
+    if CT[parent] == wp.uint32(1):
+        # Epithelial: only at interface/surface + touching mesenchyme + not overcrowded by epi
+        if surface[parent] == wp.uint32(0):
+            keys[parent] = key
+            return
+        
+        if n_mes[parent] <= wp.int32(0):
+            keys[parent] = key
+            return
+        
+        if n_epi[parent] >=  wp.int32(epi_max_neighbors):
+            keys[parent] = key
+            return
+
+        p = p_epi
+
+    else:
+        # Mesenchyme: suppress division on surface if requested
+        if suppress_mes_surface != wp.int32(0) and surface[parent] == wp.uint32(1):
+            keys[parent] = key
+            return
+
+        p = probs(R[parent], R_div_ref)
+
+    # Sample division (Gumbel-ST)
+    key, s_hard, s_soft = st_gumbel_softmax_bernoulli(p, key, t, tmax, tau)
     keys[parent] = key
-    
-    if s_hard == 0:
+
+    if s_hard == wp.int32(0):
         return
 
     # Reserve child slot (unique)
     child = wp.atomic_add(div_count, 0, 1)
 
-    if wp.int32(child) > wp.int32(max_particles-1):
-        print('capacity exceeded')
+    if wp.int32(child) >= wp.int32(max_particles):
+        print("capacity exceeded")
         return
 
     div_slots[parent] = child
@@ -604,9 +689,9 @@ def division_logic(
     # Randomly generate new cell
     CT[child] = CT[parent]
 
-    # Polarized division - divide on perpendicular surface
+    # # Polarized division - divide on perpendicular surface
     a = wp.vec3f(1.0, 0.0, 0.0)
-    if wp.abs(v[0]) > 0.9:
+    if wp.abs(v[0]) > wp.float32(0.9):
         a = wp.vec3f(0.0, 1.0, 0.0)
 
     u = wp.normalize(wp.cross(v, a))
