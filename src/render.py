@@ -120,7 +120,43 @@ class PyVistaInterface(RenderInterface):
     - Supports static and multi-frame inputs (with an interactive slider).
     """
 
+    @staticmethod
+    def _husl_palette(n_colors: int, *, s: float = 90.0, l: float = 65.0) -> np.ndarray:
+        """
+        Returns (n_colors, 3) float RGB in [0,1].
+        Prefers HSLuv/HUSL if installed; otherwise falls back to HSV palette.
+        """
+        n_colors = int(max(1, n_colors))
+        hues = np.linspace(0.0, 360.0, n_colors, endpoint=False)
+
+        # Try true HUSL/HSLuv (pip install hsluv)
+        try:
+            import hsluv  # type: ignore
+            rgb = np.array([hsluv.hsluv_to_rgb((float(h), float(s), float(l))) for h in hues], dtype=float)
+            rgb = np.clip(rgb, 0.0, 1.0)
+            return rgb
+        except Exception:
+            # Fallback: HSV evenly spaced hues, fixed saturation/value
+            h01 = (hues / 360.0).astype(float)
+            hsv = np.stack([h01, np.full_like(h01, 0.85), np.full_like(h01, 0.95)], axis=-1)
+            return colors.hsv_to_rgb(hsv)
+
     # ---------- internal helpers ----------
+    @staticmethod
+    def _rgb_from_categories(categories: np.ndarray) -> np.ndarray:
+        """
+        categories: (N,) unsigned ints (or any ints)
+        Returns rgb: (N,3) uint8, with a stable color per unique category.
+        """
+        cats = np.asarray(categories).reshape(-1)
+        # enforce unsigned-ish, but keep it robust if negatives sneak in
+        cats = cats.astype(np.int64, copy=False)
+
+        uniq, inv = np.unique(cats, return_inverse=True)  # uniq sorted
+        palette = PyVistaInterface._husl_palette(len(uniq))  # (K,3) float
+        rgb = palette[inv]  # (N,3) float
+        return (rgb * 255).astype(np.uint8)
+    
     @staticmethod
     def _rgb_from_morph(morphogens: np.ndarray) -> np.ndarray:
         m = np.asarray(morphogens).astype(float)
@@ -131,12 +167,21 @@ class PyVistaInterface(RenderInterface):
         return (rgb_float * 255).astype(np.uint8)
 
     @staticmethod
-    def _points_polydata(centers, radii, morphogens, polarities=None, n=None) -> pv.PolyData:
+    def _points_polydata(
+        centers,
+        radii,
+        morphogens,
+        polarities=None,
+        n=None,
+        *,
+        cell_types: np.ndarray | None = None,   # NEW
+    ) -> pv.PolyData:
         """
         Build a point-cloud PolyData with per-point arrays:
           - 'radius' (float)
-          - 'rgb'    (uint8[3])
+          - 'rgb'    (uint8[3])    (from morphogens OR cell_types override)
           - 'polarity' (float[3]) optional
+          - 'cell_type' (int) optional
         """
         c = np.asarray(centers, dtype=float)
         r = np.asarray(radii, dtype=float).reshape(-1)
@@ -148,11 +193,24 @@ class PyVistaInterface(RenderInterface):
 
         pts = c[:n]
         rad = r[:n]
-        rgb = PyVistaInterface._rgb_from_morph(m[:n])
+
+        # --- NEW: override morphogen coloring if cell_types is provided
+        if cell_types is not None:
+            ct = np.asarray(cell_types).reshape(-1)
+            n = min(n, len(ct))  # also clamp to available categories
+            pts = pts[:n]
+            rad = rad[:n]
+            rgb = PyVistaInterface._rgb_from_categories(ct[:n])
+        else:
+            rgb = PyVistaInterface._rgb_from_morph(m[:n])
 
         pd = pv.PolyData(pts)
         pd["radius"] = rad
         pd["rgb"] = rgb  # used with rgb=True
+
+        # Optional: store the category itself (handy for picking/inspection)
+        if cell_types is not None:
+            pd["cell_type"] = np.asarray(cell_types).reshape(-1)[:n].astype(np.int32, copy=False)
 
         if polarities is not None:
             p = np.asarray(polarities, dtype=float)
@@ -160,7 +218,6 @@ class PyVistaInterface(RenderInterface):
                 raise ValueError(f"polarities must have shape (N,3); got {p.shape}")
             p = p[:n]
 
-            # (Optional) normalize defensively in case inputs drift from unit length
             norms = np.linalg.norm(p, axis=1, keepdims=True)
             p = p / np.clip(norms, 1e-12, None)
 
@@ -238,6 +295,7 @@ class PyVistaInterface(RenderInterface):
         plotter.set_scale(1, 1, 1)
         plotter.camera_position = "iso"
 
+    # ---------- public API ----------
     @staticmethod
     def draw_3d_view(
         centers, radii, morphogens, polarities, particle_count,
@@ -251,11 +309,9 @@ class PyVistaInterface(RenderInterface):
         polarity_shaft_radius: float = 0.03,
         polarity_tip_length: float = 0.25,
         polarity_tip_radius: float = 0.06,
+        # NEW
+        cell_types: np.ndarray | None = None,
     ):
-        """
-        Static inputs:
-          centers: (N,3), radii: (N,), morphogens: (N,), polarities: (N,3), particle_count: int
-        """
         plotter = pv.Plotter(notebook=True)
 
         sphere_kwargs = dict(
@@ -274,10 +330,12 @@ class PyVistaInterface(RenderInterface):
             show_edges=False,
         )
 
-        
         n = int(particle_count)
         pd = PyVistaInterface._points_polydata(
-            centers, radii, morphogens, polarities=polarities, n=n
+            centers, radii, morphogens,
+            polarities=polarities,
+            n=n,
+            cell_types=cell_types,   # NEW
         )
 
         glyphs = PyVistaInterface._glyph_spheres(pd, theta_res, phi_res)

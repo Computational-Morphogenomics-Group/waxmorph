@@ -13,6 +13,7 @@ FOUR_THIRDS_PI = 4.1887902047863905
 EPS_DIST = 2e-1
 EPS_DEN = 1e-9
 EPS_NORM = 1e-9
+RAND_EPS = 1e-7
 
 @wp.func
 def safe_div(num: wp.float32, den: wp.float32) -> wp.float32:
@@ -25,15 +26,6 @@ def volume_from_radius(r: wp.float32) -> wp.float32:
 @wp.func
 def adj_weight(dist: wp.float32, ri: wp.float32, rj: wp.float32) -> wp.float32:
     return wp.float32((dist - (ri + rj)) <= EPS_DIST)
-
-@wp.func
-def randf(
-    key: wp.uint32,
-    low: wp.float32,
-    high: wp.float32,
-):
-
-    return wp.uint32(wp.randu(key)), (low - high) * wp.randf(key) + high
 
 
 @wp.func
@@ -51,7 +43,8 @@ def softmax2d(p: wp.vec2f):
 def gumbel(
     key: wp.uint32
 ):
-    key, u = randf(key, 0., 1.)
+    u = wp.randf(key, 0., 1.)
+    u = wp.clamp(u, RAND_EPS, 1.0 - RAND_EPS)
     return key, -wp.log(-wp.log(u))
 
 
@@ -108,6 +101,13 @@ def sticky_sphere_epi_polarity(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j:
     return U_i + U_j
 
 
+
+@wp.func
+def sticky_sphere_mes_polarity(p_i: wp.vec3f, p_j: wp.vec3f):    
+    U = -(wp.dot(p_i, p_j) ** 2.0) / 2.0
+    return U
+
+
 @wp.kernel(enable_backward=False)
 def sticky_sphere_grads(
     X: wp.array(dtype=wp.vec3f),
@@ -157,6 +157,14 @@ def sticky_sphere_grads(
         
         wp.atomic_add(gx, i, grad_x_i) 
         wp.atomic_add(gx, j, grad_x_j)
+        wp.atomic_add(gp, i, grad_p_i) 
+        wp.atomic_add(gp, j, grad_p_j)
+
+    # Polarities - mesenchyme
+    elif (CT[i] == 0) and (CT[j] == 0):
+
+        grad_p_i, grad_p_j, = wp.grad(sticky_sphere_mes_polarity)(P[i], P[j])
+        
         wp.atomic_add(gp, i, grad_p_i) 
         wp.atomic_add(gp, j, grad_p_j)
 
@@ -423,6 +431,7 @@ def growth_step(
     R: wp.array(dtype=wp.float32),
     R_eq: wp.array(dtype=wp.float32),
     A: wp.array(dtype=wp.float32),
+    CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
     AP: wp.array(dtype=wp.float32),
     SC: wp.array(dtype=wp.float32),
@@ -437,7 +446,7 @@ def growth_step(
     wp.launch(
         growth_step_inner,
         dim=particle_count,
-        inputs=[R, R_eq, A, keys, AP, SC, dt, R_next, R_eq_next],
+        inputs=[R, R_eq, A, CT, keys, AP, SC, dt, R_next, R_eq_next],
         device=device,
     )
 
@@ -455,6 +464,7 @@ def growth_step_inner(
     R: wp.array(dtype=wp.float32),
     R_eq: wp.array(dtype=wp.float32),
     A: wp.array(dtype=wp.float32),
+    CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
     AP: wp.array(dtype=wp.float32),
     SC: wp.array(dtype=wp.float32),
@@ -464,15 +474,19 @@ def growth_step_inner(
 ) -> None:
     i = wp.tid()
 
+    if CT[i] == 1:
+        return
+        
     V = volume_from_radius(R[i])
     num = safe_div(A[i], V) ** AP[0]
-
-    next_key, lam = randf(keys[i], 0.8, 1.0)
+    
+    key = keys[i]
+    lam = wp.randf(key, 0.8, 1.0)
     frac = safe_div(num, (SC[0]**AP[0]) + num)
 
     R_eq_next[i] = R_eq[i] + frac * lam * dt
     R_next[i] = R[i] + ((1.0 - safe_div(R[i], R_eq[i])) ** 2.0) * dt
-    keys[i] = next_key
+    keys[i] = key
 
 
 @wp.func
@@ -483,6 +497,8 @@ def st_gumbel_softmax_bernoulli(
     tmax: wp.float32,
     tau: wp.float32,
 ):
+
+    p = wp.clamp(p, RAND_EPS, 1.0 - RAND_EPS)
 
     # # Gumbel softmax
     key, g0 = gumbel(key)
@@ -509,6 +525,7 @@ def st_gumbel_softmax_bernoulli(
 def division_losses(
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
+    CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
     div_count: wp.array(dtype=wp.int32),
     div_slots: wp.array(dtype=wp.int32),
@@ -521,11 +538,16 @@ def division_losses(
     
     parent = wp.tid()
     
+    if CT[parent] == 1:
+        return
+    
     # Decide division
     p = probs(R[parent], R_div_ref)
     key = keys[parent]
     
     key, s_hard, s_soft = st_gumbel_softmax_bernoulli(p, key, t, tmax, tau)
+
+    keys[parent] = key
     
     if s_hard == 0:
         return
@@ -539,7 +561,6 @@ def division_losses(
 
     div_slots[parent] = child
     
-    
 @wp.kernel
 def division_logic(
     X: wp.array(dtype=wp.vec3f),
@@ -547,12 +568,14 @@ def division_logic(
     R_eq: wp.array(dtype=wp.float32),
     A: wp.array(dtype=wp.float32),
     I: wp.array(dtype=wp.float32),
-    P: wp.array(dtype=wp.vec3f), 
+    P: wp.array(dtype=wp.vec3f),
+    CT: wp.array(dtype=wp.uint32),
     div_slots: wp.array(dtype=wp.int32),
 
 ):
     
     parent = wp.tid()
+    
     child = div_slots[parent]
 
     if child == -1:
@@ -577,6 +600,9 @@ def division_logic(
     # Pass parent polarity
     v = P[parent]
     P[child] = v
+
+    # Randomly generate new cell
+    CT[child] = CT[parent]
 
     # Polarized division - divide on perpendicular surface
     a = wp.vec3f(1.0, 0.0, 0.0)
