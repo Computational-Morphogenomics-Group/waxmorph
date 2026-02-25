@@ -10,10 +10,13 @@ import warp as wp
 ############################################################
 ############################################################
 FOUR_THIRDS_PI = 4.1887902047863905
-EPS_DIST = 2e-1
+EPS_DIST = 0.25
 EPS_DEN = 1e-9
 EPS_NORM = 1e-9
 RAND_EPS = 1e-7
+
+
+# Interface tension
 
 K_REP = 3.0
 
@@ -21,11 +24,17 @@ K_ATT_EE = 1.5 # epi-epi strong cohesion
 K_ATT_MM = 0.15  # mes-mes medium
 K_ATT_EM = 0.15  # epi-mes weak (interface tension)
 
+ATR_EE_CUTOFF = 0.25
 ATR_EE = 0.14
 ATR_MM = 0.1
 ATR_EM = 0.06
 
-D_SHIFT_EM = 0.08
+D_SHIFT_EM = 0.06
+
+K_THICK_EE = 6.0 
+H_THICK_EE = 0.08
+
+
 
 @wp.func
 def safe_div(num: wp.float32, den: wp.float32) -> wp.float32:
@@ -87,8 +96,12 @@ def gen_key_array(size: int, device: str = "cuda") -> wp.array:
 ############################################################
     
 
-@wp.func 
-def sticky_sphere_forces(x_i: wp.vec3f, x_j: wp.vec3f, r_i: wp.float32, r_j: wp.float32, ct_i: wp.uint32, ct_j: wp.uint32): 
+@wp.func
+def sticky_sphere_forces(
+    x_i: wp.vec3f, x_j: wp.vec3f,
+    r_i: wp.float32, r_j: wp.float32,
+    ct_i: wp.uint32, ct_j: wp.uint32
+):
     d = x_i - x_j
     dist = wp.length(d) + EPS_NORM
     u = d / dist
@@ -98,33 +111,56 @@ def sticky_sphere_forces(x_i: wp.vec3f, x_j: wp.vec3f, r_i: wp.float32, r_j: wp.
     # defaults: mes-mes
     k_att = K_ATT_MM
     atr = ATR_MM
-    d_shift = wp.float32(0.0)
+    d_shift = 0.0
 
-    if (ct_i == wp.uint32(1)) and (ct_j == wp.uint32(1)):
+    is_ee = (ct_i == wp.uint32(1)) and (ct_j == wp.uint32(1))
+    is_em = (ct_i != ct_j)
+
+    if is_ee:
         k_att = K_ATT_EE
         atr = ATR_EE
-    elif ct_i != ct_j:
+    
+    elif is_em:
         k_att = K_ATT_EM
         atr = ATR_EM
-        d_shift = D_SHIFT_EM  # creates interfacial tension
+        d_shift = D_SHIFT_EM
 
-    # preferred contact distance
+    # preferred distance
     d0 = rs + d_shift
 
-    # outside interaction range -> no force
-    if dist > d0 + atr:
-        return wp.vec3f(0.0), wp.vec3f(0.0)
+    # compression/extension relative to preferred distance
+    t = dist - d0
+    comp = wp.max(-t, wp.float32(0.0))
+    ext  = wp.max( t, wp.float32(0.0))
 
-    # repulsion when too close (dist < d0)
-    delta = wp.max(d0 - dist, wp.float32(0.0))
+    # repulsion (always from compression)
+    f_rep = K_REP * comp
 
-    # attraction only in adhesive band (d0 < dist < d0+atr)
-    gamma = wp.max((d0 + atr) - dist, wp.float32(0.0)) * wp.float32(dist > d0)
+    # attraction
+    f_att = 0.
 
-    fmag = K_REP * delta - k_att * gamma
+    if is_ee:
+        # EE: stiffening spring in extension
+        invL2 = wp.float32(1.0) / (atr * atr + EPS_NORM) 
+        f_att = k_att * (ext + ext * ext * ext * invL2)
 
+        # optional cutoff so distant pairs don't pull across holes
+        if dist > d0 + ATR_EE_CUTOFF:
+            return wp.vec3f(0.0), wp.vec3f(0.0)
+
+    else:
+        # MM/EM: keep your old cohesive band that weakens with distance
+        if dist > d0 + atr:
+            return wp.vec3f(0.0), wp.vec3f(0.0)
+
+        gamma = wp.max((d0 + atr) - dist, wp.float32(0.0)) * wp.float32(dist > d0)
+        f_att = k_att * gamma
+
+    # net gradient magnitude (remember you use -u for energy-gradient)
+    fmag = f_rep - f_att
     F_ij = fmag * -u
     return F_ij, -F_ij
+
 
 
 @wp.func
@@ -165,6 +201,37 @@ def epi_polarity_grads(
     return grad_x_i, grad_x_j, grad_p_i, grad_p_j
 
 
+
+@wp.func 
+def epi_thickness_grads(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j: wp.vec3f): 
+    d = x_i - x_j 
+    # Pick correct normal (inward / outward, not explicit in our opt scheme) 
+    if wp.dot(p_i, -p_j) > wp.dot(p_i, p_j): 
+        p_j = -p_j 
+        
+    s = p_i + p_j 
+    ns = wp.length(s) + EPS_NORM 
+    n = s / ns 
+    dn = wp.dot(d, n) 
+    
+    # normal separation (signed) 
+    adn = wp.abs(dn) 
+    
+    # hinge: only penalize if |dn| exceeds thickness slack h 
+    excess = wp.max(adn - H_THICK_EE, wp.float32(0.0)) 
+    
+    # d/d(dn) 0.5*k*excess^2 = k*excess*sign(dn) 
+    sign = wp.float32(1.0) 
+    
+    if dn < wp.float32(0.0): 
+        sign = wp.float32(-1.0) 
+        
+    grad_x_i = K_THICK_EE * excess * sign * n 
+    grad_x_j = -grad_x_i 
+    
+    return grad_x_i, grad_x_j
+
+    
 @wp.func
 def mes_polarity_grads(p_i: wp.vec3f, p_j: wp.vec3f):
     # U = -0.5 (p_i·p_j)^2
@@ -208,19 +275,27 @@ def sticky_sphere_grads(
 
     # Polarities - epithelium
     if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
-        grad_x_i, grad_x_j, grad_p_i, grad_p_j = epi_polarity_grads(x_i, x_j, p_i, p_j)
+        grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = epi_polarity_grads(x_i, x_j, p_i, p_j)
+        grad_x_i_t, grad_x_j_t = epi_thickness_grads(x_i, x_j, p_i, p_j)
 
-        # Match magnitudes so movement doesn't blink
+
+
+        # # Match magnitudes so movement doesn't blink
         for k in range(3):
-            v_i = wp.abs(grad_x_i_f[k])
-            v_j = wp.abs(grad_x_j_f[k])
-            grad_x_i[k] = wp.clamp(grad_x_i[k], -1.0 * v_i, 1.0 * v_i)
-            grad_x_j[k] = wp.clamp(grad_x_j[k], -1.0 * v_j, 1.0 * v_j)
+            v_i = wp.max(wp.abs(grad_x_i_f[k]), wp.float32(1e-3))
+            v_j = wp.max(wp.abs(grad_x_j_f[k]), wp.float32(1e-3))
+            
+            grad_x_i_p[k] = wp.clamp(grad_x_i_p[k], -1.0 * v_i, 1.0 * v_i)
+            grad_x_j_p[k] = wp.clamp(grad_x_j_p[k], -1.0 * v_j, 1.0 * v_j)
 
-        wp.atomic_add(gx, i, grad_x_i)
-        wp.atomic_add(gx, j, grad_x_j)
+
+        wp.atomic_add(gx, i, grad_x_i_p)
+        wp.atomic_add(gx, j, grad_x_j_p)
+        wp.atomic_add(gx, i, grad_x_i_t) 
+        wp.atomic_add(gx, j, grad_x_j_t)
         wp.atomic_add(gp, i, grad_p_i)
         wp.atomic_add(gp, j, grad_p_j)
+        
 
     # Polarities - mesenchyme
     if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
@@ -362,12 +437,11 @@ def reaction_diffs(
     dI = wp.float32(w) * (cIj - cIi)
 
     # Symmetric accumulation: +d to i, -d to j
-
-    lapA[i] += dA
-    lapA[j] += -dA
-
-    lapI[i] += dI
-    lapI[j] += -dI
+    wp.atomic_add(lapA, i, dA)
+    wp.atomic_add(lapA, j, -dA)
+    wp.atomic_add(lapI, i, dI)
+    wp.atomic_add(lapI, j, -dI)
+    
 
 
 @wp.kernel
@@ -422,8 +496,8 @@ def reaction_step(
     Ai_next = zAi * inv
     Ii_next = zIi * inv
 
-    A_next[i] = wp.clamp(0., Ai_next, 1e4)
-    I_next[i] = wp.clamp(0., Ii_next, 1e4)
+    A_next[i] = wp.clamp(Ai_next, 0., 1e4)
+    I_next[i] = wp.clamp(Ii_next, 0., 1e4)
 
 
 def chem_step(
