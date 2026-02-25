@@ -10,10 +10,22 @@ import warp as wp
 ############################################################
 ############################################################
 FOUR_THIRDS_PI = 4.1887902047863905
-EPS_DIST = 1e-1
+EPS_DIST = 2e-1
 EPS_DEN = 1e-9
 EPS_NORM = 1e-9
 RAND_EPS = 1e-7
+
+K_REP = 3.0
+
+K_ATT_EE = 1.5 # epi-epi strong cohesion
+K_ATT_MM = 0.15  # mes-mes medium
+K_ATT_EM = 0.15  # epi-mes weak (interface tension)
+
+ATR_EE = 0.14
+ATR_MM = 0.1
+ATR_EM = 0.06
+
+D_SHIFT_EM = 0.08
 
 @wp.func
 def safe_div(num: wp.float32, den: wp.float32) -> wp.float32:
@@ -45,7 +57,7 @@ def gumbel(
 ):
     u = wp.randf(key, 0., 1.)
     u = wp.clamp(u, RAND_EPS, 1.0 - RAND_EPS)
-    return key, -wp.log(-wp.log(u))
+    return wp.randu(key), -wp.log(-wp.log(u))
 
 
 @wp.kernel
@@ -73,39 +85,93 @@ def gen_key_array(size: int, device: str = "cuda") -> wp.array:
 ############################################################
 ############################################################
 ############################################################
-
-
-@wp.func
-def sticky_sphere_energy(x_i: wp.vec3f, x_j: wp.vec3f, r_i: wp.float32, r_j: wp.float32):
     
-    diff = x_i - x_j
-    dist = wp.length(diff)
+
+@wp.func 
+def sticky_sphere_forces(x_i: wp.vec3f, x_j: wp.vec3f, r_i: wp.float32, r_j: wp.float32, ct_i: wp.uint32, ct_j: wp.uint32): 
+    d = x_i - x_j
+    dist = wp.length(d) + EPS_NORM
+    u = d / dist
 
     rs = r_i + r_j
 
-    delta = wp.max(rs - dist, 0.0)  # Repulsive force
-    gamma = wp.min(dist - (rs + EPS_DIST), 0.0)
+    # defaults: mes-mes
+    k_att = K_ATT_MM
+    atr = ATR_MM
+    d_shift = wp.float32(0.0)
 
-    U = 1.0 / 3.0 * delta * delta * delta + 1. / 192. * gamma * gamma *gamma
+    if (ct_i == wp.uint32(1)) and (ct_j == wp.uint32(1)):
+        k_att = K_ATT_EE
+        atr = ATR_EE
+    elif ct_i != ct_j:
+        k_att = K_ATT_EM
+        atr = ATR_EM
+        d_shift = D_SHIFT_EM  # creates interfacial tension
 
-    return U
+    # preferred contact distance
+    d0 = rs + d_shift
+
+    # outside interaction range -> no force
+    if dist > d0 + atr:
+        return wp.vec3f(0.0), wp.vec3f(0.0)
+
+    # repulsion when too close (dist < d0)
+    delta = wp.max(d0 - dist, wp.float32(0.0))
+
+    # attraction only in adhesive band (d0 < dist < d0+atr)
+    gamma = wp.max((d0 + atr) - dist, wp.float32(0.0)) * wp.float32(dist > d0)
+
+    fmag = K_REP * delta - k_att * gamma
+
+    F_ij = fmag * -u
+    return F_ij, -F_ij
 
 
 @wp.func
-def sticky_sphere_epi_polarity(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j: wp.vec3f):
-    unit_disp = wp.normalize(x_i - x_j)
+def epi_polarity_grads(
+    x_i: wp.vec3f,
+    x_j: wp.vec3f,
+    p_i: wp.vec3f,
+    p_j: wp.vec3f,
+):
+    # Aligning polarity to be perpendicular to connections 
     
-    U_i = (wp.dot(p_i, unit_disp) ** 2.0) / 2.0
-    U_j = (wp.dot(p_j, unit_disp) ** 2.0) / 2.0
+    # d, ||d||, u = d/||d||
+    d = x_i - x_j
+    dist = wp.length(d) + EPS_NORM
+    u = d / dist
 
-    return U_i + U_j
+    # a = p_i·u, b = p_j·u
+    a = wp.dot(p_i, u)
+    b = wp.dot(p_j, u)
 
+    # grads wrt polarities
+    grad_p_i = a * u
+    grad_p_j = b * u
+
+    # dU/du = a p_i + b p_j
+    g_u = a * p_i + b * p_j
+
+    # (I - uu^T) g_u = g_u - u (u·g_u)
+    proj = g_u - u * wp.dot(u, g_u)
+
+    # d u / d d = (1/||d||) (I - uu^T)
+    grad_d = proj / dist
+
+    # d = x_i - x_j
+    grad_x_i = grad_d
+    grad_x_j = -grad_d
+
+    return grad_x_i, grad_x_j, grad_p_i, grad_p_j
 
 
 @wp.func
-def sticky_sphere_mes_polarity(p_i: wp.vec3f, p_j: wp.vec3f):    
-    U = -(wp.dot(p_i, p_j) ** 2.0) / 2.0
-    return U
+def mes_polarity_grads(p_i: wp.vec3f, p_j: wp.vec3f):
+    # U = -0.5 (p_i·p_j)^2
+    c = wp.dot(p_i, p_j)
+    grad_p_i = -c * p_j
+    grad_p_j = -c * p_i
+    return grad_p_i, grad_p_j
 
 
 @wp.kernel(enable_backward=False)
@@ -117,59 +183,50 @@ def sticky_sphere_grads(
     gx: wp.array(dtype=wp.vec3f),
     gp: wp.array(dtype=wp.vec3f),
 ):
-
     i, j = wp.tid()
 
-    # Skip self + ensure each unordered pair is counted once.
+    # Skip self + ensure each unordered pair is counted once
     if wp.int32(j) <= wp.int32(i):
         return
 
     x_i, x_j = X[i], X[j]
-    r_i ,r_j = R[i], R[j]
+    r_i, r_j = R[i], R[j]
+    c_i, c_j = CT[i], CT[j]
+    p_i, p_j = P[i], P[j]
 
     # Forces
-    grad_x_i_f, grad_x_j_f, _f, _f = wp.grad(sticky_sphere_energy)(x_i, x_j, r_i ,r_j)
-
-    wp.atomic_add(gx, i, grad_x_i_f) 
+    grad_x_i_f, grad_x_j_f = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
+    wp.atomic_add(gx, i, grad_x_i_f)
     wp.atomic_add(gx, j, grad_x_j_f)
-
 
     # Polarity Neighbors
     dist = wp.norm_l2(x_i - x_j)
     w = adj_weight(dist, r_i, r_j)
 
-   
     if not wp.bool(w):
         return
-    
+
     # Polarities - epithelium
-    if (CT[i] == wp.uint32(1)) and (CT[j] == wp.uint32(1)):
-    
-        grad_x_i, grad_x_j, grad_p_i, grad_p_j, = wp.grad(sticky_sphere_epi_polarity)(x_i, x_j, P[i], P[j])
-    
+    if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
+        grad_x_i, grad_x_j, grad_p_i, grad_p_j = epi_polarity_grads(x_i, x_j, p_i, p_j)
+
         # Match magnitudes so movement doesn't blink
         for k in range(3):
             v_i = wp.abs(grad_x_i_f[k])
             v_j = wp.abs(grad_x_j_f[k])
-            
             grad_x_i[k] = wp.clamp(grad_x_i[k], -1.0 * v_i, 1.0 * v_i)
             grad_x_j[k] = wp.clamp(grad_x_j[k], -1.0 * v_j, 1.0 * v_j)
-        
-        wp.atomic_add(gx, i, grad_x_i) 
+
+        wp.atomic_add(gx, i, grad_x_i)
         wp.atomic_add(gx, j, grad_x_j)
-        wp.atomic_add(gp, i, grad_p_i) 
+        wp.atomic_add(gp, i, grad_p_i)
         wp.atomic_add(gp, j, grad_p_j)
 
     # Polarities - mesenchyme
-    if (CT[i] == wp.uint32(0)) and (CT[j] == wp.uint32(0)):
-
-        grad_p_i, grad_p_j, = wp.grad(sticky_sphere_mes_polarity)(P[i], P[j])
-        
-        wp.atomic_add(gp, i, grad_p_i) 
+    if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
+        grad_p_i, grad_p_j = mes_polarity_grads(p_i, p_j)
+        wp.atomic_add(gp, i, grad_p_i)
         wp.atomic_add(gp, j, grad_p_j)
-
-
-
 
 
 @wp.kernel
@@ -274,6 +331,7 @@ def reaction_diffs(
     R: wp.array(dtype=wp.float32),      # (N,)
     A: wp.array(dtype=wp.float32),         # (N,)
     I: wp.array(dtype=wp.float32),         # (N,)
+    CT: wp.array(dtype=wp.uint32),
     lapA: wp.array(dtype=wp.float32),       # (N,) out (accum)
     lapI: wp.array(dtype=wp.float32),       # (N,) out (accum)
 ):
@@ -281,6 +339,9 @@ def reaction_diffs(
     i,j = wp.tid()
 
     if wp.int32(j) <= wp.int32(i):
+        return
+
+    if (CT[i] == wp.uint32(1)) or (CT[j] == wp.uint32(1)):
         return
 
     Ri, Rj = R[i], R[j]
@@ -316,6 +377,7 @@ def reaction_step(
     R: wp.array(dtype=wp.float32),
     lapA: wp.array(dtype=wp.float32),   # (N,)
     lapI: wp.array(dtype=wp.float32),   # (N,)
+    CT: wp.array(dtype=wp.uint32),
     S: wp.array(dtype=wp.float32),
     T: wp.array(dtype=wp.float32),
     phi: wp.float32,
@@ -325,6 +387,10 @@ def reaction_step(
 ):
 
     i = wp.tid()
+    
+    if (CT[i] == wp.uint32(1)):
+        return
+    
     V = volume_from_radius(R[i])
     
     # Reaction terms (on concentrations)
@@ -356,8 +422,8 @@ def reaction_step(
     Ai_next = zAi * inv
     Ii_next = zIi * inv
 
-    A_next[i] = Ai_next
-    I_next[i] = Ii_next
+    A_next[i] = wp.clamp(0., Ai_next, 1e4)
+    I_next[i] = wp.clamp(0., Ii_next, 1e4)
 
 
 def chem_step(
@@ -367,6 +433,7 @@ def chem_step(
     R: wp.array,
     lapA: wp.array,
     lapI: wp.array,
+    CT: wp.array,
     S: wp.array,
     T: wp.array,
     phi: float,
@@ -382,7 +449,7 @@ def chem_step(
     wp.launch(
         reaction_diffs,
         dim=(particle_count, particle_count),
-        inputs=[X, R, A, I],
+        inputs=[X, R, A, I, CT],
         outputs=[lapA, lapI],
         device=device,
     )
@@ -396,7 +463,7 @@ def chem_step(
         reaction_step,
         dim=particle_count,
         inputs=[
-            A, I, R, lapA, lapI, S, T,
+            A, I, R, lapA, lapI, CT, S, T,
             phi, dt
         ],
         outputs=[
@@ -465,15 +532,6 @@ def count_neighbors(
         wp.atomic_add(n_mes, j, 1)
 
 
-@wp.kernel
-def classify_surface(
-    n_tot: wp.array(dtype=wp.int32),
-    surface: wp.array(dtype=wp.uint32),
-    thresh: wp.int32,
-):
-    i = wp.tid()
-    surface[i] = wp.uint32(n_tot[i] <= thresh)
-
 def growth_step(
     R: wp.array(dtype=wp.float32),
     R_eq: wp.array(dtype=wp.float32),
@@ -533,6 +591,7 @@ def growth_step_inner(
         
         key = keys[i]
         lam = wp.randf(key, 0.8, 1.0)
+        key = wp.randu(key)
         frac = safe_div(num, (SC[0]**AP[0]) + num)
     
         R_eq_next[i] = r_eq_i + frac * lam * dt
@@ -585,7 +644,6 @@ def division_losses(
 
     n_epi: wp.array(dtype=wp.int32),
     n_mes: wp.array(dtype=wp.int32),
-    surface: wp.array(dtype=wp.uint32),
 
     div_count: wp.array(dtype=wp.int32),
     div_slots: wp.array(dtype=wp.int32),
@@ -593,7 +651,6 @@ def division_losses(
     R_div_ref: wp.float32,
     p_epi: wp.float32,
     epi_max_neighbors: wp.int32,
-    suppress_mes_surface: wp.int32,
 
     t: wp.float32,
     tmax: wp.float32,
@@ -607,11 +664,7 @@ def division_losses(
     p = wp.float32(0.0)
 
     if CT[parent] == wp.uint32(1):
-        # Epithelial: only at interface/surface + touching mesenchyme + not overcrowded by epi
-        if surface[parent] == wp.uint32(0):
-            keys[parent] = key
-            return
-        
+
         if n_mes[parent] <= wp.int32(0):
             keys[parent] = key
             return
@@ -623,10 +676,7 @@ def division_losses(
         p = p_epi
 
     else:
-        # Mesenchyme: suppress division on surface if requested
-        if suppress_mes_surface != wp.int32(0) and surface[parent] == wp.uint32(1):
-            keys[parent] = key
-            return
+
 
         p = probs(R[parent], R_div_ref)
 
@@ -673,9 +723,16 @@ def division_logic(
     I[parent] = 0.5 * i_p
     I[child] = 0.5 * i_p
 
+    # Randomly generate new cell
+    ct = CT[parent]
+    CT[child] = ct
+
     # Half volume, cuberoot 2 r
     r = R[parent]
-    r = r / wp.cbrt(2.0)
+    
+    # Epithelium extends, mesenchyme splits in half volume
+    if ct == wp.uint32(0):
+        r = r / wp.cbrt(2.0)
     
     R[child] = r
     R_eq[child] = r
@@ -686,8 +743,7 @@ def division_logic(
     v = P[parent]
     P[child] = v
 
-    # Randomly generate new cell
-    CT[child] = CT[parent]
+    
 
     # # Polarized division - divide on perpendicular surface
     a = wp.vec3f(1.0, 0.0, 0.0)
@@ -696,7 +752,7 @@ def division_logic(
 
     u = wp.normalize(wp.cross(v, a))
     x = X[parent]
-    sep = 0.8 * r
+    sep = 1.02 * r
     X[parent] = x + u * sep
     X[child] = x - u * sep
 
