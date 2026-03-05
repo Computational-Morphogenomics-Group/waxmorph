@@ -1,7 +1,7 @@
 """Spike-aware learning rate scheduler.
 
 Motivated by the "edge of stability" regime described in *Understanding
-Optimization in Deep Learning with Central Flows* (Rosca et al., 2024).
+Optimization in Deep Learning with Central Flows* (Cohen et al., 2025).
 Training at the edge of stability produces loss spikes; productive spikes
 are followed by new minima.  When spikes stop being productive the learning
 rate is too high and should be reduced.

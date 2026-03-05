@@ -241,4 +241,13 @@ class GNS(nn.Module):
                 node_latent, edge_latent = block(node_latent, edge_latent, edge_index)
 
         # Decode
-        return {name: dec(node_latent) for name, dec in self.decoders.items()}
+        ret_val = None
+        if self.checkpoint_processor:
+            ret_val = {
+                name: torch_checkpoint(dec, node_latent, use_reentrant=False)
+                for name, dec in self.decoders.items()
+            }
+
+        else:
+            ret_val = {name: dec(node_latent) for name, dec in self.decoders.items()}
+        return ret_val
