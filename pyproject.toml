@@ -57,10 +57,14 @@ optional-dependencies.learning = [
 # Hatch
 # ---------------------------------------------------------------------------
 optional-dependencies.simulation = [
+  "hsluv>=5",
   "imageio>=2.34",
   "matplotlib>=3.8",
+  "pyglet>=2",
   "pyvista>=0.44",
+  "scipy>=1.11",
   "tqdm>=4.66",
+  "trimesh>=4",
   "vtk>=9.3",
   "warp-lang>=1.5",
 ]
@@ -76,8 +80,9 @@ installer = "uv"
 
 [tool.hatch.envs.test]
 dependencies = [
-  "pytest",
-  "pytest-cov",
+  "waxmorph[learning,simulation]",
+  "pytest>=8.3",
+  "pytest-cov>=6",
 ]
 
 [tool.hatch.envs.test.scripts]
