@@ -14,7 +14,7 @@ wp.init()
 
 MAX_PARTICLES = 20
 
-DEVICE = None
+DEVICE = "cpu"
 
 try:
     if wp.is_device_available("cuda"):

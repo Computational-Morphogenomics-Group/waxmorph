@@ -7,7 +7,7 @@ from waxmorph import simulator
 
 wp.init()
 
-DEVICE = None
+DEVICE = "cpu"
 
 try:
     if wp.is_device_available("cuda"):

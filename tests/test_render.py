@@ -14,6 +14,14 @@ wp.init()
 
 from waxmorph import render
 
+DEVICE = "cpu"
+
+try:
+    if wp.is_device_available("cuda"):
+        DEVICE = "cuda"
+except RuntimeError:
+    DEVICE = "cpu"
+
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -224,7 +232,7 @@ class TestPackBuffers:
         """Verify _pack_buffers_kernel copies positions/radii and produces valid RGB."""
         n = 5
         max_p = 8
-        device = "cuda"
+        device = DEVICE
 
         centers = wp.from_numpy(
             np.random.randn(max_p, 3).astype(np.float32), dtype=wp.vec3f, device=device
@@ -277,7 +285,7 @@ class TestPackBuffers:
     def test_pack_buffers_morph_modes(self):
         """Test morph_mode 0 (A), 1 (I), 2 (ratio) produce different colors."""
         n = 3
-        device = "cuda"
+        device = DEVICE
 
         centers = wp.from_numpy(np.zeros((n, 3), dtype=np.float32), dtype=wp.vec3f, device=device)
         radii = wp.from_numpy(np.full(n, 0.5, dtype=np.float32), dtype=wp.float32, device=device)
@@ -339,7 +347,7 @@ class TestWriteFrameFromNumpy:
             width=320,
             height=240,
             fps=10,
-            device="cuda",
+            device=DEVICE,
             camera_pos=(0.0, 0.0, 10.0),
         ) as mov:
             for t in range(3):

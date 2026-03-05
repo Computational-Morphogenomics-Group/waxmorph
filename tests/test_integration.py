@@ -8,7 +8,7 @@ from waxmorph.graph import build_graph
 
 wp.init()
 
-DEVICE = None
+DEVICE = "cpu"
 
 try:
     if wp.is_device_available("cuda"):
