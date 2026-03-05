@@ -7,8 +7,13 @@ from waxmorph import simulator
 
 wp.init()
 
-DEVICE = "cuda" if wp.is_device_available("cuda") else "cpu"
+DEVICE = None
 
+try:
+    if wp.is_device_available("cuda"):
+        DEVICE = "cuda"
+except RuntimeError:
+    DEVICE = "cpu"
 
 # ---------------------------------------------------------------------------
 # Helpers

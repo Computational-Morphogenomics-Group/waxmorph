@@ -13,7 +13,14 @@ from waxmorph.graph import (
 wp.init()
 
 MAX_PARTICLES = 20
-DEVICE = "cuda" if wp.is_device_available("cuda") else "cpu"
+
+DEVICE = None
+
+try:
+    if wp.is_device_available("cuda"):
+        DEVICE = "cuda"
+except RuntimeError:
+    DEVICE = "cpu"
 
 
 def _make_state(positions, radii, polarities=None, cell_types=None, num_genes=0):

@@ -8,7 +8,13 @@ from waxmorph.graph import build_graph
 
 wp.init()
 
-DEVICE = "cuda" if wp.is_device_available("cuda") else "cpu"
+DEVICE = None
+
+try:
+    if wp.is_device_available("cuda"):
+        DEVICE = "cuda"
+except RuntimeError:
+    DEVICE = "cpu"
 
 
 def _fibonacci_sphere(n):
