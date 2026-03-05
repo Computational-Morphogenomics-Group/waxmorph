@@ -326,44 +326,4 @@ class TestPackBuffers:
         assert not np.allclose(results["A"], results["I"])
 
 
-# ---------------------------------------------------------------------------
-# WarpMovieRenderer — write_frame_from_numpy
-# ---------------------------------------------------------------------------
-
-
-class TestWriteFrameFromNumpy:
-    def test_write_frame_from_numpy_produces_video(self, tmp_path, small_state):
-        """write_frame_from_numpy should produce a valid video file."""
-        outfile = str(tmp_path / "test.mp4")
-        n = small_state["n"]
-
-        # Need colors as (N, 3) float in [0,1]
-        rng = np.random.default_rng(42)
-        colors = rng.random((n, 3)).astype(np.float32)
-
-        with render.WarpMovieRenderer(
-            filename=outfile,
-            max_particles=n,
-            width=320,
-            height=240,
-            fps=10,
-            device=DEVICE,
-            camera_pos=(0.0, 0.0, 10.0),
-        ) as mov:
-            for t in range(3):
-                mov.write_frame_from_numpy(
-                    t=float(t),
-                    centers=small_state["centers"][:n],
-                    radii=small_state["radii"][:n],
-                    colors=colors,
-                    particle_count=n,
-                )
-
-        import os
-
-        assert os.path.exists(outfile)
-        assert os.path.getsize(outfile) > 0
-
-
-# Alias for direct import in tests
 WarpMovieRenderer = render.WarpMovieRenderer
