@@ -120,6 +120,7 @@ class SpikeAwareScheduler:
             elif spike:
                 # Another spike without recovery — reduce LR
                 self._reduce_lr()
+                print(f"LR reduced to {self.get_lr()}")
                 # Stay in RECOVERING; need a new min to exit
 
         # Floor patience: warn if stuck at floor with no improvement
