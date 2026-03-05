@@ -187,9 +187,7 @@ class TestBuildEdgeFeaturesNoCT:
         X, _P, R, _CT, _, n = _make_state(positions, radii)
 
         edge_index = build_edge_index(X, R, particle_count=n)
-        edge_feats = build_edge_features(
-            X, R, CT=None, edge_index=edge_index, particle_count=n
-        )
+        edge_feats = build_edge_features(X, R, CT=None, edge_index=edge_index, particle_count=n)
 
         assert edge_feats.shape[0] == edge_index.shape[1]
         assert edge_feats.shape[1] == 6  # no ct_same
@@ -220,9 +218,7 @@ class TestBuildGraph:
         radii = [0.5, 0.5, 0.5]
         X, P, R, CT, G, n = _make_state(positions, radii, num_genes=2)
 
-        node_feats, edge_index, edge_feats = build_graph(
-            X, P, R, CT, particle_count=n, G=G
-        )
+        node_feats, edge_index, edge_feats = build_graph(X, P, R, CT, particle_count=n, G=G)
 
         assert node_feats.shape == (3, 11)  # 9 + 2 genes
         assert edge_index.shape[0] == 2
@@ -235,9 +231,7 @@ class TestBuildGraph:
         radii = [0.5, 0.5, 0.5]
         X, P, R, _CT, G, n = _make_state(positions, radii, num_genes=2)
 
-        node_feats, _edge_index, edge_feats = build_graph(
-            X, P, R, particle_count=n, G=G
-        )
+        node_feats, _edge_index, edge_feats = build_graph(X, P, R, particle_count=n, G=G)
 
         assert node_feats.shape == (3, 9)  # 7 + 2 genes
         assert edge_feats.shape[1] == 6  # no ct_same

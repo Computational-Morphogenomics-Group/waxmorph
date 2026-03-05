@@ -9,9 +9,7 @@ class TestPackage:
 
     def test_all_exports_importable(self):
         for name in waxmorph.__all__:
-            assert hasattr(
-                waxmorph, name
-            ), f"{name} listed in __all__ but not importable"
+            assert hasattr(waxmorph, name), f"{name} listed in __all__ but not importable"
 
     def test_key_classes_exported(self):
         assert hasattr(waxmorph, "GNS")

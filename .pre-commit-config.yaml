@@ -7,9 +7,12 @@ repos:
       - id: detect-private-key
       - id: check-ast
       - id: end-of-file-fixer
+        exclude: \.(ipynb|ply)$
       - id: mixed-line-ending
         args: [--fix=lf]
+        exclude: \.(ipynb|ply)$
       - id: trailing-whitespace
+        exclude: \.(ipynb|ply)$
       - id: check-case-conflict
       - id: check-merge-conflict
       - id: check-added-large-files
@@ -20,7 +23,14 @@ repos:
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
-      - id: ruff-format
+        files: ^(waxmorph|tests)/.*\.py$
+
+  - repo: https://github.com/psf/black
+    rev: 26.1.0
+    hooks:
+      - id: black
+        args: [--check]
+        files: ^(waxmorph|tests)/.*\.py$
 
   - repo: https://github.com/tox-dev/pyproject-fmt
     rev: v2.5.1

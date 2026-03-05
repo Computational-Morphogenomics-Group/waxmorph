@@ -21,6 +21,13 @@ templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
 nitpicky = True
 suppress_warnings = ["myst.header"]
+nitpick_ignore_regex = [
+    (r"py:class", r"[Oo]ptional"),
+    (r"py:class", r"dtype=wp\..*"),
+    (r"py:class", r"same shape as G"),
+    (r"py:class", r"warp\._src\.types\.array"),
+    (r"py:class", r"wp\..*"),
+]
 
 # -- MyST / notebooks --------------------------------------------------------
 

@@ -16,14 +16,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install lint tools
+        run: pip install ruff black
 
       - name: Lint
         run: ruff check waxmorph tests
 
-      - name: Format check
-        run: ruff format --check waxmorph tests
+      - name: Black style check
+        run: black --check waxmorph tests
 
   test:
     runs-on: ubuntu-latest

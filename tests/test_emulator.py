@@ -216,9 +216,7 @@ class TestApplyPolicyDeltas:
         pol[:, 2] = 1.0
         P = wp.from_numpy(pol, dtype=wp.vec3f, device=DEVICE)
 
-        delta_pol = (
-            np.random.default_rng(0).standard_normal((n, 3)).astype(np.float32) * 0.5
-        )
+        delta_pol = np.random.default_rng(0).standard_normal((n, 3)).astype(np.float32) * 0.5
         dP = wp.from_numpy(delta_pol, dtype=wp.float32, device=DEVICE)
 
         apply_policy_deltas(G, P, dG, dP, particle_count=n, dt=0.1)

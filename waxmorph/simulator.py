@@ -296,9 +296,7 @@ def sticky_sphere_grads(
 
     # Polarities - epithelium
     if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
-        grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = epi_polarity_grads(
-            x_i, x_j, p_i, p_j
-        )
+        grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = epi_polarity_grads(x_i, x_j, p_i, p_j)
         grad_x_i_t, grad_x_j_t = epi_thickness_grads(x_i, x_j, p_i, p_j)
 
         # # Match magnitudes so movement doesn't blink

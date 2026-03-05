@@ -136,7 +136,9 @@ class TestMakeSamplesLoss:
         loss_fn = make_samples_loss({"blur": 0.1}, blur=0.2)
         assert loss_fn.blur == pytest.approx(0.2)
 
-    @pytest.mark.parametrize("loss_name", ["sinkhorn", "hausdorff", "energy", "gaussian", "laplacian"])
+    @pytest.mark.parametrize(
+        "loss_name", ["sinkhorn", "hausdorff", "energy", "gaussian", "laplacian"]
+    )
     def test_all_loss_types_forward(self, loss_name):
         loss_fn = make_samples_loss(loss=loss_name)
         a = torch.randn(50, 3)
@@ -155,7 +157,19 @@ class TestMakeSamplesLoss:
 
     def test_defaults_dict_complete(self):
         expected_keys = {
-            "loss", "p", "blur", "reach", "diameter", "scaling", "truncate",
-            "cost", "kernel", "cluster_scale", "debias", "potentials", "verbose", "backend",
+            "loss",
+            "p",
+            "blur",
+            "reach",
+            "diameter",
+            "scaling",
+            "truncate",
+            "cost",
+            "kernel",
+            "cluster_scale",
+            "debias",
+            "potentials",
+            "verbose",
+            "backend",
         }
         assert set(SAMPLES_LOSS_DEFAULTS.keys()) == expected_keys

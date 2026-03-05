@@ -18,9 +18,7 @@ def particle_state():
     rng = np.random.default_rng(42)
 
     positions = np.zeros((max_particles, 3), dtype=np.float32)
-    positions[:particle_count] = rng.standard_normal((particle_count, 3)).astype(
-        np.float32
-    )
+    positions[:particle_count] = rng.standard_normal((particle_count, 3)).astype(np.float32)
 
     radii = np.zeros(max_particles, dtype=np.float32)
     radii[:particle_count] = 0.5
@@ -30,9 +28,7 @@ def particle_state():
     polarities[:particle_count] = positions[:particle_count] / norms
 
     cell_types = np.zeros(max_particles, dtype=np.uint32)
-    cell_types[:particle_count] = rng.integers(0, 2, size=particle_count).astype(
-        np.uint32
-    )
+    cell_types[:particle_count] = rng.integers(0, 2, size=particle_count).astype(np.uint32)
 
     genes = np.zeros((max_particles, num_genes), dtype=np.float32)
     genes[:particle_count] = rng.random((particle_count, num_genes)).astype(np.float32)

@@ -80,9 +80,7 @@ def build_edge_index(
         # Make bidirectional
         senders = np.concatenate([ii, jj])
         receivers = np.concatenate([jj, ii])
-        edge_index = torch.from_numpy(
-            np.stack([senders, receivers], axis=0).astype(np.int64)
-        )
+        edge_index = torch.from_numpy(np.stack([senders, receivers], axis=0).astype(np.int64))
 
     # Infer target device from the Warp input array when not specified.
     target = device if device is not None else str(X.device)

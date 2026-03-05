@@ -279,12 +279,8 @@ class TestPackBuffers:
         n = 3
         device = "cuda"
 
-        centers = wp.from_numpy(
-            np.zeros((n, 3), dtype=np.float32), dtype=wp.vec3f, device=device
-        )
-        radii = wp.from_numpy(
-            np.full(n, 0.5, dtype=np.float32), dtype=wp.float32, device=device
-        )
+        centers = wp.from_numpy(np.zeros((n, 3), dtype=np.float32), dtype=wp.vec3f, device=device)
+        radii = wp.from_numpy(np.full(n, 0.5, dtype=np.float32), dtype=wp.float32, device=device)
         A = wp.from_numpy(
             np.array([0.8, 0.2, 0.5], dtype=np.float32), dtype=wp.float32, device=device
         )

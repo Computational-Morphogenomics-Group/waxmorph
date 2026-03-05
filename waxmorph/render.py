@@ -162,9 +162,7 @@ class PyVistaInterface(RenderInterface):
     """
 
     @staticmethod
-    def _husl_palette(
-        n_colors: int, *, s: float = 90.0, lightness: float = 65.0
-    ) -> np.ndarray:
+    def _husl_palette(n_colors: int, *, s: float = 90.0, lightness: float = 65.0) -> np.ndarray:
         """
         Returns (n_colors, 3) float RGB in [0,1].
         Prefers HSLuv/HUSL if installed; otherwise falls back to HSV palette.
@@ -177,10 +175,7 @@ class PyVistaInterface(RenderInterface):
             import hsluv  # type: ignore
 
             rgb = np.array(
-                [
-                    hsluv.hsluv_to_rgb((float(h), float(s), float(lightness)))
-                    for h in hues
-                ],
+                [hsluv.hsluv_to_rgb((float(h), float(s), float(lightness))) for h in hues],
                 dtype=float,
             )
             rgb = np.clip(rgb, 0.0, 1.0)
@@ -188,9 +183,7 @@ class PyVistaInterface(RenderInterface):
         except Exception:
             # Fallback: HSV evenly spaced hues, fixed saturation/value
             h01 = (hues / 360.0).astype(float)
-            hsv = np.stack(
-                [h01, np.full_like(h01, 0.85), np.full_like(h01, 0.95)], axis=-1
-            )
+            hsv = np.stack([h01, np.full_like(h01, 0.85), np.full_like(h01, 0.95)], axis=-1)
             return colors.hsv_to_rgb(hsv)
 
     # ---------- internal helpers ----------
@@ -214,9 +207,7 @@ class PyVistaInterface(RenderInterface):
         m = np.asarray(morphogens).astype(float)
         m = np.clip(m, 0.0, 1.0)
         rgb_float = colors.hsv_to_rgb(
-            np.stack(
-                [np.full(shape=m.shape, fill_value=0.5), m, np.ones_like(m)], axis=-1
-            )
+            np.stack([np.full(shape=m.shape, fill_value=0.5), m, np.ones_like(m)], axis=-1)
         )  # (N,3) in [0,1]
         return (rgb_float * 255).astype(np.uint8)
 
@@ -264,9 +255,7 @@ class PyVistaInterface(RenderInterface):
 
         # Optional: store the category itself (handy for picking/inspection)
         if cell_types is not None:
-            pd["cell_type"] = (
-                np.asarray(cell_types).reshape(-1)[:n].astype(np.int32, copy=False)
-            )
+            pd["cell_type"] = np.asarray(cell_types).reshape(-1)[:n].astype(np.int32, copy=False)
 
         if polarities is not None:
             p = np.asarray(polarities, dtype=float)
@@ -304,9 +293,7 @@ class PyVistaInterface(RenderInterface):
         so its midpoint is at the origin. Glyphing then centers each arrow at the point.
         """
         if vector_name not in points_pd.array_names:
-            raise ValueError(
-                f"points_pd missing '{vector_name}' array for polarity vectors."
-            )
+            raise ValueError(f"points_pd missing '{vector_name}' array for polarity vectors.")
 
         # Arrow points along +X by default (direction=(1,0,0)), from start to start+direction.
         arrow = pv.Arrow(
@@ -446,9 +433,7 @@ class PyVistaInterface(RenderInterface):
 
 
 class _BaseBackend:
-    def render_points_frame(
-        self, *, t: float, points, radius, colors, name: str
-    ) -> None:
+    def render_points_frame(self, *, t: float, points, radius, colors, name: str) -> None:
         raise NotImplementedError
 
     def close(self) -> None:
@@ -507,9 +492,7 @@ class _OpenGLVideoBackend(_BaseBackend):
         )
 
         # GPU pixel buffer for get_pixels()
-        self._pixels_u8 = wp.empty(
-            (self.height, self.width, 3), dtype=wp.uint8, device=self.device
-        )
+        self._pixels_u8 = wp.empty((self.height, self.width, 3), dtype=wp.uint8, device=self.device)
 
         # Video writer
         os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
@@ -685,15 +668,9 @@ class WarpMovieRenderer:
         self.prim_name = prim_name
 
         # --- common GPU packed buffers ---
-        self._points_f32 = wp.empty(
-            self.max_particles, dtype=wp.vec3, device=self.device
-        )
-        self._radii_f32 = wp.empty(
-            self.max_particles, dtype=wp.float32, device=self.device
-        )
-        self._colors_f32 = wp.empty(
-            self.max_particles, dtype=wp.vec3, device=self.device
-        )
+        self._points_f32 = wp.empty(self.max_particles, dtype=wp.vec3, device=self.device)
+        self._radii_f32 = wp.empty(self.max_particles, dtype=wp.float32, device=self.device)
+        self._colors_f32 = wp.empty(self.max_particles, dtype=wp.vec3, device=self.device)
 
         # --- choose backend ---
         if backend == "opengl":
@@ -851,9 +828,7 @@ class WarpMovieRenderer:
         )
         return n
 
-    def _render(
-        self, t: float, n_active: int, mesh_points=None, mesh_indices=None
-    ) -> None:
+    def _render(self, t: float, n_active: int, mesh_points=None, mesh_indices=None) -> None:
         # render_points currently wants CPU-indexable arrays, so we copy here
         pts = self._points_f32.numpy()[:n_active]
         rad = self._radii_f32.numpy()[:n_active]
@@ -920,19 +895,11 @@ class WarpMovieRenderer:
         r_pad[:n] = r
         col_pad[:n] = col
 
-        wp.copy(
-            self._points_f32, wp.from_numpy(c_pad, dtype=wp.vec3, device=self.device)
-        )
-        wp.copy(
-            self._radii_f32, wp.from_numpy(r_pad, dtype=wp.float32, device=self.device)
-        )
-        wp.copy(
-            self._colors_f32, wp.from_numpy(col_pad, dtype=wp.vec3, device=self.device)
-        )
+        wp.copy(self._points_f32, wp.from_numpy(c_pad, dtype=wp.vec3, device=self.device))
+        wp.copy(self._radii_f32, wp.from_numpy(r_pad, dtype=wp.float32, device=self.device))
+        wp.copy(self._colors_f32, wp.from_numpy(col_pad, dtype=wp.vec3, device=self.device))
 
-        self._render(
-            t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices
-        )
+        self._render(t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices)
 
     def write_frame_from_state(
         self,
@@ -960,9 +927,7 @@ class WarpMovieRenderer:
             hue=hue,
         )
 
-        self._render(
-            t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices
-        )
+        self._render(t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices)
 
     def close(self) -> None:
         self._backend.close()

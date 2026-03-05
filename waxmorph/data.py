@@ -25,9 +25,7 @@ def load_mesh(path: str | Path) -> trimesh.Trimesh:
     return mesh
 
 
-def normalize_mesh(
-    mesh: trimesh.Trimesh, target_extent: float = 10.0
-) -> trimesh.Trimesh:
+def normalize_mesh(mesh: trimesh.Trimesh, target_extent: float = 10.0) -> trimesh.Trimesh:
     """Center mesh at origin and scale so the largest bbox dimension equals *target_extent*.
 
     Parameters

@@ -191,9 +191,7 @@ class TestGNS:
         assert node_feat.grad.shape == (20, 11)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA required for memory test"
-)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for memory test")
 class TestTBPTTMemoryScaling:
     """Verify truncated BPTT bounds memory by K, not T."""
 

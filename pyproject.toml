@@ -1,84 +1,83 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+requires = [ "hatch-vcs", "hatchling" ]
 
 [project]
 name = "waxmorph"
 version = "0.1.0"
 description = "Differentiable morphogenesis and shape-assembly on NVIDIA Warp."
 readme = "README.md"
-requires-python = ">=3.10"
+keywords = [ "biology", "gnn", "morphogenesis", "shape-assembly", "simulation", "warp" ]
 license = "MIT"
 authors = [
-    { name = "WaxMorph Contributors" },
+  { name = "WaxMorph Contributors" },
 ]
-keywords = ["morphogenesis", "simulation", "warp", "gnn", "biology", "shape-assembly"]
+requires-python = ">=3.10"
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering",
-    "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
-    "numpy>=1.24",
+  "numpy>=1.24",
 ]
 
-[project.optional-dependencies]
-simulation = [
-    "warp-lang>=1.5.0",
-    "matplotlib>=3.8",
-    "pyvista>=0.44",
-    "vtk>=9.3",
-    "imageio>=2.34",
-    "tqdm>=4.66",
+optional-dependencies.all = [
+  "waxmorph[simulation,learning,docs,dev]",
 ]
-learning = [
-    "torch>=2.0",
-    "geomloss>=0.2.6",
-    "pykeops>=2.1",
+optional-dependencies.dev = [
+  "black>=26",
+  "pre-commit>=4",
+  "pytest>=8.3",
+  "pytest-cov>=6",
+  "ruff>=0.9",
+  "twine>=6",
 ]
-docs = [
-    "sphinx>=8.1",
-    "sphinx-book-theme>=1.1",
-    "myst-nb>=1.1",
-    "sphinx-autodoc-typehints>=2.3",
-    "sphinxcontrib-bibtex>=2.6",
+optional-dependencies.docs = [
+  "myst-nb>=1.1",
+  "sphinx>=8.1",
+  "sphinx-autodoc-typehints>=2.3",
+  "sphinx-book-theme>=1.1",
+  "sphinxcontrib-bibtex>=2.6",
 ]
-dev = [
-    "ruff>=0.9.0",
-    "pytest>=8.3",
-    "pytest-cov>=6.0",
-    "pre-commit>=4.0",
-    "twine>=6.0",
+optional-dependencies.learning = [
+  "geomloss>=0.2.6",
+  "pykeops>=2.1",
+  "torch>=2",
 ]
-all = [
-    "waxmorph[simulation,learning,docs,dev]",
-]
-
-[project.urls]
-Documentation = "https://waxmorph.readthedocs.io"
-Source = "https://github.com/waxmorph/waxmorph"
-Issues = "https://github.com/waxmorph/waxmorph/issues"
-
 # ---------------------------------------------------------------------------
 # Hatch
 # ---------------------------------------------------------------------------
+optional-dependencies.simulation = [
+  "imageio>=2.34",
+  "matplotlib>=3.8",
+  "pyvista>=0.44",
+  "tqdm>=4.66",
+  "vtk>=9.3",
+  "warp-lang>=1.5",
+]
+urls.Documentation = "https://waxmorph.readthedocs.io"
+urls.Issues = "https://github.com/waxmorph/waxmorph/issues"
+urls.Source = "https://github.com/waxmorph/waxmorph"
 
 [tool.hatch.build.targets.wheel]
-packages = ["waxmorph"]
+packages = [ "waxmorph" ]
 
 [tool.hatch.envs.default]
 installer = "uv"
 
 [tool.hatch.envs.test]
 dependencies = [
-    "pytest",
-    "pytest-cov",
+  "pytest",
+  "pytest-cov",
 ]
 
 [tool.hatch.envs.test.scripts]
@@ -87,7 +86,7 @@ cov = "pytest --cov=waxmorph --cov-report=term-missing {args:tests}"
 
 [tool.hatch.envs.docs]
 dependencies = [
-    "waxmorph[docs]",
+  "waxmorph[docs]",
 ]
 
 [tool.hatch.envs.docs.scripts]
@@ -97,38 +96,51 @@ build = "sphinx-build -M html docs docs/_build"
 # Ruff
 # ---------------------------------------------------------------------------
 
-[tool.ruff]
+[tool.black]
 line-length = 100
-target-version = "py310"
-extend-exclude = [
-    "OLD",
-    "Output",
-    "Meshes",
-    "MeshStarts",
-    "docs/_build",
-]
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
-ignore = ["E501"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["waxmorph"]
-
-[tool.ruff.lint.per-file-ignores]
-"waxmorph/simulator.py" = ["E741"]
-"waxmorph/emulator.py" = ["E741"]
-"tests/*" = ["SIM"]
+target-version = [ "py310" ]
+extend-exclude = '''
+/(
+    OLD
+  | Output
+  | Meshes
+  | MeshStarts
+  | docs/_build
+)/
+'''
 
 # ---------------------------------------------------------------------------
 # Pytest
 # ---------------------------------------------------------------------------
 
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+  "docs/_build",
+  "Meshes",
+  "MeshStarts",
+  "OLD",
+  "Output",
+]
+
+# ---------------------------------------------------------------------------
+# Black
+# ---------------------------------------------------------------------------
+lint.select = [ "B", "E", "F", "I", "RUF", "SIM", "UP", "W" ]
+lint.ignore = [ "E501" ]
+lint.per-file-ignores."tests/*" = [ "SIM" ]
+lint.per-file-ignores."tests/test_render.py" = [ "E402", "F841" ]
+lint.per-file-ignores."waxmorph/__init__.py" = [ "RUF022" ]
+lint.per-file-ignores."waxmorph/emulator.py" = [ "E741" ]
+lint.per-file-ignores."waxmorph/simulator.py" = [ "E741", "RUF059" ]
+lint.isort.known-first-party = [ "waxmorph" ]
+
 [tool.pytest.ini_options]
 addopts = "-q --cov=waxmorph --cov-report=term-missing --cov-report=xml"
-testpaths = ["tests"]
+testpaths = [ "tests" ]
 filterwarnings = [
-    "ignore::DeprecationWarning",
+  "ignore::DeprecationWarning",
 ]
 
 # ---------------------------------------------------------------------------
@@ -137,13 +149,13 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
-source = ["waxmorph"]
+source = [ "waxmorph" ]
 
 [tool.coverage.report]
 skip_covered = true
 show_missing = true
 exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "if __name__ == .__main__.",
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.",
 ]

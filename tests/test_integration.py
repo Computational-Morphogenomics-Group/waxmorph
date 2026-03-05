@@ -45,9 +45,7 @@ def test_warp_to_gns_roundtrip():
     cell_types[:particle_count] = 1  # all epithelium
 
     genes = np.zeros((max_particles, num_genes), dtype=np.float32)
-    genes[:particle_count] = np.random.rand(particle_count, num_genes).astype(
-        np.float32
-    )
+    genes[:particle_count] = np.random.rand(particle_count, num_genes).astype(np.float32)
 
     X = wp.from_numpy(centers, dtype=wp.vec3f, device=DEVICE)
     P = wp.from_numpy(polarities, dtype=wp.vec3f, device=DEVICE)

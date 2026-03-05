@@ -87,19 +87,13 @@ class TestPoissonDiskSubsample:
 
     def test_deterministic(self):
         candidates = np.random.default_rng(42).random((1000, 3)).astype(np.float32)
-        pts1 = _poisson_disk_subsample(
-            candidates.copy(), 0.1, 100, np.random.default_rng(0)
-        )
-        pts2 = _poisson_disk_subsample(
-            candidates.copy(), 0.1, 100, np.random.default_rng(0)
-        )
+        pts1 = _poisson_disk_subsample(candidates.copy(), 0.1, 100, np.random.default_rng(0))
+        pts2 = _poisson_disk_subsample(candidates.copy(), 0.1, 100, np.random.default_rng(0))
         np.testing.assert_array_equal(pts1, pts2)
 
     def test_output_dtype(self):
         rng = np.random.default_rng(0)
-        pts = _poisson_disk_subsample(
-            rng.random((100, 3)).astype(np.float32), 0.1, 50, rng
-        )
+        pts = _poisson_disk_subsample(rng.random((100, 3)).astype(np.float32), 0.1, 50, rng)
         assert pts.dtype == np.float32
 
 
