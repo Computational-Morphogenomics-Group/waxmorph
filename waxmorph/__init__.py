@@ -16,6 +16,7 @@ from .graph import (
 )
 from .losses import SAMPLES_LOSS_DEFAULTS, chamfer_distance, make_samples_loss, squared_loss
 from .mlp import MLP
+from .scheduler import SpikeAwareScheduler
 
 __all__ = [
     "GNS",
@@ -27,6 +28,7 @@ __all__ = [
     "build_graph",
     "build_node_features",
     "SAMPLES_LOSS_DEFAULTS",
+    "SpikeAwareScheduler",
     "chamfer_distance",
     "make_samples_loss",
     "squared_loss",

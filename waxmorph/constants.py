@@ -9,7 +9,7 @@ full simulator and the simplified emulator.
 FOUR_THIRDS_PI: float = 4.1887902047863905
 
 # Adjacency / contact detection
-EPS_DIST: float = 1e-1
+EPS_DIST: float = 1e-2
 
 # Numerical stability
 EPS_DEN: float = 1e-9
