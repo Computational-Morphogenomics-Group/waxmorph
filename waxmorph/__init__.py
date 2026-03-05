@@ -14,7 +14,7 @@ from .graph import (
     build_graph,
     build_node_features,
 )
-from .losses import chamfer_distance, squared_loss
+from .losses import SAMPLES_LOSS_DEFAULTS, chamfer_distance, make_samples_loss, squared_loss
 from .mlp import MLP
 
 __all__ = [
@@ -26,6 +26,8 @@ __all__ = [
     "build_edge_index",
     "build_graph",
     "build_node_features",
+    "SAMPLES_LOSS_DEFAULTS",
     "chamfer_distance",
+    "make_samples_loss",
     "squared_loss",
 ]

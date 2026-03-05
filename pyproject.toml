@@ -39,6 +39,8 @@ simulation = [
 ]
 learning = [
     "torch>=2.0",
+    "geomloss>=0.2.6",
+    "pykeops>=2.1",
 ]
 docs = [
     "sphinx>=8.1",
