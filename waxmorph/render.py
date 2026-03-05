@@ -1,17 +1,35 @@
 """Includes renderer interfaces for displaying 3D spheroids with morphogens."""
 
-import matplotlib.pyplot as plt
-from matplotlib import colors
+from __future__ import annotations
+
+import os
 from abc import ABC, abstractmethod
-from typing import Literal, Optional
-import numpy as np
-import pyvista as pv
-import vtk, os
-from tqdm import trange
+from typing import Literal
+
 import imageio
+import matplotlib.pyplot as plt
+import numpy as np
 import warp as wp
 import warp.render as wpr
-from dataclasses import dataclass
+from matplotlib import colors
+
+try:
+    import pyvista as pv
+except Exception:  # pragma: no cover - optional dependency for rendering backends.
+    pv = None
+try:
+    import vtk
+except Exception:  # pragma: no cover - optional dependency for rendering backends.
+    vtk = None
+
+
+def _require_pyvista() -> None:
+    if pv is None:
+        raise ImportError(
+            "waxmorph.render requires optional dependency 'pyvista'. "
+            "Install extras with: pip install -e .[simulation]"
+        )
+
 
 class RenderInterface(ABC):
     @staticmethod
@@ -19,7 +37,7 @@ class RenderInterface(ABC):
     def draw_sphere(*args, **kwargs):
         """Draw a sphere mesh given parameters."""
         pass
-        
+
     @staticmethod
     @abstractmethod
     def cleanup(*args, **kwargs):
@@ -35,28 +53,33 @@ class RenderInterface(ABC):
         pass
 
 
+############################################################
+############################################################
+############################################################
+
+# INTERACTIVE RENDERERS
+
+# TODO: Update Docstrings
 
 ############################################################
 ############################################################
 ############################################################
 
-            # INTERACTIVE RENDERERS
 
-            #TODO: Update Docstrings
-    
-############################################################
-############################################################
-############################################################
-
-
-    
 class MPLInterface(RenderInterface):
     """Matplotlib interface for rendering frames. Fixed view / non-interactive."""
+
     @staticmethod
     def draw_sphere(
-    ax, center, radius,
-    alpha=0.35, facecolor="blue", edgecolor="red",
-    theta_res=24, phi_res=12, antialiased=True
+        ax,
+        center,
+        radius,
+        alpha=0.35,
+        facecolor="blue",
+        edgecolor="red",
+        theta_res=24,
+        phi_res=12,
+        antialiased=True,
     ):
         """
         Draw a 3D sphere (surface) at 'center' with 'radius'.
@@ -66,18 +89,22 @@ class MPLInterface(RenderInterface):
         - theta_res, phi_res control mesh resolution (longitude/latitude)
         """
         cx, cy, cz = center
-        theta = np.linspace(0, 2*np.pi, theta_res)
-        phi   = np.linspace(0, np.pi, phi_res)
+        theta = np.linspace(0, 2 * np.pi, theta_res)
+        phi = np.linspace(0, np.pi, phi_res)
         TH, PH = np.meshgrid(theta, phi)
-    
+
         X = cx + radius * np.cos(TH) * np.sin(PH)
         Y = cy + radius * np.sin(TH) * np.sin(PH)
         Z = cz + radius * np.cos(PH)
-    
+
         ax.plot_surface(
-            X, Y, Z,
-            rcount=phi_res, ccount=theta_res,
+            X,
+            Y,
+            Z,
+            rcount=phi_res,
+            ccount=theta_res,
             color=facecolor,
+            edgecolor=edgecolor,
             linewidth=0,
             antialiased=antialiased,
             alpha=alpha,
@@ -95,21 +122,35 @@ class MPLInterface(RenderInterface):
                 pass
         ax.set_facecolor("white")
         ax.tick_params(pad=4, labelsize=9)
-        ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-        ax.set_xlim(blim, tlim); ax.set_ylim(blim, tlim); ax.set_zlim(blim, tlim)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        ax.set_xlim(blim, tlim)
+        ax.set_ylim(blim, tlim)
+        ax.set_zlim(blim, tlim)
 
     @staticmethod
-    def draw_3d_view(centers, radii, morphogens, particle_count, blim=-10, tlim=20):           
+    def draw_3d_view(centers, radii, morphogens, particle_count, blim=-10, tlim=20):
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111, projection="3d")
 
-        for center, radius, morphogen in zip(centers[:particle_count], radii[:particle_count], morphogens[:particle_count]):
-            MPLInterface.draw_sphere(ax, center=center, facecolor=colors.hsv_to_rgb((0.8, morphogen.item(), 1.)), radius=radius, alpha=0.35)
+        for center, radius, morphogen in zip(
+            centers[:particle_count],
+            radii[:particle_count],
+            morphogens[:particle_count],
+            strict=False,
+        ):
+            MPLInterface.draw_sphere(
+                ax,
+                center=center,
+                facecolor=colors.hsv_to_rgb((0.8, morphogen.item(), 1.0)),
+                radius=radius,
+                alpha=0.35,
+            )
 
         MPLInterface.cleanup(ax, blim, tlim)
 
         return fig
-
 
 
 class PyVistaInterface(RenderInterface):
@@ -121,7 +162,9 @@ class PyVistaInterface(RenderInterface):
     """
 
     @staticmethod
-    def _husl_palette(n_colors: int, *, s: float = 90.0, l: float = 65.0) -> np.ndarray:
+    def _husl_palette(
+        n_colors: int, *, s: float = 90.0, lightness: float = 65.0
+    ) -> np.ndarray:
         """
         Returns (n_colors, 3) float RGB in [0,1].
         Prefers HSLuv/HUSL if installed; otherwise falls back to HSV palette.
@@ -132,13 +175,22 @@ class PyVistaInterface(RenderInterface):
         # Try true HUSL/HSLuv (pip install hsluv)
         try:
             import hsluv  # type: ignore
-            rgb = np.array([hsluv.hsluv_to_rgb((float(h), float(s), float(l))) for h in hues], dtype=float)
+
+            rgb = np.array(
+                [
+                    hsluv.hsluv_to_rgb((float(h), float(s), float(lightness)))
+                    for h in hues
+                ],
+                dtype=float,
+            )
             rgb = np.clip(rgb, 0.0, 1.0)
             return rgb
         except Exception:
             # Fallback: HSV evenly spaced hues, fixed saturation/value
             h01 = (hues / 360.0).astype(float)
-            hsv = np.stack([h01, np.full_like(h01, 0.85), np.full_like(h01, 0.95)], axis=-1)
+            hsv = np.stack(
+                [h01, np.full_like(h01, 0.85), np.full_like(h01, 0.95)], axis=-1
+            )
             return colors.hsv_to_rgb(hsv)
 
     # ---------- internal helpers ----------
@@ -156,13 +208,15 @@ class PyVistaInterface(RenderInterface):
         palette = PyVistaInterface._husl_palette(len(uniq))  # (K,3) float
         rgb = palette[inv]  # (N,3) float
         return (rgb * 255).astype(np.uint8)
-    
+
     @staticmethod
     def _rgb_from_morph(morphogens: np.ndarray) -> np.ndarray:
         m = np.asarray(morphogens).astype(float)
         m = np.clip(m, 0.0, 1.0)
         rgb_float = colors.hsv_to_rgb(
-            np.stack([np.ones_like(m), m, np.ones_like(m)], axis=-1)
+            np.stack(
+                [np.full(shape=m.shape, fill_value=0.5), m, np.ones_like(m)], axis=-1
+            )
         )  # (N,3) in [0,1]
         return (rgb_float * 255).astype(np.uint8)
 
@@ -174,7 +228,7 @@ class PyVistaInterface(RenderInterface):
         polarities=None,
         n=None,
         *,
-        cell_types: np.ndarray | None = None,   # NEW
+        cell_types: np.ndarray | None = None,  # NEW
     ) -> pv.PolyData:
         """
         Build a point-cloud PolyData with per-point arrays:
@@ -210,7 +264,9 @@ class PyVistaInterface(RenderInterface):
 
         # Optional: store the category itself (handy for picking/inspection)
         if cell_types is not None:
-            pd["cell_type"] = np.asarray(cell_types).reshape(-1)[:n].astype(np.int32, copy=False)
+            pd["cell_type"] = (
+                np.asarray(cell_types).reshape(-1)[:n].astype(np.int32, copy=False)
+            )
 
         if polarities is not None:
             p = np.asarray(polarities, dtype=float)
@@ -248,7 +304,9 @@ class PyVistaInterface(RenderInterface):
         so its midpoint is at the origin. Glyphing then centers each arrow at the point.
         """
         if vector_name not in points_pd.array_names:
-            raise ValueError(f"points_pd missing '{vector_name}' array for polarity vectors.")
+            raise ValueError(
+                f"points_pd missing '{vector_name}' array for polarity vectors."
+            )
 
         # Arrow points along +X by default (direction=(1,0,0)), from start to start+direction.
         arrow = pv.Arrow(
@@ -284,7 +342,9 @@ class PyVistaInterface(RenderInterface):
         if show_bounds:
             plotter.show_bounds(
                 grid=False,
-                xtitle="X", ytitle="Y", ztitle="Z",
+                xtitle="X",
+                ytitle="Y",
+                ztitle="Z",
                 bounds=(blim, tlim, blim, tlim, blim, tlim),
                 axes_ranges=(blim, tlim, blim, tlim, blim, tlim),
             )
@@ -298,8 +358,15 @@ class PyVistaInterface(RenderInterface):
     # ---------- public API ----------
     @staticmethod
     def draw_3d_view(
-        centers, radii, morphogens, polarities, particle_count,
-        blim=-10, tlim=20, theta_res=24, phi_res=12,
+        centers,
+        radii,
+        morphogens,
+        polarities,
+        particle_count,
+        blim=-10,
+        tlim=20,
+        theta_res=24,
+        phi_res=12,
         alpha=0.5,
         # polarity rendering controls
         show_polarities: bool = True,
@@ -317,7 +384,10 @@ class PyVistaInterface(RenderInterface):
         sphere_kwargs = dict(
             smooth_shading=True,
             opacity=float(alpha),
-            ambient=0.55, diffuse=0.2, specular=0.2, specular_power=1.0,
+            ambient=0.55,
+            diffuse=0.2,
+            specular=0.2,
+            specular_power=1.0,
             show_edges=False,
             rgb=True,
         )
@@ -326,16 +396,21 @@ class PyVistaInterface(RenderInterface):
             smooth_shading=True,
             color=polarity_color,
             opacity=float(polarity_opacity),
-            ambient=0.25, diffuse=0.75, specular=0.1, specular_power=8.0,
+            ambient=0.25,
+            diffuse=0.75,
+            specular=0.1,
+            specular_power=8.0,
             show_edges=False,
         )
 
         n = int(particle_count)
         pd = PyVistaInterface._points_polydata(
-            centers, radii, morphogens,
+            centers,
+            radii,
+            morphogens,
             polarities=polarities,
             n=n,
-            cell_types=cell_types,   # NEW
+            cell_types=cell_types,  # NEW
         )
 
         glyphs = PyVistaInterface._glyph_spheres(pd, theta_res, phi_res)
@@ -355,13 +430,11 @@ class PyVistaInterface(RenderInterface):
         return plotter
 
 
-
-
 ############################################################
 ############################################################
 ############################################################
 
-            # ANIMATION RENDERERS
+# ANIMATION RENDERERS
 
 ############################################################
 ############################################################
@@ -371,8 +444,11 @@ class PyVistaInterface(RenderInterface):
 # Backend adapters
 # ------------------------
 
+
 class _BaseBackend:
-    def render_points_frame(self, *, t: float, points, radius, colors, name: str) -> None:
+    def render_points_frame(
+        self, *, t: float, points, radius, colors, name: str
+    ) -> None:
         raise NotImplementedError
 
     def close(self) -> None:
@@ -431,7 +507,9 @@ class _OpenGLVideoBackend(_BaseBackend):
         )
 
         # GPU pixel buffer for get_pixels()
-        self._pixels_u8 = wp.empty((self.height, self.width, 3), dtype=wp.uint8, device=self.device)
+        self._pixels_u8 = wp.empty(
+            (self.height, self.width, 3), dtype=wp.uint8, device=self.device
+        )
 
         # Video writer
         os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
@@ -443,10 +521,20 @@ class _OpenGLVideoBackend(_BaseBackend):
             pixelformat=pixelformat,
         )
 
-    def render_points_frame(self, *, t: float, points, radius, colors, name: str, mesh_points=None, mesh_indices=None) -> None:
+    def render_points_frame(
+        self,
+        *,
+        t: float,
+        points,
+        radius,
+        colors,
+        name: str,
+        mesh_points=None,
+        mesh_indices=None,
+    ) -> None:
         self.renderer.clear()
 
-        #TODO: Update instancer rather than clearing shape instancers
+        # TODO: Update instancer rather than clearing shape instancers
         self.renderer._shape_instancers = {}
 
         self.renderer.begin_frame(float(t))
@@ -460,13 +548,13 @@ class _OpenGLVideoBackend(_BaseBackend):
         )
 
         if mesh_points is not None:
-        
+
             self.renderer.render_mesh(
                 "target",
                 mesh_points,
                 mesh_indices,
             )
-        
+
         self.renderer.end_frame()
 
         ok = self.renderer.get_pixels(
@@ -515,7 +603,19 @@ class _UsdStageBackend(_BaseBackend):
             scaling=float(scaling),
         )
 
-    def render_points_frame(self, *, t: float, points, radius, colors, name: str, mesh_points=None, mesh_indices=None) -> None:
+    def render_points_frame(
+        self,
+        *,
+        t: float,
+        points,
+        radius,
+        colors,
+        name: str,
+        mesh_points=None,
+        mesh_indices=None,
+    ) -> None:
+        # Mesh overlays are currently only supported by the OpenGL backend.
+        _ = (mesh_points, mesh_indices)
         self.renderer.begin_frame(float(t))
         self.renderer.render_points(
             name,
@@ -532,8 +632,6 @@ class _UsdStageBackend(_BaseBackend):
 
     def close(self) -> None:
         self.renderer.save()
-
-
 
 
 class WarpMovieRenderer:
@@ -587,9 +685,15 @@ class WarpMovieRenderer:
         self.prim_name = prim_name
 
         # --- common GPU packed buffers ---
-        self._points_f32 = wp.empty(self.max_particles, dtype=wp.vec3, device=self.device)
-        self._radii_f32  = wp.empty(self.max_particles, dtype=wp.float32, device=self.device)
-        self._colors_f32 = wp.empty(self.max_particles, dtype=wp.vec3, device=self.device)
+        self._points_f32 = wp.empty(
+            self.max_particles, dtype=wp.vec3, device=self.device
+        )
+        self._radii_f32 = wp.empty(
+            self.max_particles, dtype=wp.float32, device=self.device
+        )
+        self._colors_f32 = wp.empty(
+            self.max_particles, dtype=wp.vec3, device=self.device
+        )
 
         # --- choose backend ---
         if backend == "opengl":
@@ -630,16 +734,16 @@ class WarpMovieRenderer:
     @wp.kernel
     def _pack_buffers_kernel(
         centers_in: wp.array(dtype=wp.vec3f),
-        radii_in:   wp.array(dtype=wp.float32),
-        A_in:       wp.array(dtype=wp.float32),
-        I_in:       wp.array(dtype=wp.float32),
+        radii_in: wp.array(dtype=wp.float32),
+        A_in: wp.array(dtype=wp.float32),
+        I_in: wp.array(dtype=wp.float32),
         points_out: wp.array(dtype=wp.vec3),
-        radii_out:  wp.array(dtype=wp.float32),
+        radii_out: wp.array(dtype=wp.float32),
         colors_out: wp.array(dtype=wp.vec3),
         particle_count: wp.int32,
-        morph_mode: wp.int32,      # 0:A, 1:I, 2:A/(A+I)
-        morph_scale: wp.float32,   # divide then clamp to [0,1]
-        hue: wp.float32,           # fixed hue in [0,1]
+        morph_mode: wp.int32,  # 0:A, 1:I, 2:A/(A+I)
+        morph_scale: wp.float32,  # divide then clamp to [0,1]
+        hue: wp.float32,  # fixed hue in [0,1]
     ):
         i = wp.tid()
 
@@ -651,7 +755,7 @@ class WarpMovieRenderer:
 
         c = centers_in[i]
         points_out[i] = wp.vec3(wp.float32(c[0]), wp.float32(c[1]), wp.float32(c[2]))
-        radii_out[i]  = wp.float32(radii_in[i])
+        radii_out[i] = wp.float32(radii_in[i])
 
         a = wp.float32(A_in[i])
         b = wp.float32(I_in[i])
@@ -674,23 +778,35 @@ class WarpMovieRenderer:
 
         h6 = h * wp.float32(6.0)
         hi = wp.int32(wp.floor(h6))  # 0..5
-        f  = h6 - wp.float32(hi)
+        f = h6 - wp.float32(hi)
 
         p = v * (wp.float32(1.0) - sat)
         q = v * (wp.float32(1.0) - sat * f)
         t = v * (wp.float32(1.0) - sat * (wp.float32(1.0) - f))
 
-        r = v; g = t; bb = p
+        r = v
+        g = t
+        bb = p
         if hi == 1:
-            r = q; g = v; bb = p
+            r = q
+            g = v
+            bb = p
         elif hi == 2:
-            r = p; g = v; bb = t
+            r = p
+            g = v
+            bb = t
         elif hi == 3:
-            r = p; g = q; bb = v
+            r = p
+            g = q
+            bb = v
         elif hi == 4:
-            r = t; g = p; bb = v
+            r = t
+            g = p
+            bb = v
         elif hi == 5:
-            r = v; g = p; bb = q
+            r = v
+            g = p
+            bb = q
 
         colors_out[i] = wp.vec3(r, g, bb)
 
@@ -735,7 +851,9 @@ class WarpMovieRenderer:
         )
         return n
 
-    def _render(self, t: float, n_active: int, mesh_points=None, mesh_indices=None) -> None:
+    def _render(
+        self, t: float, n_active: int, mesh_points=None, mesh_indices=None
+    ) -> None:
         # render_points currently wants CPU-indexable arrays, so we copy here
         pts = self._points_f32.numpy()[:n_active]
         rad = self._radii_f32.numpy()[:n_active]
@@ -748,12 +866,74 @@ class WarpMovieRenderer:
             colors=col,
             name=self.prim_name,
             mesh_points=mesh_points,
-            mesh_indices=mesh_indices
+            mesh_indices=mesh_indices,
         )
 
     # ------------------------
     # public API
     # ------------------------
+    def write_frame_from_numpy(
+        self,
+        *,
+        t: float,
+        centers: np.ndarray,
+        radii: np.ndarray,
+        colors: np.ndarray,
+        particle_count: int,
+        mesh_points=None,
+        mesh_indices=None,
+    ) -> None:
+        """Write a video frame from numpy arrays with explicit RGB colors.
+
+        This is a convenience method for cases where colors are precomputed
+        (e.g. shape assembly with multi-gene states) rather than derived from
+        separate activator/inhibitor Warp arrays.
+
+        Parameters
+        ----------
+        t : float
+            Time stamp for the frame.
+        centers : np.ndarray, shape ``[N, 3]``
+            Particle positions.
+        radii : np.ndarray, shape ``[N]``
+            Particle radii.
+        colors : np.ndarray, shape ``[N, 3]``
+            Per-particle RGB colors in ``[0, 1]``.
+        particle_count : int
+            Number of active particles.
+        mesh_points, mesh_indices : optional
+            Target mesh overlay (OpenGL backend only).
+        """
+        n = int(particle_count)
+        n = max(0, min(n, self.max_particles))
+
+        c = np.asarray(centers, dtype=np.float32)[:n]
+        r = np.asarray(radii, dtype=np.float32).ravel()[:n]
+        col = np.clip(np.asarray(colors, dtype=np.float32)[:n], 0.0, 1.0)
+
+        # Pad to max_particles for Warp buffer size
+        c_pad = np.zeros((self.max_particles, 3), dtype=np.float32)
+        r_pad = np.zeros(self.max_particles, dtype=np.float32)
+        col_pad = np.zeros((self.max_particles, 3), dtype=np.float32)
+
+        c_pad[:n] = c
+        r_pad[:n] = r
+        col_pad[:n] = col
+
+        wp.copy(
+            self._points_f32, wp.from_numpy(c_pad, dtype=wp.vec3, device=self.device)
+        )
+        wp.copy(
+            self._radii_f32, wp.from_numpy(r_pad, dtype=wp.float32, device=self.device)
+        )
+        wp.copy(
+            self._colors_f32, wp.from_numpy(col_pad, dtype=wp.vec3, device=self.device)
+        )
+
+        self._render(
+            t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices
+        )
+
     def write_frame_from_state(
         self,
         *,
@@ -766,15 +946,23 @@ class WarpMovieRenderer:
         morph: str = "A",
         morph_scale: float = 1.0,
         hue: float = 0.80,
-        mesh_points = None,
-        mesh_indices = None,
+        mesh_points=None,
+        mesh_indices=None,
     ) -> None:
         n = self._pack_gpu_buffers(
-            centers_wp, radii_wp, A_wp, I_wp, particle_count,
-            morph=morph, morph_scale=morph_scale, hue=hue,
+            centers_wp,
+            radii_wp,
+            A_wp,
+            I_wp,
+            particle_count,
+            morph=morph,
+            morph_scale=morph_scale,
+            hue=hue,
         )
 
-        self._render(t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices)
+        self._render(
+            t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices
+        )
 
     def close(self) -> None:
         self._backend.close()

@@ -1,26 +1,28 @@
+"""Warp kernels for mechanochemical simulation.
+
+This module is the low-level kernel counterpart of the emulator for generating cheap data. Designed for simple reaction-diffusion + two cell type tissue mimicking epithelia.
+"""
+
 import warp as wp
 
-############################################################
-############################################################
-############################################################
-
-            # CONSTANTS / HELPERS
+from .constants import EPS_DEN, EPS_DIST, EPS_NORM, FOUR_THIRDS_PI, RAND_EPS
 
 ############################################################
 ############################################################
 ############################################################
-FOUR_THIRDS_PI = 4.1887902047863905
-EPS_DIST = 0.25
-EPS_DEN = 1e-9
-EPS_NORM = 1e-9
-RAND_EPS = 1e-7
+
+# CONSTANTS / HELPERS
+
+############################################################
+############################################################
+############################################################
 
 
 # Interface tension
 
 K_REP = 3.0
 
-K_ATT_EE = 1.5 # epi-epi strong cohesion
+K_ATT_EE = 1.5  # epi-epi strong cohesion
 K_ATT_MM = 0.15  # mes-mes medium
 K_ATT_EM = 0.15  # epi-mes weak (interface tension)
 
@@ -29,42 +31,49 @@ ATR_EE = 0.14
 ATR_MM = 0.1
 ATR_EM = 0.06
 
-D_SHIFT_EM = 0.06
+D_SHIFT_EM = 0.08
 
-K_THICK_EE = 6.0 
+K_THICK_EE = 6.0
 H_THICK_EE = 0.08
-
 
 
 @wp.func
 def safe_div(num: wp.float32, den: wp.float32) -> wp.float32:
+    """Numerically stable divide used across kernels."""
     return num / (den + EPS_DEN)
+
 
 @wp.func
 def volume_from_radius(r: wp.float32) -> wp.float32:
+    """Sphere volume proxy used for concentration normalization."""
     return FOUR_THIRDS_PI * r * r * r
+
 
 @wp.func
 def adj_weight(dist: wp.float32, ri: wp.float32, rj: wp.float32) -> wp.bool:
+    """Neighborhood predicate for contact/adjacency graph edges."""
     return wp.bool((dist - (ri + rj)) <= EPS_DIST)
 
 
 @wp.func
 def probs(p: wp.float32, ref: wp.float32):
-    return (p ** 20.) / ((p ** 20.) + (ref ** 20.))
+    """Smooth probability curve for size-driven mesenchymal division."""
+    return (p**20.0) / ((p**20.0) + (ref**20.0))
+
 
 @wp.func
 def softmax2d(p: wp.vec2f):
+    """Two-logit softmax helper used by Gumbel-Softmax sampling."""
     ex = wp.exp(p.x)
     ey = wp.exp(p.y)
     inv_sum = 1.0 / (ex + ey)
     return wp.vec2f(ex * inv_sum, ey * inv_sum)
 
+
 @wp.func
-def gumbel(
-    key: wp.uint32
-):
-    u = wp.randf(key, 0., 1.)
+def gumbel(key: wp.uint32):
+    """Draw one Gumbel variate and advance RNG key."""
+    u = wp.randf(key, 0.0, 1.0)
     u = wp.clamp(u, RAND_EPS, 1.0 - RAND_EPS)
     return wp.randu(key), -wp.log(-wp.log(u))
 
@@ -73,12 +82,14 @@ def gumbel(
 def fill_key_array(
     key_array: wp.array(dtype=wp.uint32),
 ) -> None:
+    """Initialize per-particle random keys deterministically by index."""
 
     i = wp.tid()
     key_array[i] = wp.rand_init(i)
 
 
 def gen_key_array(size: int, device: str = "cuda") -> wp.array:
+    """Allocate and fill RNG key array for stochastic kernels."""
 
     key_array = wp.zeros(shape=size, dtype=wp.uint32, device=device)
     wp.launch(fill_key_array, dim=key_array.size, inputs=[key_array], device=device)
@@ -89,19 +100,27 @@ def gen_key_array(size: int, device: str = "cuda") -> wp.array:
 ############################################################
 ############################################################
 
-            # MECHANICS
+# MECHANICS
 
 ############################################################
 ############################################################
 ############################################################
-    
+
 
 @wp.func
 def sticky_sphere_forces(
-    x_i: wp.vec3f, x_j: wp.vec3f,
-    r_i: wp.float32, r_j: wp.float32,
-    ct_i: wp.uint32, ct_j: wp.uint32
+    x_i: wp.vec3f,
+    x_j: wp.vec3f,
+    r_i: wp.float32,
+    r_j: wp.float32,
+    ct_i: wp.uint32,
+    ct_j: wp.uint32,
 ):
+    """Pairwise mechanics force/gradient with type-dependent adhesion terms.
+
+    This contributes one pair term in the writeup potential gradient
+    ``grad_{X_t^i} U_t``.
+    """
     d = x_i - x_j
     dist = wp.length(d) + EPS_NORM
     u = d / dist
@@ -114,12 +133,12 @@ def sticky_sphere_forces(
     d_shift = 0.0
 
     is_ee = (ct_i == wp.uint32(1)) and (ct_j == wp.uint32(1))
-    is_em = (ct_i != ct_j)
+    is_em = ct_i != ct_j
 
     if is_ee:
         k_att = K_ATT_EE
         atr = ATR_EE
-    
+
     elif is_em:
         k_att = K_ATT_EM
         atr = ATR_EM
@@ -131,17 +150,17 @@ def sticky_sphere_forces(
     # compression/extension relative to preferred distance
     t = dist - d0
     comp = wp.max(-t, wp.float32(0.0))
-    ext  = wp.max( t, wp.float32(0.0))
+    ext = wp.max(t, wp.float32(0.0))
 
     # repulsion (always from compression)
     f_rep = K_REP * comp
 
     # attraction
-    f_att = 0.
+    f_att = 0.0
 
     if is_ee:
         # EE: stiffening spring in extension
-        invL2 = wp.float32(1.0) / (atr * atr + EPS_NORM) 
+        invL2 = wp.float32(1.0) / (atr * atr + EPS_NORM)
         f_att = k_att * (ext + ext * ext * ext * invL2)
 
         # optional cutoff so distant pairs don't pull across holes
@@ -162,7 +181,6 @@ def sticky_sphere_forces(
     return F_ij, -F_ij
 
 
-
 @wp.func
 def epi_polarity_grads(
     x_i: wp.vec3f,
@@ -170,8 +188,9 @@ def epi_polarity_grads(
     p_i: wp.vec3f,
     p_j: wp.vec3f,
 ):
-    # Aligning polarity to be perpendicular to connections 
-    
+    """Gradient terms enforcing epithelial polarity geometry constraints."""
+    # Aligning polarity to be perpendicular to connections
+
     # d, ||d||, u = d/||d||
     d = x_i - x_j
     dist = wp.length(d) + EPS_NORM
@@ -201,39 +220,40 @@ def epi_polarity_grads(
     return grad_x_i, grad_x_j, grad_p_i, grad_p_j
 
 
+@wp.func
+def epi_thickness_grads(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j: wp.vec3f):
+    """Penalty gradients for epithelial sheet thickness regularization."""
+    d = x_i - x_j
+    # Pick correct normal (inward / outward, not explicit in our opt scheme)
+    if wp.dot(p_i, -p_j) > wp.dot(p_i, p_j):
+        p_j = -p_j
 
-@wp.func 
-def epi_thickness_grads(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j: wp.vec3f): 
-    d = x_i - x_j 
-    # Pick correct normal (inward / outward, not explicit in our opt scheme) 
-    if wp.dot(p_i, -p_j) > wp.dot(p_i, p_j): 
-        p_j = -p_j 
-        
-    s = p_i + p_j 
-    ns = wp.length(s) + EPS_NORM 
-    n = s / ns 
-    dn = wp.dot(d, n) 
-    
-    # normal separation (signed) 
-    adn = wp.abs(dn) 
-    
-    # hinge: only penalize if |dn| exceeds thickness slack h 
-    excess = wp.max(adn - H_THICK_EE, wp.float32(0.0)) 
-    
-    # d/d(dn) 0.5*k*excess^2 = k*excess*sign(dn) 
-    sign = wp.float32(1.0) 
-    
-    if dn < wp.float32(0.0): 
-        sign = wp.float32(-1.0) 
-        
-    grad_x_i = K_THICK_EE * excess * sign * n 
-    grad_x_j = -grad_x_i 
-    
+    s = p_i + p_j
+    ns = wp.length(s) + EPS_NORM
+    n = s / ns
+    dn = wp.dot(d, n)
+
+    # normal separation (signed)
+    adn = wp.abs(dn)
+
+    # hinge: only penalize if |dn| exceeds thickness slack h
+    excess = wp.max(adn - H_THICK_EE, wp.float32(0.0))
+
+    # d/d(dn) 0.5*k*excess^2 = k*excess*sign(dn)
+    sign = wp.float32(1.0)
+
+    if dn < wp.float32(0.0):
+        sign = wp.float32(-1.0)
+
+    grad_x_i = K_THICK_EE * excess * sign * n
+    grad_x_j = -grad_x_i
+
     return grad_x_i, grad_x_j
 
-    
+
 @wp.func
 def mes_polarity_grads(p_i: wp.vec3f, p_j: wp.vec3f):
+    """Pairwise mesenchymal polarity alignment gradients."""
     # U = -0.5 (p_i·p_j)^2
     c = wp.dot(p_i, p_j)
     grad_p_i = -c * p_j
@@ -250,6 +270,7 @@ def sticky_sphere_grads(
     gx: wp.array(dtype=wp.vec3f),
     gp: wp.array(dtype=wp.vec3f),
 ):
+    """Accumulate mechanics and polarity gradients over all unordered pairs."""
     i, j = wp.tid()
 
     # Skip self + ensure each unordered pair is counted once
@@ -275,27 +296,25 @@ def sticky_sphere_grads(
 
     # Polarities - epithelium
     if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
-        grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = epi_polarity_grads(x_i, x_j, p_i, p_j)
+        grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = epi_polarity_grads(
+            x_i, x_j, p_i, p_j
+        )
         grad_x_i_t, grad_x_j_t = epi_thickness_grads(x_i, x_j, p_i, p_j)
-
-
 
         # # Match magnitudes so movement doesn't blink
         for k in range(3):
             v_i = wp.max(wp.abs(grad_x_i_f[k]), wp.float32(1e-3))
             v_j = wp.max(wp.abs(grad_x_j_f[k]), wp.float32(1e-3))
-            
+
             grad_x_i_p[k] = wp.clamp(grad_x_i_p[k], -1.0 * v_i, 1.0 * v_i)
             grad_x_j_p[k] = wp.clamp(grad_x_j_p[k], -1.0 * v_j, 1.0 * v_j)
 
-
         wp.atomic_add(gx, i, grad_x_i_p)
         wp.atomic_add(gx, j, grad_x_j_p)
-        wp.atomic_add(gx, i, grad_x_i_t) 
+        wp.atomic_add(gx, i, grad_x_i_t)
         wp.atomic_add(gx, j, grad_x_j_t)
         wp.atomic_add(gp, i, grad_p_i)
         wp.atomic_add(gp, j, grad_p_j)
-        
 
     # Polarities - mesenchyme
     if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
@@ -306,11 +325,12 @@ def sticky_sphere_grads(
 
 @wp.kernel
 def gd_update(
-    X: wp.array(dtype=wp.vec3f),   # (N, 3)
-    gx: wp.array(dtype=wp.vec3f),  # (N, 3) gradient of loss w.r.t. x
+    X: wp.array(dtype=wp.vec3f),  # (N, 3)
+    gx: wp.array(dtype=wp.vec3f),  # (N, 3) gradient of objective w.r.t. x
     lr: wp.float32,
-    X_next: wp.array(dtype=wp.vec3f),   # (N, 3)
+    X_next: wp.array(dtype=wp.vec3f),  # (N, 3)
 ):
+    """Euler position update: ``X_next = X - lr * grad_X``."""
 
     i = wp.tid()
     X_next[i] = X[i] - lr * gx[i]
@@ -318,16 +338,18 @@ def gd_update(
 
 @wp.kernel
 def gd_update_normalized(
-    P: wp.array(dtype=wp.vec3f),   # (N, 3)
-    gp: wp.array(dtype=wp.vec3f),  # (N, 3) gradient of loss w.r.t. x
+    P: wp.array(dtype=wp.vec3f),  # (N, 3)
+    gp: wp.array(dtype=wp.vec3f),  # (N, 3) gradient of objective w.r.t. x
     lr: wp.float32,
-    P_next: wp.array(dtype=wp.vec3f),   # (N, 3)
+    P_next: wp.array(dtype=wp.vec3f),  # (N, 3)
 ):
+    """Euler polarity update with normalization back to unit-like vectors."""
 
     i = wp.tid()
-    P_next[i] = wp.normalize(P[i] - lr * gp[i])  # Normals pointing both inward / outward, but direction is used only
+    P_next[i] = wp.normalize(
+        P[i] - lr * gp[i]
+    )  # Normals pointing both inward / outward, but direction is used only
 
-    
 
 def mech_step_sticky(
     X: wp.array(dtype=wp.vec3f),
@@ -341,12 +363,19 @@ def mech_step_sticky(
     device: str = "cuda",
     grad_consist: bool = False,
 ):
-    
+    """Execute one mechanics step for positions and polarities.
+
+    Flow:
+    1) accumulate gradients from pair interactions,
+    2) apply Euler updates to X and P,
+    3) optionally emit gradient-consistency read/write marks.
+    """
+
     # Set up gradients
     gx = wp.zeros_like(X, device=device)
     gp = wp.zeros_like(P, device=device)
 
-    # 2D launch required for i,j indexing. 
+    # 2D launch required for i,j indexing.
     wp.launch(
         sticky_sphere_grads,
         dim=(particle_count, particle_count),
@@ -355,10 +384,8 @@ def mech_step_sticky(
         device=device,
     )
 
-    
     if grad_consist:
         gx.mark_write()
-    
 
     wp.launch(
         gd_update,
@@ -374,49 +401,43 @@ def mech_step_sticky(
         device=device,
     )
 
-    
     if grad_consist:
         X.mark_read()
         P.mark_read()
         gx.mark_read()
         gp.mark_read()
-        
+
         X_next.mark_write()
         P_next.mark_write()
 
-
     return gx
-    
-
 
 
 ############################################################
 ############################################################
 ############################################################
 
-            # DIFFUSION
+# DIFFUSION
 
 ############################################################
 ############################################################
 ############################################################
+
 
 @wp.kernel
 def reaction_diffs(
     X: wp.array(dtype=wp.vec3f),  # (N, 3)
-    R: wp.array(dtype=wp.float32),      # (N,)
-    A: wp.array(dtype=wp.float32),         # (N,)
-    I: wp.array(dtype=wp.float32),         # (N,)
-    CT: wp.array(dtype=wp.uint32),
-    lapA: wp.array(dtype=wp.float32),       # (N,) out (accum)
-    lapI: wp.array(dtype=wp.float32),       # (N,) out (accum)
+    R: wp.array(dtype=wp.float32),  # (N,)
+    A: wp.array(dtype=wp.float32),  # (N,)
+    I: wp.array(dtype=wp.float32),  # (N,)
+    lapA: wp.array(dtype=wp.float32),  # (N,) out (accum)
+    lapI: wp.array(dtype=wp.float32),  # (N,) out (accum)
 ):
+    """Accumulate graph-laplacian diffusion terms for A/I channels."""
 
-    i,j = wp.tid()
+    i, j = wp.tid()
 
     if wp.int32(j) <= wp.int32(i):
-        return
-
-    if (CT[i] == wp.uint32(1)) or (CT[j] == wp.uint32(1)):
         return
 
     Ri, Rj = R[i], R[j]
@@ -441,46 +462,42 @@ def reaction_diffs(
     wp.atomic_add(lapA, j, -dA)
     wp.atomic_add(lapI, i, dI)
     wp.atomic_add(lapI, j, -dI)
-    
 
 
 @wp.kernel
 def reaction_step(
-    A: wp.array(dtype=wp.float32),      # (N,)
-    I: wp.array(dtype=wp.float32),      # (N,)
+    A: wp.array(dtype=wp.float32),  # (N,)
+    I: wp.array(dtype=wp.float32),  # (N,)
     R: wp.array(dtype=wp.float32),
-    lapA: wp.array(dtype=wp.float32),   # (N,)
-    lapI: wp.array(dtype=wp.float32),   # (N,)
-    CT: wp.array(dtype=wp.uint32),
+    lapA: wp.array(dtype=wp.float32),  # (N,)
+    lapI: wp.array(dtype=wp.float32),  # (N,)
     S: wp.array(dtype=wp.float32),
     T: wp.array(dtype=wp.float32),
     phi: wp.float32,
     dt: wp.float32,
-    A_next: wp.array(dtype=wp.float32),      # (N,)
-    I_next: wp.array(dtype=wp.float32),      # (N,)
+    A_next: wp.array(dtype=wp.float32),  # (N,)
+    I_next: wp.array(dtype=wp.float32),  # (N,)
 ):
+    """Apply one explicit diffusion-reaction update for A and I."""
 
     i = wp.tid()
-    
-    if (CT[i] == wp.uint32(1)):
-        return
-    
+
     V = volume_from_radius(R[i])
-    
+
     # Reaction terms (on concentrations)
     cA = safe_div(A[i], V)
     cI = safe_div(I[i], V)
-    
+
     cA2 = cA * cA
     ciI = cI
-   
-    prodA_lin  = safe_div(cA2, ciI)
+
+    prodA_lin = safe_div(cA2, ciI)
     prodA_quad = safe_div(cA2, ciI * ciI)
-    
+
     prodA = prodA_lin
     if wp.float32(prodA_quad) < wp.float32(prodA_lin):
         prodA = prodA_quad
-    
+
     prodI = cA2
 
     # Diffusion with graph laplacian
@@ -491,13 +508,13 @@ def reaction_step(
     zAi = A[i] + dt * T[0] * (diffA + prodA)
     zIi = I[i] + dt * T[0] * (diffI + prodI)
 
-    # Linear damping 
+    # Linear damping
     inv = 1.0 / (1.0 + dt * T[0])
     Ai_next = zAi * inv
     Ii_next = zIi * inv
 
-    A_next[i] = wp.clamp(Ai_next, 0., 1e4)
-    I_next[i] = wp.clamp(Ii_next, 0., 1e4)
+    A_next[i] = wp.clamp(Ai_next, 0.0, 1e4)
+    I_next[i] = wp.clamp(Ii_next, 0.0, 1e4)
 
 
 def chem_step(
@@ -507,7 +524,6 @@ def chem_step(
     R: wp.array,
     lapA: wp.array,
     lapI: wp.array,
-    CT: wp.array,
     S: wp.array,
     T: wp.array,
     phi: float,
@@ -518,12 +534,13 @@ def chem_step(
     device: str = "cuda",
     grad_consist: bool = True,
 ):
+    """Run chemistry stage: diffusion laplacian then reaction update."""
 
     # Cache laplacian
     wp.launch(
         reaction_diffs,
         dim=(particle_count, particle_count),
-        inputs=[X, R, A, I, CT],
+        inputs=[X, R, A, I],
         outputs=[lapA, lapI],
         device=device,
     )
@@ -536,13 +553,8 @@ def chem_step(
     wp.launch(
         reaction_step,
         dim=particle_count,
-        inputs=[
-            A, I, R, lapA, lapI, CT, S, T,
-            phi, dt
-        ],
-        outputs=[
-            A_next, I_next
-        ],
+        inputs=[A, I, R, lapA, lapI, S, T, phi, dt],
+        outputs=[A_next, I_next],
         device=device,
     )
 
@@ -552,7 +564,7 @@ def chem_step(
         lapI.mark_read()
         A.mark_read()
         I.mark_read()
-        
+
         A_next.mark_write()
         I_next.mark_write()
 
@@ -567,6 +579,7 @@ def chem_step(
 # ############################################################
 # ############################################################
 
+
 @wp.kernel
 def count_neighbors(
     X: wp.array(dtype=wp.vec3f),
@@ -576,8 +589,9 @@ def count_neighbors(
     n_epi: wp.array(dtype=wp.int32),
     n_mes: wp.array(dtype=wp.int32),
 ):
+    """Count local neighborhood totals and type-specific neighbors."""
     i, j = wp.tid()
-    
+
     if wp.int32(j) <= wp.int32(i):
         return
 
@@ -586,7 +600,7 @@ def count_neighbors(
 
     dist = wp.norm_l2(xi - xj)
     w = adj_weight(dist, ri, rj)
-    
+
     if not wp.bool(w):
         return
 
@@ -619,11 +633,11 @@ def growth_step(
     R_max: wp.float32,
     particle_count: int,
     R_next: wp.array(dtype=wp.float32),
-    R_eq_next: wp.array(dtype=wp.float32), 
+    R_eq_next: wp.array(dtype=wp.float32),
     device: str = "cuda",
     grad_consist: bool = True,
-    
 ) -> None:
+    """Dispatch one growth update pass for all particles."""
     wp.launch(
         growth_step_inner,
         dim=particle_count,
@@ -635,7 +649,7 @@ def growth_step(
     if grad_consist:
         R.mark_read()
         R_eq.mark_read()
-        
+
         R_next.mark_write()
         R_eq_next.mark_write()
 
@@ -655,19 +669,20 @@ def growth_step_inner(
     R_next: wp.array(dtype=wp.float32),
     R_eq_next: wp.array(dtype=wp.float32),
 ) -> None:
+    """Per-particle growth rule conditioned on cell type and local chemistry."""
     i = wp.tid()
 
     if CT[i] == wp.uint32(0):
         r_i_0, r_eq_i = R[i], wp.min(R_eq[i], R_max)
-        
+
         V = volume_from_radius(R[i])
         num = safe_div(A[i], V) ** AP[0]
-        
+
         key = keys[i]
         lam = wp.randf(key, 0.8, 1.0)
         key = wp.randu(key)
-        frac = safe_div(num, (SC[0]**AP[0]) + num)
-    
+        frac = safe_div(num, (SC[0] ** AP[0]) + num)
+
         R_eq_next[i] = r_eq_i + frac * lam * dt
         R_next[i] = r_i_0 + ((1.0 - safe_div(r_i_0, r_eq_i)) ** 2.0) * dt
         keys[i] = key
@@ -685,6 +700,7 @@ def st_gumbel_softmax_bernoulli(
     tmax: wp.float32,
     tau: wp.float32,
 ):
+    """Straight-through Gumbel-Softmax Bernoulli sample with annealed tau."""
 
     p = wp.clamp(p, RAND_EPS, 1.0 - RAND_EPS)
 
@@ -696,42 +712,39 @@ def st_gumbel_softmax_bernoulli(
     k = wp.log(tau / 0.1) / tmax
     tau = wp.max(0.1, tau * wp.exp(-k * t))
 
-    p0 = (g1 + wp.log(1. - p)) / tau
+    p0 = (g1 + wp.log(1.0 - p)) / tau
     p1 = (g0 + wp.log(p)) / tau
-    
 
     v = softmax2d(wp.vec2f(p0, p1))
-    s = wp.dot(v, wp.vec2f(0. , 1.))
+    s = wp.dot(v, wp.vec2f(0.0, 1.0))
 
     s_straight = wp.int32(wp.argmax(v))
 
     return key, s_straight, s
 
 
-
 @wp.kernel
-def division_losses(
+def division_decision(
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
     CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
-
     n_epi: wp.array(dtype=wp.int32),
     n_mes: wp.array(dtype=wp.int32),
-
     div_count: wp.array(dtype=wp.int32),
     div_slots: wp.array(dtype=wp.int32),
-
     R_div_ref: wp.float32,
     p_epi: wp.float32,
     epi_max_neighbors: wp.int32,
-
     t: wp.float32,
     tmax: wp.float32,
     tau: wp.float32,
     max_particles: wp.int32,
 ):
+    """Sample which parents divide and reserve daughter slots atomically."""
     parent = wp.tid()
+    # Position is currently not used directly by this decision kernel.
+    _ = X[parent]
 
     key = keys[parent]
 
@@ -742,15 +755,14 @@ def division_losses(
         if n_mes[parent] <= wp.int32(0):
             keys[parent] = key
             return
-        
-        if n_epi[parent] >=  wp.int32(epi_max_neighbors):
+
+        if n_epi[parent] >= wp.int32(epi_max_neighbors):
             keys[parent] = key
             return
 
         p = p_epi
 
     else:
-
 
         p = probs(R[parent], R_div_ref)
 
@@ -769,7 +781,8 @@ def division_losses(
         return
 
     div_slots[parent] = child
-    
+
+
 @wp.kernel
 def division_logic(
     X: wp.array(dtype=wp.vec3f),
@@ -780,11 +793,11 @@ def division_logic(
     P: wp.array(dtype=wp.vec3f),
     CT: wp.array(dtype=wp.uint32),
     div_slots: wp.array(dtype=wp.int32),
-
 ):
-    
+    """Apply state transitions for accepted divisions."""
+
     parent = wp.tid()
-    
+
     child = div_slots[parent]
 
     if child == -1:
@@ -803,11 +816,11 @@ def division_logic(
 
     # Half volume, cuberoot 2 r
     r = R[parent]
-    
+
     # Epithelium extends, mesenchyme splits in half volume
     if ct == wp.uint32(0):
         r = r / wp.cbrt(2.0)
-    
+
     R[child] = r
     R_eq[child] = r
     R[parent] = r
@@ -817,21 +830,24 @@ def division_logic(
     v = P[parent]
     P[child] = v
 
-    
+    if ct == wp.uint32(1):
+        # # Polarized division - divide on perpendicular surface
+        a = wp.vec3f(1.0, 0.0, 0.0)
+        if wp.abs(v[0]) > wp.float32(0.9):
+            a = wp.vec3f(0.0, 1.0, 0.0)
 
-    # # Polarized division - divide on perpendicular surface
-    a = wp.vec3f(1.0, 0.0, 0.0)
-    if wp.abs(v[0]) > wp.float32(0.9):
-        a = wp.vec3f(0.0, 1.0, 0.0)
+        u = wp.normalize(wp.cross(v, a))
 
-    u = wp.normalize(wp.cross(v, a))
+    else:
+        u = v
+
     x = X[parent]
     sep = 1.02 * r
     X[parent] = x + u * sep
     X[child] = x - u * sep
 
 
-
 # Reload signal
 wp.clear_kernel_cache()
-wp.clear_lto_cache()
+if hasattr(wp, "clear_lto_cache"):
+    wp.clear_lto_cache()
