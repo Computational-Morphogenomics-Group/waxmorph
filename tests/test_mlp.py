@@ -1,7 +1,8 @@
 """Tests for the MLP building block."""
 
-import torch
 import pytest
+import torch
+
 from waxmorph.mlp import MLP
 
 

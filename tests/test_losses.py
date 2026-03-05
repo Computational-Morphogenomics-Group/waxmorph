@@ -1,10 +1,10 @@
 """Tests for emulation loss functions with gradient flow through GNS."""
 
-import torch
 import pytest
+import torch
 
-from waxmorph.losses import squared_loss, chamfer_distance
 from waxmorph.gnn import GNS
+from waxmorph.losses import chamfer_distance, squared_loss
 
 
 class TestSquaredLoss:

@@ -84,8 +84,9 @@ def build_edge_index(
             np.stack([senders, receivers], axis=0).astype(np.int64)
         )
 
-    if device is not None:
-        edge_index = edge_index.to(device)
+    # Infer target device from the Warp input array when not specified.
+    target = device if device is not None else str(X.device)
+    edge_index = edge_index.to(target)
 
     return edge_index
 

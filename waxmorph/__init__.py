@@ -9,8 +9,8 @@ except PackageNotFoundError:
 
 from .gnn import GNS, GraphNetworkBlock
 from .graph import (
-    build_edge_index,
     build_edge_features,
+    build_edge_index,
     build_graph,
     build_node_features,
 )
@@ -18,12 +18,12 @@ from .losses import chamfer_distance, squared_loss
 from .mlp import MLP
 
 __all__ = [
-    "__version__",
     "GNS",
-    "GraphNetworkBlock",
     "MLP",
-    "build_edge_index",
+    "GraphNetworkBlock",
+    "__version__",
     "build_edge_features",
+    "build_edge_index",
     "build_graph",
     "build_node_features",
     "chamfer_distance",

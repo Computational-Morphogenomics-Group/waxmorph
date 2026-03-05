@@ -1,10 +1,10 @@
 """Tests for waxmorph.render module."""
 
 import numpy as np
-import pytest
 
 # Must set headless before pyglet is imported by warp.render
 import pyglet
+import pytest
 
 pyglet.options["headless"] = True
 

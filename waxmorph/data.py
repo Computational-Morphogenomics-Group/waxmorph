@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
+from scipy import ndimage
 
 
 def load_mesh(path: str | Path) -> trimesh.Trimesh:
@@ -132,6 +133,54 @@ def _make_grid(bbox_min: np.ndarray, extent: np.ndarray, pitch: float) -> np.nda
     return np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()]).astype(np.float32)
 
 
+def _voxel_fill_candidates(
+    mesh: trimesh.Trimesh, pitch: float, dilate_iters: int = 5
+) -> np.ndarray:
+    """Find interior candidate points via voxelization + flood fill.
+
+    For watertight meshes the standard ``fill()`` works directly.  For
+    non-watertight meshes the surface voxels may have gaps that let the
+    flood fill leak.  In that case a morphological **dilate → fill →
+    erode** pipeline closes the gaps before filling.
+
+    Parameters
+    ----------
+    mesh : trimesh.Trimesh
+    pitch : float
+        Voxel edge length.
+    dilate_iters : int
+        Number of binary dilation iterations used to close gaps in the
+        surface shell for non-watertight meshes.
+
+    Returns
+    -------
+    candidates : np.ndarray ``[M, 3]``, dtype ``float32``
+    """
+    vox = mesh.voxelized(pitch)
+    n_surface = vox.points.shape[0]
+
+    # --- Fast path: plain flood fill (works for watertight meshes) ---
+    filled = vox.fill()
+    if filled.points.shape[0] > n_surface * 1.2:
+        return filled.points.astype(np.float32)
+
+    # --- Slow path: morphological close to seal holes, then fill ---
+    matrix = vox.matrix.copy()
+    dilated = ndimage.binary_dilation(matrix, iterations=dilate_iters)
+    filled_arr = ndimage.binary_fill_holes(dilated)
+    interior = ndimage.binary_erosion(filled_arr, iterations=dilate_iters)
+
+    if interior.sum() > n_surface * 1.2:
+        # Convert boolean voxel grid back to world-space points.
+        ijk = np.argwhere(interior).astype(np.float32)
+        origin = np.array(vox.transform[:3, 3], dtype=np.float32)
+        scale = np.asarray(vox.pitch, dtype=np.float32).ravel()
+        return (origin + ijk * scale).astype(np.float32)
+
+    # Everything failed — return empty.
+    return np.empty((0, 3), dtype=np.float32)
+
+
 def sample_volume(
     mesh: trimesh.Trimesh,
     n_points: int,
@@ -141,10 +190,10 @@ def sample_volume(
 ) -> np.ndarray:
     """Sample approximately *n_points* from the interior volume of a mesh.
 
-    Uses ``mesh.contains()`` (ray-based containment test) to identify
-    interior points, which works reliably for both watertight and
-    non-watertight meshes.  Then applies Poisson disk subsampling for
-    spatially uniform coverage.
+    Uses voxelization + flood fill to find interior points.  For
+    non-watertight meshes a morphological dilate → fill → erode pipeline
+    is applied automatically to close surface gaps before filling.  Then
+    applies Poisson disk subsampling for spatially uniform coverage.
 
     Parameters
     ----------
@@ -153,12 +202,13 @@ def sample_volume(
     n_points : int
         Desired number of output points.
     pitch : float, optional
-        Grid spacing for candidate generation.  If ``None``, automatically
-        chosen so that the grid is dense enough to yield many more
-        candidates than *n_points*.
+        Voxel edge length for interior detection.  If ``None``, automatically
+        chosen so that the filled voxel grid is dense enough to yield at
+        least ``4 * n_points`` candidates.
     min_dist : float, optional
         Minimum distance between accepted points.  If ``None``, estimated
-        from the interior volume and *n_points*.
+        from the mesh volume and *n_points* so that the points pack
+        roughly uniformly.
     seed : int
         Random seed.
 
@@ -166,26 +216,24 @@ def sample_volume(
     -------
     points : np.ndarray, shape ``[<=n_points, 3]``, dtype ``float32``
     """
-    bbox_min = mesh.vertices.min(axis=0)
-    extent = mesh.vertices.max(axis=0) - bbox_min
+    extent = mesh.vertices.max(axis=0) - mesh.vertices.min(axis=0)
     bbox_vol = extent.prod()
 
     if pitch is None:
         pitch = float((bbox_vol / (10.0 * n_points)) ** (1.0 / 3.0))
 
-    grid = _make_grid(bbox_min, extent, pitch)
-    inside = mesh.contains(grid)
-    candidates = grid[inside]
+    candidates = _voxel_fill_candidates(mesh, pitch)
 
     if min_dist is None:
-        interior_vol = len(candidates) * (pitch**3)
+        interior_vol = len(candidates) * (pitch**3) if len(candidates) > 0 else bbox_vol
         min_dist = float((interior_vol / n_points) ** (1.0 / 3.0)) * 0.75
         # Ensure pitch is fine enough relative to min_dist.
         if pitch > min_dist * 0.6:
             pitch = min_dist * 0.4
-            grid = _make_grid(bbox_min, extent, pitch)
-            inside = mesh.contains(grid)
-            candidates = grid[inside]
+            candidates = _voxel_fill_candidates(mesh, pitch)
+
+    if len(candidates) == 0:
+        return np.empty((0, 3), dtype=np.float32)
 
     rng = np.random.default_rng(seed)
     pts = _poisson_disk_subsample(candidates, min_dist, n_points, rng)

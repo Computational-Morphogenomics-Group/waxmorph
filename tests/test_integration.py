@@ -1,12 +1,10 @@
 """Integration test: Warp state -> graph construction -> GNS forward."""
 
 import numpy as np
-import torch
-import pytest
 import warp as wp
 
-from waxmorph.graph import build_graph
 from waxmorph.gnn import GNS
+from waxmorph.graph import build_graph
 
 wp.init()
 
