@@ -433,6 +433,10 @@ class PyVistaInterface(RenderInterface):
 
 
 class _BaseBackend:
+    # If True, the renderer expects the full max_particles buffer every frame
+    # (inactive particles zeroed out) rather than a slice of only active ones.
+    needs_full_buffer: bool = False
+
     def render_points_frame(self, *, t: float, points, radius, colors, name: str) -> None:
         raise NotImplementedError
 
@@ -563,6 +567,8 @@ class _OpenGLVideoBackend(_BaseBackend):
 
 
 class _UsdStageBackend(_BaseBackend):
+    needs_full_buffer: bool = True
+
     def __init__(
         self,
         stage_path: str,
@@ -629,7 +635,7 @@ class WarpMovieRenderer:
         filename: str,
         max_particles: int,
         *,
-        backend: Literal["opengl", "usd"] = "opengl",
+        backend: Literal["opengl", "usd"] = "usd",
         width: int = 1280,
         height: int = 720,
         fps: int = 60,
@@ -829,10 +835,17 @@ class WarpMovieRenderer:
         return n
 
     def _render(self, t: float, n_active: int, mesh_points=None, mesh_indices=None) -> None:
-        # render_points currently wants CPU-indexable arrays, so we copy here
-        pts = self._points_f32.numpy()[:n_active]
-        rad = self._radii_f32.numpy()[:n_active]
-        col = self._colors_f32.numpy()[:n_active]
+        # render_points currently wants CPU-indexable arrays, so we copy here.
+        # USD backend needs the full buffer so the PointInstancer is created at
+        # max capacity; inactive particles have radius=0 (scale=0 → invisible).
+        if self._backend.needs_full_buffer:
+            pts = self._points_f32.numpy()
+            rad = self._radii_f32.numpy()
+            col = self._colors_f32.numpy()
+        else:
+            pts = self._points_f32.numpy()[:n_active]
+            rad = self._radii_f32.numpy()[:n_active]
+            col = self._colors_f32.numpy()[:n_active]
 
         self._backend.render_points_frame(
             t=float(t),

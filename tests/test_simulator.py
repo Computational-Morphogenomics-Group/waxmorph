@@ -420,11 +420,14 @@ class TestCountNeighbors:
         n_epi = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
         n_mes = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
 
-        wp.launch(
-            simulator.count_neighbors,
-            dim=(s["particle_count"], s["particle_count"]),
-            inputs=[s["X"], s["R"], s["CT"]],
-            outputs=[n_tot, n_epi, n_mes],
+        simulator.count_neighbors_step(
+            s["X"],
+            s["R"],
+            s["CT"],
+            s["particle_count"],
+            n_tot,
+            n_epi,
+            n_mes,
             device=DEVICE,
         )
 
@@ -439,11 +442,14 @@ class TestCountNeighbors:
         n_epi = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
         n_mes = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
 
-        wp.launch(
-            simulator.count_neighbors,
-            dim=(s["particle_count"], s["particle_count"]),
-            inputs=[s["X"], s["R"], s["CT"]],
-            outputs=[n_tot, n_epi, n_mes],
+        simulator.count_neighbors_step(
+            s["X"],
+            s["R"],
+            s["CT"],
+            s["particle_count"],
+            n_tot,
+            n_epi,
+            n_mes,
             device=DEVICE,
         )
 
@@ -491,11 +497,14 @@ class TestDivision:
         n_tot = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
         n_epi = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
         n_mes = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
-        wp.launch(
-            simulator.count_neighbors,
-            dim=(s["particle_count"], s["particle_count"]),
-            inputs=[s["X"], s["R"], s["CT"]],
-            outputs=[n_tot, n_epi, n_mes],
+        simulator.count_neighbors_step(
+            s["X"],
+            s["R"],
+            s["CT"],
+            s["particle_count"],
+            n_tot,
+            n_epi,
+            n_mes,
             device=DEVICE,
         )
 
@@ -581,11 +590,14 @@ class TestDivision:
         n_tot = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
         n_epi = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
         n_mes = wp.zeros(s["max_particles"], dtype=wp.int32, device=DEVICE)
-        wp.launch(
-            simulator.count_neighbors,
-            dim=(s["particle_count"], s["particle_count"]),
-            inputs=[s["X"], s["R"], s["CT"]],
-            outputs=[n_tot, n_epi, n_mes],
+        simulator.count_neighbors_step(
+            s["X"],
+            s["R"],
+            s["CT"],
+            s["particle_count"],
+            n_tot,
+            n_epi,
+            n_mes,
             device=DEVICE,
         )
 
@@ -648,11 +660,14 @@ class TestDivision:
         n_tot = wp.zeros(max_p, dtype=wp.int32, device=DEVICE)
         n_epi = wp.zeros(max_p, dtype=wp.int32, device=DEVICE)
         n_mes = wp.zeros(max_p, dtype=wp.int32, device=DEVICE)
-        wp.launch(
-            simulator.count_neighbors,
-            dim=(s["particle_count"], s["particle_count"]),
-            inputs=[s["X"], s["R"], s["CT"]],
-            outputs=[n_tot, n_epi, n_mes],
+        simulator.count_neighbors_step(
+            s["X"],
+            s["R"],
+            s["CT"],
+            s["particle_count"],
+            n_tot,
+            n_epi,
+            n_mes,
             device=DEVICE,
         )
 

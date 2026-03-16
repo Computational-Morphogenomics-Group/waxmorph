@@ -5,7 +5,7 @@ This module is the low-level kernel counterpart of the emulator for generating c
 
 import warp as wp
 
-from .constants import EPS_DEN, EPS_DIST, EPS_NORM, FOUR_THIRDS_PI, RAND_EPS
+from .constants import EPS_DEN, EPS_NORM, FOUR_THIRDS_PI, HASH_GRID_DIM, RAND_EPS
 
 ############################################################
 ############################################################
@@ -17,6 +17,7 @@ from .constants import EPS_DEN, EPS_DIST, EPS_NORM, FOUR_THIRDS_PI, RAND_EPS
 ############################################################
 ############################################################
 
+EPS_DIST = 25e-2
 
 # Interface tension
 
@@ -263,62 +264,70 @@ def mes_polarity_grads(p_i: wp.vec3f, p_j: wp.vec3f):
 
 @wp.kernel(enable_backward=False)
 def sticky_sphere_grads(
+    grid: wp.uint64,
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
     P: wp.array(dtype=wp.vec3f),
     CT: wp.array(dtype=wp.uint32),
+    query_radius: wp.float32,
     gx: wp.array(dtype=wp.vec3f),
     gp: wp.array(dtype=wp.vec3f),
 ):
     """Accumulate mechanics and polarity gradients over all unordered pairs."""
-    i, j = wp.tid()
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid, tid)
 
-    # Skip self + ensure each unordered pair is counted once
-    if wp.int32(j) <= wp.int32(i):
-        return
+    x_i = X[i]
+    r_i = R[i]
+    c_i = CT[i]
+    p_i = P[i]
 
-    x_i, x_j = X[i], X[j]
-    r_i, r_j = R[i], R[j]
-    c_i, c_j = CT[i], CT[j]
-    p_i, p_j = P[i], P[j]
+    for j in wp.hash_grid_query(grid, x_i, query_radius):
+        if j <= i:
+            continue
 
-    # Forces
-    grad_x_i_f, grad_x_j_f = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
-    wp.atomic_add(gx, i, grad_x_i_f)
-    wp.atomic_add(gx, j, grad_x_j_f)
+        x_j = X[j]
+        r_j = R[j]
+        c_j = CT[j]
+        p_j = P[j]
 
-    # Polarity Neighbors
-    dist = wp.norm_l2(x_i - x_j)
-    w = adj_weight(dist, r_i, r_j)
+        # Forces
+        grad_x_i_f, grad_x_j_f = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
+        wp.atomic_add(gx, i, grad_x_i_f)
+        wp.atomic_add(gx, j, grad_x_j_f)
 
-    if not wp.bool(w):
-        return
+        # Polarity Neighbors
+        dist = wp.norm_l2(x_i - x_j)
+        w = adj_weight(dist, r_i, r_j)
 
-    # Polarities - epithelium
-    if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
-        grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = epi_polarity_grads(x_i, x_j, p_i, p_j)
-        grad_x_i_t, grad_x_j_t = epi_thickness_grads(x_i, x_j, p_i, p_j)
+        if not wp.bool(w):
+            continue
 
-        # # Match magnitudes so movement doesn't blink
-        for k in range(3):
-            v_i = wp.max(wp.abs(grad_x_i_f[k]), wp.float32(1e-3))
-            v_j = wp.max(wp.abs(grad_x_j_f[k]), wp.float32(1e-3))
+        # Polarities - epithelium
+        if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
+            grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = epi_polarity_grads(x_i, x_j, p_i, p_j)
+            grad_x_i_t, grad_x_j_t = epi_thickness_grads(x_i, x_j, p_i, p_j)
 
-            grad_x_i_p[k] = wp.clamp(grad_x_i_p[k], -1.0 * v_i, 1.0 * v_i)
-            grad_x_j_p[k] = wp.clamp(grad_x_j_p[k], -1.0 * v_j, 1.0 * v_j)
+            # # Match magnitudes so movement doesn't blink
+            for k in range(3):
+                v_i = wp.max(wp.abs(grad_x_i_f[k]), wp.float32(1e-3))
+                v_j = wp.max(wp.abs(grad_x_j_f[k]), wp.float32(1e-3))
 
-        wp.atomic_add(gx, i, grad_x_i_p)
-        wp.atomic_add(gx, j, grad_x_j_p)
-        wp.atomic_add(gx, i, grad_x_i_t)
-        wp.atomic_add(gx, j, grad_x_j_t)
-        wp.atomic_add(gp, i, grad_p_i)
-        wp.atomic_add(gp, j, grad_p_j)
+                grad_x_i_p[k] = wp.clamp(grad_x_i_p[k], -1.0 * v_i, 1.0 * v_i)
+                grad_x_j_p[k] = wp.clamp(grad_x_j_p[k], -1.0 * v_j, 1.0 * v_j)
 
-    # Polarities - mesenchyme
-    if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
-        grad_p_i, grad_p_j = mes_polarity_grads(p_i, p_j)
-        wp.atomic_add(gp, i, grad_p_i)
-        wp.atomic_add(gp, j, grad_p_j)
+            wp.atomic_add(gx, i, grad_x_i_p)
+            wp.atomic_add(gx, j, grad_x_j_p)
+            wp.atomic_add(gx, i, grad_x_i_t)
+            wp.atomic_add(gx, j, grad_x_j_t)
+            wp.atomic_add(gp, i, grad_p_i)
+            wp.atomic_add(gp, j, grad_p_j)
+
+        # Polarities - mesenchyme
+        if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
+            grad_p_i, grad_p_j = mes_polarity_grads(p_i, p_j)
+            wp.atomic_add(gp, i, grad_p_i)
+            wp.atomic_add(gp, j, grad_p_j)
 
 
 @wp.kernel
@@ -360,6 +369,7 @@ def mech_step_sticky(
     P_next: wp.array(dtype=wp.vec3f),
     device: str = "cuda",
     grad_consist: bool = False,
+    grid: "wp.HashGrid | None" = None,
 ):
     """Execute one mechanics step for positions and polarities.
 
@@ -373,11 +383,16 @@ def mech_step_sticky(
     gx = wp.zeros_like(X, device=device)
     gp = wp.zeros_like(P, device=device)
 
-    # 2D launch required for i,j indexing.
+    r_max = float(R.numpy()[:particle_count].max())
+    query_radius = 2.0 * r_max + ATR_EE_CUTOFF
+    if grid is None:
+        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+    grid.build(X[:particle_count], query_radius)
+
     wp.launch(
         sticky_sphere_grads,
-        dim=(particle_count, particle_count),
-        inputs=[X, R, P, CT],
+        dim=particle_count,
+        inputs=[wp.uint64(grid.id), X, R, P, CT, query_radius],
         outputs=[gx, gp],
         device=device,
     )
@@ -424,8 +439,10 @@ def mech_step_sticky(
 
 @wp.kernel
 def reaction_diffs(
+    grid: wp.uint64,
     X: wp.array(dtype=wp.vec3f),  # (N, 3)
     R: wp.array(dtype=wp.float32),  # (N,)
+    query_radius: wp.float32,
     A: wp.array(dtype=wp.float32),  # (N,)
     I: wp.array(dtype=wp.float32),  # (N,)
     lapA: wp.array(dtype=wp.float32),  # (N,) out (accum)
@@ -433,33 +450,39 @@ def reaction_diffs(
 ):
     """Accumulate graph-laplacian diffusion terms for A/I channels."""
 
-    i, j = wp.tid()
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid, tid)
+    x_i = X[i]
+    Ri = R[i]
+    Vi = volume_from_radius(Ri)
+    cAi = safe_div(A[i], Vi)
+    cIi = safe_div(I[i], Vi)
 
-    if wp.int32(j) <= wp.int32(i):
-        return
+    for j in wp.hash_grid_query(grid, x_i, query_radius):
+        if j <= i:
+            continue
 
-    Ri, Rj = R[i], R[j]
-    Vi, Vj = volume_from_radius(Ri), volume_from_radius(Rj)
-    cAi, cAj = safe_div(A[i], Vi), safe_div(A[j], Vj)
-    cIi, cIj = safe_div(I[i], Vi), safe_div(I[j], Vj)
+        Rj = R[j]
+        dist = wp.norm_l2(x_i - X[j])
+        w = adj_weight(dist, Ri, Rj)
 
-    dist = wp.norm_l2(X[i] - X[j])
+        # Prune non neighbors
+        if not wp.bool(w):
+            continue
 
-    w = adj_weight(dist, Ri, Rj)
+        Vj = volume_from_radius(Rj)
+        cAj = safe_div(A[j], Vj)
+        cIj = safe_div(I[j], Vj)
 
-    # Prune non neighbors
-    if not wp.bool(w):
-        return
+        # Pairwise flux contribution: w * (c_j - c_i)
+        dA = wp.float32(w) * (cAj - cAi)
+        dI = wp.float32(w) * (cIj - cIi)
 
-    # Pairwise flux contribution: w * (c_j - c_i)
-    dA = wp.float32(w) * (cAj - cAi)
-    dI = wp.float32(w) * (cIj - cIi)
-
-    # Symmetric accumulation: +d to i, -d to j
-    wp.atomic_add(lapA, i, dA)
-    wp.atomic_add(lapA, j, -dA)
-    wp.atomic_add(lapI, i, dI)
-    wp.atomic_add(lapI, j, -dI)
+        # Symmetric accumulation: +d to i, -d to j
+        wp.atomic_add(lapA, i, dA)
+        wp.atomic_add(lapA, j, -dA)
+        wp.atomic_add(lapI, i, dI)
+        wp.atomic_add(lapI, j, -dI)
 
 
 @wp.kernel
@@ -531,14 +554,21 @@ def chem_step(
     I_next: wp.array,
     device: str = "cuda",
     grad_consist: bool = True,
+    grid: "wp.HashGrid | None" = None,
 ):
     """Run chemistry stage: diffusion laplacian then reaction update."""
+
+    r_max = float(R.numpy()[:particle_count].max())
+    query_radius = 2.0 * r_max + EPS_DIST
+    if grid is None:
+        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+    grid.build(X[:particle_count], query_radius)
 
     # Cache laplacian
     wp.launch(
         reaction_diffs,
-        dim=(particle_count, particle_count),
-        inputs=[X, R, A, I],
+        dim=particle_count,
+        inputs=[wp.uint64(grid.id), X, R, query_radius, A, I],
         outputs=[lapA, lapI],
         device=device,
     )
@@ -580,42 +610,87 @@ def chem_step(
 
 @wp.kernel
 def count_neighbors(
+    grid: wp.uint64,
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
     CT: wp.array(dtype=wp.uint32),
+    query_radius: wp.float32,
     n_tot: wp.array(dtype=wp.int32),
     n_epi: wp.array(dtype=wp.int32),
     n_mes: wp.array(dtype=wp.int32),
 ):
     """Count local neighborhood totals and type-specific neighbors."""
-    i, j = wp.tid()
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid, tid)
+    x_i = X[i]
+    r_i = R[i]
 
-    if wp.int32(j) <= wp.int32(i):
-        return
+    for j in wp.hash_grid_query(grid, x_i, query_radius):
+        if j <= i:
+            continue
 
-    xi, xj = X[i], X[j]
-    ri, rj = R[i], R[j]
+        r_j = R[j]
+        dist = wp.norm_l2(x_i - X[j])
+        w = adj_weight(dist, r_i, r_j)
 
-    dist = wp.norm_l2(xi - xj)
-    w = adj_weight(dist, ri, rj)
+        if not wp.bool(w):
+            continue
 
-    if not wp.bool(w):
-        return
+        # total counts
+        wp.atomic_add(n_tot, i, 1)
+        wp.atomic_add(n_tot, j, 1)
 
-    # total counts
-    wp.atomic_add(n_tot, i, 1)
-    wp.atomic_add(n_tot, j, 1)
+        # type-specific (neighbor type)
+        if CT[j] == wp.uint32(1):
+            wp.atomic_add(n_epi, i, 1)
+        else:
+            wp.atomic_add(n_mes, i, 1)
 
-    # type-specific (neighbor type)
-    if CT[j] == wp.uint32(1):
-        wp.atomic_add(n_epi, i, 1)
-    else:
-        wp.atomic_add(n_mes, i, 1)
+        if CT[i] == wp.uint32(1):
+            wp.atomic_add(n_epi, j, 1)
+        else:
+            wp.atomic_add(n_mes, j, 1)
 
-    if CT[i] == wp.uint32(1):
-        wp.atomic_add(n_epi, j, 1)
-    else:
-        wp.atomic_add(n_mes, j, 1)
+
+def count_neighbors_step(
+    X: wp.array,
+    R: wp.array,
+    CT: wp.array,
+    particle_count: int,
+    n_tot: wp.array,
+    n_epi: wp.array,
+    n_mes: wp.array,
+    device: str = "cuda",
+    grid: "wp.HashGrid | None" = None,
+) -> None:
+    """Count neighbors using HashGrid acceleration.
+
+    Parameters
+    ----------
+    X, R, CT : wp.array
+        Positions, radii, cell types.
+    particle_count : int
+        Number of active particles.
+    n_tot, n_epi, n_mes : wp.array(dtype=wp.int32)
+        Output arrays (must be pre-zeroed by the caller).
+    device : str
+        Warp device.
+    grid : wp.HashGrid or None
+        Optional pre-allocated hash grid.
+    """
+    r_max = float(R.numpy()[:particle_count].max())
+    query_radius = 2.0 * r_max + EPS_DIST
+    if grid is None:
+        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+    grid.build(X[:particle_count], query_radius)
+
+    wp.launch(
+        count_neighbors,
+        dim=particle_count,
+        inputs=[wp.uint64(grid.id), X, R, CT, query_radius],
+        outputs=[n_tot, n_epi, n_mes],
+        device=device,
+    )
 
 
 def growth_step(

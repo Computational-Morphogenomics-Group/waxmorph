@@ -1,6 +1,6 @@
 import warp as wp
 
-from .constants import EPS_DIST, EPS_NORM
+from .constants import EPS_DIST, EPS_NORM, HASH_GRID_DIM
 
 ############################################################
 ############################################################
@@ -47,20 +47,24 @@ def _sticky_sphere_forces(
 
 @wp.kernel(enable_backward=False)
 def _sticky_sphere_grads(
+    grid: wp.uint64,
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
+    query_radius: wp.float32,
     gx: wp.array(dtype=wp.vec3f),
 ):
     """Accumulate net mechanics gradient per cell from all unordered pairs."""
-    i, j = wp.tid()
-    if j <= i:
-        return
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid, tid)
+    x_i = X[i]
+    r_i = R[i]
 
-    x_i, x_j = X[i], X[j]
-    r_i, r_j = R[i], R[j]
-    force_i, force_j = _sticky_sphere_forces(x_i, x_j, r_i, r_j)
-    wp.atomic_add(gx, i, force_i)
-    wp.atomic_add(gx, j, force_j)
+    for j in wp.hash_grid_query(grid, x_i, query_radius):
+        if j <= i:
+            continue
+        force_i, force_j = _sticky_sphere_forces(x_i, X[j], r_i, R[j])
+        wp.atomic_add(gx, i, force_i)
+        wp.atomic_add(gx, j, force_j)
 
 
 @wp.kernel
@@ -280,8 +284,10 @@ def _adj_weight(dist: wp.float32, ri: wp.float32, rj: wp.float32) -> wp.bool:
 
 @wp.kernel
 def _gene_diffusion_laplacian(
+    grid: wp.uint64,
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
+    query_radius: wp.float32,
     G: wp.array2d(dtype=wp.float32),
     lap_G: wp.array2d(dtype=wp.float32),
 ):
@@ -290,20 +296,24 @@ def _gene_diffusion_laplacian(
     For each adjacent pair (i, j) and each gene g, computes the flux
     ``G[j, g] - G[i, g]`` and accumulates symmetrically into ``lap_G``.
     """
-    i, j = wp.tid()
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid, tid)
+    x_i = X[i]
+    r_i = R[i]
 
-    if wp.int32(j) <= wp.int32(i):
-        return
+    for j in wp.hash_grid_query(grid, x_i, query_radius):
+        if j <= i:
+            continue
 
-    dist = wp.length(X[i] - X[j]) + EPS_NORM
-    if not _adj_weight(dist, R[i], R[j]):
-        return
+        dist = wp.length(x_i - X[j]) + EPS_NORM
+        if not _adj_weight(dist, r_i, R[j]):
+            continue
 
-    num_genes = G.shape[1]
-    for g in range(num_genes):
-        flux = G[j, g] - G[i, g]
-        wp.atomic_add(lap_G, i, g, flux)
-        wp.atomic_add(lap_G, j, g, -flux)
+        num_genes = G.shape[1]
+        for g in range(num_genes):
+            flux = G[j, g] - G[i, g]
+            wp.atomic_add(lap_G, i, g, flux)
+            wp.atomic_add(lap_G, j, g, -flux)
 
 
 @wp.kernel
@@ -331,6 +341,7 @@ def diffusion_step(
     particle_count: int,
     alpha: float = 0.1,
     dt: float = 1e-2,
+    grid: "wp.HashGrid | None" = None,
 ) -> None:
     """Run one graph-Laplacian diffusion step for all gene channels.
 
@@ -350,14 +361,24 @@ def diffusion_step(
         Diffusion coefficient.
     dt : float
         Time step.
+    grid : wp.HashGrid or None
+        Optional pre-allocated hash grid (created internally if *None*).
     """
     lap_G.zero_()
 
+    device = X.device
+    r_max = float(R.numpy()[:particle_count].max())
+    query_radius = 2.0 * r_max + EPS_DIST
+    if grid is None:
+        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+    grid.build(X[:particle_count], query_radius)
+
     wp.launch(
         _gene_diffusion_laplacian,
-        dim=(particle_count, particle_count),
-        inputs=[X, R, G],
+        dim=particle_count,
+        inputs=[wp.uint64(grid.id), X, R, query_radius, G],
         outputs=[lap_G],
+        device=device,
     )
 
     num_genes = int(G.shape[1])
@@ -365,6 +386,7 @@ def diffusion_step(
         _gene_diffusion_step,
         dim=(int(G.shape[0]), num_genes),
         inputs=[G, lap_G, float(alpha), float(dt), particle_count],
+        device=device,
     )
 
 
@@ -385,19 +407,28 @@ def mech_step_sticky(
     particle_count: int,
     dt: float,
     gx: wp.array,
+    grid: "wp.HashGrid | None" = None,
 ):
     """Run one sticky-sphere mechanics step and return position gradients."""
 
     gx.zero_()
 
+    device = X.device
+    r_max = float(R.numpy()[:particle_count].max())
+    query_radius = 2.0 * r_max + EPS_DIST
+    if grid is None:
+        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+    grid.build(X[:particle_count], query_radius)
+
     wp.launch(
         _sticky_sphere_grads,
-        dim=(particle_count, particle_count),
-        inputs=[X, R],
+        dim=particle_count,
+        inputs=[wp.uint64(grid.id), X, R, query_radius],
         outputs=[gx],
+        device=device,
     )
 
-    wp.launch(_gd_update, dim=particle_count, inputs=[X, gx, dt], outputs=[X])
+    wp.launch(_gd_update, dim=particle_count, inputs=[X, gx, dt], outputs=[X], device=device)
 
 
 def divide_cells(
