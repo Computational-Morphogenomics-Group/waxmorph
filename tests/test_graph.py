@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-import torch
 import warp as wp
 
 from waxmorph.graph import (
@@ -124,7 +123,7 @@ class TestBuildEdgeFeatures:
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
 
         assert edge_feats.shape[0] == edge_index.shape[1]
-        assert edge_feats.shape[1] == 4
+        assert edge_feats.shape[1] == 2  # dist, angle
 
     def test_parallel_polarities_zero_angle(self):
         """Same polarity direction → angle = 0."""
@@ -136,8 +135,8 @@ class TestBuildEdgeFeatures:
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
 
-        # angle column (index 3) should be ~0
-        assert edge_feats[:, 3].abs().max().item() == pytest.approx(0.0, abs=1e-5)
+        # angle column (index 1) should be ~0
+        assert edge_feats[:, 1].abs().max().item() == pytest.approx(0.0, abs=1e-5)
 
     def test_antiparallel_polarities_pi_angle(self):
         """Opposite polarity direction → angle = pi."""
@@ -149,10 +148,10 @@ class TestBuildEdgeFeatures:
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
 
-        assert edge_feats[:, 3].max().item() == pytest.approx(np.pi, abs=1e-5)
+        assert edge_feats[:, 1].max().item() == pytest.approx(np.pi, abs=1e-5)
 
-    def test_relative_position_antisymmetric(self):
-        """dx,dy,dz should be antisymmetric for i->j vs j->i."""
+    def test_distance_symmetric(self):
+        """Distance should be the same for i->j and j->i."""
         positions = [[0, 0, 0], [1, 2, 3]]
         radii = [3.0, 3.0]
         X, P, R, _G, n = _make_state(positions, radii)
@@ -160,10 +159,11 @@ class TestBuildEdgeFeatures:
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
 
-        # Two edges: 0->1 and 1->0
-        rel0 = edge_feats[0, :3]
-        rel1 = edge_feats[1, :3]
-        assert torch.allclose(rel0, -rel1, atol=1e-5)
+        # Two edges: 0->1 and 1->0, distance should match
+        assert edge_feats[0, 0].item() == pytest.approx(edge_feats[1, 0].item(), abs=1e-5)
+        # Check actual distance value
+        expected_dist = (1**2 + 2**2 + 3**2) ** 0.5
+        assert edge_feats[0, 0].item() == pytest.approx(expected_dist, abs=1e-4)
 
 
 class TestSparseMatchesDense:
@@ -191,5 +191,5 @@ class TestBuildGraph:
 
         assert node_feats.shape == (3, 5)  # genes only
         assert edge_index.shape[0] == 2
-        assert edge_feats.shape[1] == 4  # dx, dy, dz, angle
+        assert edge_feats.shape[1] == 2  # dist, angle
         assert edge_feats.shape[0] == edge_index.shape[1]

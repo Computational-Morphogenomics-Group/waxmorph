@@ -112,13 +112,13 @@ def build_edge_features(
 
     Feature layout per edge ``(i -> j)``::
 
-        [dx, dy, dz, angle(P_i, P_j)]
+        [dist, angle(P_i, P_j)]
 
-    Dimensions: ``3 + 1 = 4``.
+    Dimensions: ``1 + 1 = 2``.
 
     Returns
     -------
-    edge_features : torch.Tensor, shape ``[E, 4]``
+    edge_features : torch.Tensor, shape ``[E, 2]``
     """
     pos = _wp_to_torch(X, particle_count).float()
     pol = _wp_to_torch(P, particle_count).float()
@@ -127,13 +127,14 @@ def build_edge_features(
     receivers = edge_index[1]
 
     rel_pos = pos[senders] - pos[receivers]
+    dist = rel_pos.norm(dim=-1, keepdim=True)
 
     p_s = pol[senders]
     p_r = pol[receivers]
     cos_angle = (p_s * p_r).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
     angle = torch.acos(cos_angle)
 
-    feats = torch.cat([rel_pos, angle], dim=-1)
+    feats = torch.cat([dist, angle], dim=-1)
 
     if device is not None:
         feats = feats.to(device)
@@ -156,7 +157,7 @@ def build_graph(
     -------
     node_features : torch.Tensor ``[N, G]``
     edge_index    : torch.Tensor ``[2, E]``
-    edge_features : torch.Tensor ``[E, 4]``
+    edge_features : torch.Tensor ``[E, 2]``
     """
     edge_index = build_edge_index(X, R, particle_count, eps_dist, device)
     node_features = build_node_features(G, particle_count, device)

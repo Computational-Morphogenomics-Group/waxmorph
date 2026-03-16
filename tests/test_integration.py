@@ -63,7 +63,7 @@ def test_warp_to_gns_roundtrip():
 
     assert node_feats.shape == (particle_count, num_genes)
     assert edge_index.shape[0] == 2
-    assert edge_feats.shape[1] == 4
+    assert edge_feats.shape[1] == 2
     assert edge_index.shape[1] > 0, "Should have at least some edges"
 
     # Run GNS
