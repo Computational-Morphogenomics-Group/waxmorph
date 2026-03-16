@@ -191,6 +191,59 @@ class TestGNS:
         assert node_feat.grad.shape == (20, 11)
 
 
+class TestGNSSaveLoad:
+    def test_save_load_roundtrip(self, tmp_path):
+        """Saved and loaded model produces identical output."""
+        torch.manual_seed(42)
+        gns = GNS(
+            node_feature_dim=9,
+            edge_feature_dim=4,
+            node_latent_dim=32,
+            edge_latent_dim=32,
+            hidden_dim=32,
+            num_mp_steps=3,
+            output_dims={"dX": 3, "dP": 3, "dG": 2},
+            activation="silu",
+        )
+        node_feat = torch.randn(10, 9)
+        edge_idx = torch.randint(0, 10, (2, 30))
+        edge_feat = torch.randn(30, 4)
+
+        out_orig = gns(node_feat, edge_idx, edge_feat)
+
+        path = tmp_path / "model.pt"
+        gns.save(path)
+        gns2 = GNS.load(path)
+
+        out_loaded = gns2(node_feat, edge_idx, edge_feat)
+        for key in out_orig:
+            torch.testing.assert_close(out_orig[key], out_loaded[key])
+
+    def test_save_load_preserves_config(self, tmp_path):
+        """Loaded model has the same architecture config."""
+        gns = GNS(
+            node_feature_dim=5,
+            edge_feature_dim=3,
+            node_latent_dim=64,
+            edge_latent_dim=48,
+            hidden_dim=64,
+            num_mp_steps=7,
+            num_mlp_layers=3,
+            output_dims={"dX": 3},
+            activation="gelu",
+            layer_norm=False,
+            checkpoint_processor=True,
+        )
+        path = tmp_path / "model.pt"
+        gns.save(path)
+        gns2 = GNS.load(path)
+
+        assert len(gns2.processor) == 7
+        assert gns2.checkpoint_processor is True
+        assert gns2.node_encoder.activation_name == "gelu"
+        assert list(gns2.decoders.keys()) == ["dX"]
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for memory test")
 class TestTBPTTMemoryScaling:
     """Verify truncated BPTT bounds memory by K, not T."""

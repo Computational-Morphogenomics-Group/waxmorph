@@ -543,9 +543,9 @@ class TestDivision:
         )
 
         new_count = min(div_count.numpy().item(), s["max_particles"])
-        assert new_count >= pcount, (
-            f"Expected division to produce new particles. " f"Before: {pcount}, after: {new_count}"
-        )
+        assert (
+            new_count >= pcount
+        ), f"Expected division to produce new particles. Before: {pcount}, after: {new_count}"
 
     def test_division_conserves_chemicals(self):
         """Division should split activator/inhibitor evenly (mass conserved)."""

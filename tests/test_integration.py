@@ -56,17 +56,14 @@ def test_warp_to_gns_roundtrip():
     X = wp.from_numpy(centers, dtype=wp.vec3f, device=DEVICE)
     P = wp.from_numpy(polarities, dtype=wp.vec3f, device=DEVICE)
     R = wp.from_numpy(radii, dtype=wp.float32, device=DEVICE)
-    CT = wp.from_numpy(cell_types, dtype=wp.uint32, device=DEVICE)
     G = wp.from_numpy(genes, dtype=wp.float32, device=DEVICE)
 
     # Build graph
-    node_feats, edge_index, edge_feats = build_graph(
-        X, P, R, CT, particle_count=particle_count, G=G
-    )
+    node_feats, edge_index, edge_feats = build_graph(X, P, R, particle_count=particle_count, G=G)
 
-    assert node_feats.shape == (particle_count, 9 + num_genes)
+    assert node_feats.shape == (particle_count, num_genes)
     assert edge_index.shape[0] == 2
-    assert edge_feats.shape[1] == 7
+    assert edge_feats.shape[1] == 4
     assert edge_index.shape[1] > 0, "Should have at least some edges"
 
     # Run GNS

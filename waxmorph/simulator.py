@@ -749,7 +749,6 @@ def division_decision(
     p = wp.float32(0.0)
 
     if CT[parent] == wp.uint32(1):
-
         if n_mes[parent] <= wp.int32(0):
             keys[parent] = key
             return
@@ -761,7 +760,6 @@ def division_decision(
         p = p_epi
 
     else:
-
         p = probs(R[parent], R_div_ref)
 
     # Sample division (Gumbel-ST)
