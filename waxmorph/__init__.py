@@ -16,11 +16,14 @@ from .graph import (
 )
 from .losses import SAMPLES_LOSS_DEFAULTS, chamfer_distance, make_samples_loss, squared_loss
 from .mlp import MLP
+from .train import TrainConfig, TrainResult, train
 
 __all__ = [
     "GNS",
     "MLP",
     "GraphNetworkBlock",
+    "TrainConfig",
+    "TrainResult",
     "__version__",
     "build_edge_features",
     "build_edge_index",
@@ -30,4 +33,5 @@ __all__ = [
     "chamfer_distance",
     "make_samples_loss",
     "squared_loss",
+    "train",
 ]
