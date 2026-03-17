@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 optional-dependencies.all = [
-  "waxmorph[simulation,learning,docs,dev]",
+  "waxmorph[simulation,learning,jax,docs,dev]",
 ]
 optional-dependencies.dev = [
   "black>=26",
@@ -47,6 +47,12 @@ optional-dependencies.docs = [
   "sphinx-autodoc-typehints>=2.3",
   "sphinx-book-theme>=1.1",
   "sphinxcontrib-bibtex>=2.6",
+]
+optional-dependencies.jax = [
+  "equinox>=0.11",
+  "jax[cuda12]>=0.4.30",
+  "optax>=0.2",
+  "ott-jax>=0.4",
 ]
 optional-dependencies.learning = [
   "geomloss>=0.2.6",
@@ -138,6 +144,7 @@ lint.per-file-ignores."tests/*" = [ "SIM" ]
 lint.per-file-ignores."tests/test_render.py" = [ "E402", "F841" ]
 lint.per-file-ignores."waxmorph/__init__.py" = [ "RUF022" ]
 lint.per-file-ignores."waxmorph/emulator.py" = [ "E741" ]
+lint.per-file-ignores."waxmorph/jax/__init__.py" = [ "RUF022" ]
 lint.per-file-ignores."waxmorph/simulator.py" = [ "E741", "RUF059" ]
 lint.isort.known-first-party = [ "waxmorph" ]
 
