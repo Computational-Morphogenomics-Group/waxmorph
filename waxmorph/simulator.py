@@ -901,16 +901,12 @@ def division_logic(
     v = P[parent]
     P[child] = v
 
-    if ct == wp.uint32(1):
-        # # Polarized division - divide on perpendicular surface
-        a = wp.vec3f(1.0, 0.0, 0.0)
-        if wp.abs(v[0]) > wp.float32(0.9):
-            a = wp.vec3f(0.0, 1.0, 0.0)
+    # # Polarized division - divide on perpendicular surface
+    a = wp.vec3f(1.0, 0.0, 0.0)
+    if wp.abs(v[0]) > wp.float32(0.9):
+        a = wp.vec3f(0.0, 1.0, 0.0)
 
-        u = wp.normalize(wp.cross(v, a))
-
-    else:
-        u = v
+    u = wp.normalize(wp.cross(v, a))
 
     x = X[parent]
     sep = 1.02 * r
