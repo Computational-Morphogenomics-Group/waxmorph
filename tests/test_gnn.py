@@ -79,7 +79,7 @@ class TestGNS:
 
         out = gns(node_feat, edge_idx, edge_feat)
 
-        assert set(out.keys()) == {"dX", "dP"}
+        assert set(out.keys()) == {"dX", "dP", "dG"}
 
     def test_gradient_flow(self):
         gns = GNS(
@@ -278,7 +278,7 @@ class TestTBPTTMemoryScaling:
 
         TBPTT detaches every K steps, so the autograd graph never exceeds K
         steps of history.  We test T=20, T=40, T=80 and assert peak memory
-        stays within 5% of the T=20 baseline.
+        stays at exactly the T=20 baseline.
         """
         K = 5
         model = GNS(

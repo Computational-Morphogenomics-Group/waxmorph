@@ -188,7 +188,7 @@ class GNS(eqx.Module):
         self.checkpoint_processor = checkpoint_processor
 
         if output_dims is None:
-            output_dims = {"dX": 3, "dP": 3}
+            output_dims = {"dX": 3, "dP": 3, "dG": 2}
 
         self._config = {
             "node_feature_dim": node_feature_dim,

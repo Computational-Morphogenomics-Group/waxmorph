@@ -39,7 +39,7 @@ def normalize_mesh(mesh: trimesh.Trimesh, target_extent: float = 10.0) -> trimes
     -------
     mesh : trimesh.Trimesh
     """
-    verts = mesh.vertices
+    verts = mesh.vertices.copy()
     center = (verts.max(axis=0) + verts.min(axis=0)) / 2
     mesh.vertices -= center
     scale = target_extent / (verts.max(axis=0) - verts.min(axis=0)).max()

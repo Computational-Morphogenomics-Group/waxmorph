@@ -157,9 +157,10 @@ class GNS(nn.Module):
     ):
         super().__init__()
         self.checkpoint_processor = checkpoint_processor
+        self._hidden_dim = hidden_dim
 
         if output_dims is None:
-            output_dims = {"dX": 3, "dP": 3}
+            output_dims = {"dX": 3, "dP": 3, "dG": 2}
 
         # --- Encoder ---
         self.node_encoder = MLP(
@@ -226,7 +227,7 @@ class GNS(nn.Module):
                         if isinstance(self.edge_encoder.net[-1], nn.Linear)
                         else self.edge_encoder.net[-1].normalized_shape[0]
                     ),
-                    "hidden_dim": self.node_encoder.net[0].out_features,
+                    "hidden_dim": self._hidden_dim,
                     "num_mp_steps": len(self.processor),
                     "num_mlp_layers": len(
                         [m for m in self.node_encoder.net if isinstance(m, nn.Linear)]

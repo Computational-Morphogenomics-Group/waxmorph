@@ -85,7 +85,7 @@ class TestGNS:
 
         out = gns(node_feat, edge_idx, edge_feat)
 
-        assert set(out.keys()) == {"dX", "dP"}
+        assert set(out.keys()) == {"dX", "dP", "dG"}
 
     def test_gradient_flow(self, key):
         gns = GNS(
