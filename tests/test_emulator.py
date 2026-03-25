@@ -5,8 +5,6 @@ import pytest
 import warp as wp
 
 from waxmorph.emulator import (
-    _ensure_capacity,
-    apply_policy_deltas,
     diffusion_step,
     mech_step_sticky,
 )
@@ -44,22 +42,6 @@ def _make_cluster(positions, radii, num_genes=2):
     lap_G = wp.zeros_like(G)
 
     return X, R, P, G, gx, lap_G, n
-
-
-# ---------------------------------------------------------------------------
-# _ensure_capacity
-# ---------------------------------------------------------------------------
-
-
-class TestEnsureCapacity:
-    def test_above_minimum(self):
-        assert _ensure_capacity(100, 50) == 100
-
-    def test_below_minimum(self):
-        assert _ensure_capacity(10, 50) == 50
-
-    def test_equal(self):
-        assert _ensure_capacity(50, 50) == 50
 
 
 # ---------------------------------------------------------------------------
@@ -178,64 +160,3 @@ class TestDiffusionStep:
 
         assert g_after[0, 0] == pytest.approx(1.0, abs=1e-6)
         assert g_after[1, 0] == pytest.approx(0.0, abs=1e-6)
-
-
-# ---------------------------------------------------------------------------
-# apply_policy_deltas
-# ---------------------------------------------------------------------------
-
-
-class TestApplyPolicyDeltas:
-    def test_gene_update(self):
-        """Gene values should change by dt * delta."""
-        n = 3
-        num_genes = 2
-
-        genes = np.ones((n, num_genes), dtype=np.float32) * 0.5
-        G = wp.from_numpy(genes, dtype=wp.float32, device=DEVICE)
-
-        delta_genes = np.ones((n, num_genes), dtype=np.float32) * 0.1
-        dG = wp.from_numpy(delta_genes, dtype=wp.float32, device=DEVICE)
-
-        pol = np.zeros((n, 3), dtype=np.float32)
-        pol[:, 2] = 1.0
-        P = wp.from_numpy(pol, dtype=wp.vec3f, device=DEVICE)
-
-        delta_pol = np.zeros((n, 3), dtype=np.float32)
-        dP = wp.from_numpy(delta_pol, dtype=wp.float32, device=DEVICE)
-
-        apply_policy_deltas(G, P, dG, dP, particle_count=n, dt=1.0)
-
-        g_after = G.numpy()
-        np.testing.assert_allclose(g_after, 0.6, atol=1e-5)
-
-    def test_polarity_stays_normalized(self):
-        """Polarities should be unit vectors after update."""
-        n = 5
-        num_genes = 1
-
-        genes = np.ones((n, num_genes), dtype=np.float32)
-        G = wp.from_numpy(genes, dtype=wp.float32, device=DEVICE)
-        dG = wp.zeros_like(G)
-
-        pol = np.zeros((n, 3), dtype=np.float32)
-        pol[:, 2] = 1.0
-        P = wp.from_numpy(pol, dtype=wp.vec3f, device=DEVICE)
-
-        delta_pol = np.random.default_rng(0).standard_normal((n, 3)).astype(np.float32) * 0.5
-        dP = wp.from_numpy(delta_pol, dtype=wp.float32, device=DEVICE)
-
-        apply_policy_deltas(G, P, dG, dP, particle_count=n, dt=0.1)
-
-        p_after = P.numpy()
-        norms = np.linalg.norm(p_after, axis=-1)
-        np.testing.assert_allclose(norms, 1.0, atol=1e-5)
-
-    def test_zero_count_no_op(self):
-        """particle_count=0 should not crash."""
-        G = wp.zeros((5, 2), dtype=wp.float32, device=DEVICE)
-        P = wp.zeros(5, dtype=wp.vec3f, device=DEVICE)
-        dG = wp.zeros_like(G)
-        dP = wp.zeros((5, 3), dtype=wp.float32, device=DEVICE)
-
-        apply_policy_deltas(G, P, dG, dP, particle_count=0, dt=1.0)

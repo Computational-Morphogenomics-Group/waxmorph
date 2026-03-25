@@ -45,7 +45,7 @@ def _sticky_sphere_forces(
     return f_ij, -f_ij
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel
 def _sticky_sphere_grads(
     grid: wp.uint64,
     X: wp.array(dtype=wp.vec3f),
@@ -68,6 +68,57 @@ def _sticky_sphere_grads(
 
 
 @wp.kernel
+def _build_neighbor_pairs(
+    grid: wp.uint64,
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
+    query_radius: wp.float32,
+    edges_i: wp.array(dtype=wp.int32),
+    edges_j: wp.array(dtype=wp.int32),
+    edge_count: wp.array(dtype=wp.int32),
+    max_edges: wp.int32,
+):
+    """Build unordered pair list (i < j) from hash-grid neighbors."""
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid, tid)
+    x_i = X[i]
+    r_i = R[i]
+
+    for j in wp.hash_grid_query(grid, x_i, query_radius):
+        if j <= i:
+            continue
+        dist = wp.length(x_i - X[j]) + EPS_NORM
+        threshold = r_i + R[j] + EPS_DIST
+        if dist > threshold:
+            continue
+        idx = wp.atomic_add(edge_count, 0, 1)
+        if idx < max_edges:
+            edges_i[idx] = i
+            edges_j[idx] = j
+
+
+@wp.kernel
+def _sticky_sphere_grads_from_pairs(
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
+    edges_i: wp.array(dtype=wp.int32),
+    edges_j: wp.array(dtype=wp.int32),
+    gx: wp.array(dtype=wp.vec3f),
+):
+    """Compute forces from precomputed neighbor pairs (tape-compatible).
+
+    Launched with ``dim=num_edges``. No hash grid queries inside — all
+    operations (reads, arithmetic, atomic_add) are differentiable in Warp.
+    """
+    e = wp.tid()
+    i = edges_i[e]
+    j = edges_j[e]
+    force_i, force_j = _sticky_sphere_forces(X[i], X[j], R[i], R[j])
+    wp.atomic_add(gx, i, force_i)
+    wp.atomic_add(gx, j, force_j)
+
+
+@wp.kernel
 def _gd_update(
     X: wp.array(dtype=wp.vec3f),
     gx: wp.array(dtype=wp.vec3f),
@@ -77,192 +128,6 @@ def _gd_update(
     """Euler step for positions: ``X_next = X + dt * force``."""
     i = wp.tid()
     X_next[i] = X[i] + lr * gx[i]
-
-
-@wp.kernel
-def _plan_divisions_from_hard_sample(
-    hard_division: wp.array2d(dtype=wp.float32),
-    div_count: wp.array(dtype=wp.int32),
-    div_slots: wp.array(dtype=wp.int32),
-    max_cells: wp.int32,
-):
-    """Reserve daughter slots for selected parents under capacity limits."""
-    i = wp.tid()
-    if hard_division[i, 0] <= wp.float32(0.5):
-        div_slots[i] = wp.int32(-1)
-        return
-
-    child = wp.atomic_add(div_count, 0, 1)
-    if child >= max_cells:
-        div_slots[i] = wp.int32(-1)
-        return
-
-    div_slots[i] = child
-
-
-@wp.kernel
-def _apply_division_geometry(
-    X: wp.array(dtype=wp.vec3f),
-    R: wp.array(dtype=wp.float32),
-    P: wp.array(dtype=wp.vec3f),
-    div_slots: wp.array(dtype=wp.int32),
-    division_direction: wp.array2d(dtype=wp.float32),
-):
-    """Place daughters using normalized direction and tangent separation."""
-    i = wp.tid()
-    child = div_slots[i]
-    if child == wp.int32(-1):
-        return
-
-    v = wp.vec3f(
-        division_direction[i, 0],
-        division_direction[i, 1],
-        division_direction[i, 2],
-    )
-    if wp.length(v) <= wp.float32(EPS_NORM):
-        v = P[i]
-    if wp.length(v) <= wp.float32(EPS_NORM):
-        v = wp.vec3f(1.0, 0.0, 0.0)
-    u = wp.normalize(v)
-
-    r = R[i]
-    x = X[i]
-    # Keep parent fixed; place daughter tangent to parent (center offset = 2R).
-    sep = wp.float32(2.0) * r
-    X[child] = x + u * sep
-    R[child] = r
-    P[child] = P[i]
-
-
-@wp.kernel
-def _apply_division_gene_split(
-    genes: wp.array2d(dtype=wp.float32),
-    div_slots: wp.array(dtype=wp.int32),
-):
-    """Conserve gene mass by splitting parent feature values evenly."""
-    i, g = wp.tid()
-    child = div_slots[i]
-    if child == wp.int32(-1):
-        return
-
-    v = genes[i, g]
-    genes[i, g] = wp.float32(0.5) * v
-    genes[child, g] = wp.float32(0.5) * v
-
-
-@wp.kernel
-def _apply_division_reward(
-    X: wp.array(dtype=wp.vec3f),
-    R: wp.array(dtype=wp.float32),
-    P: wp.array(dtype=wp.vec3f),
-    div_slots: wp.array(dtype=wp.int32),
-    gx: wp.array(dtype=wp.vec3f),
-    force_tol: float,
-    mesh_id: wp.uint64,
-    max_dist: float,
-    rewards: wp.array(dtype=wp.float32),
-):
-    """Division rewards per parent, after taking actions."""
-    i = wp.tid()
-    child = div_slots[i]
-
-    if child == -1:
-        return
-
-    new_pos = X[child]
-    q = wp.mesh_query_point_sign_normal(mesh_id, new_pos, max_dist)
-    is_inside = wp.bool(q.sign <= wp.float32(0.0))
-    # force_equilibrium = wp.bool(wp.length(gx[i]) <= force_tol)
-
-    if is_inside:
-        rewards[i] = wp.float32(3.0)
-    else:
-        rewards[i] = wp.float32(-3.0)
-
-
-@wp.kernel
-def _apply_gene_deltas(
-    genes: wp.array2d(dtype=wp.float32),
-    delta_genes: wp.array2d(dtype=wp.float32),
-    dt: wp.float32,
-    particle_count: wp.int32,
-):
-    """Euler update for genes with nonnegative clamp."""
-    i, g = wp.tid()
-    if i >= particle_count:
-        return
-
-    v = genes[i, g] + dt * delta_genes[i, g]
-    genes[i, g] = wp.clamp(v, wp.float32(0.0), wp.float32(1e4))
-
-
-@wp.kernel
-def _apply_polarity_normalized_deltas(
-    polarities: wp.array(dtype=wp.vec3f),
-    delta_polarities: wp.array2d(dtype=wp.float32),
-    dt: wp.float32,
-    particle_count: wp.int32,
-):
-    """Euler update for polarity vectors followed by unit normalization."""
-    i = wp.tid()
-    if i >= particle_count:
-        return
-
-    p = polarities[i]
-    p_next = wp.vec3f(
-        p[0] + dt * delta_polarities[i, 0],
-        p[1] + dt * delta_polarities[i, 1],
-        p[2] + dt * delta_polarities[i, 2],
-    )
-    n = wp.length(p_next) + wp.float32(EPS_NORM)
-    polarities[i] = p_next / n
-
-
-@wp.kernel
-def _collect_f32(
-    values: wp.array(dtype=wp.float32),
-    total: wp.array(dtype=wp.float32),
-):
-    """Parallel sum reduction helper for stage total reward."""
-    i = wp.tid()
-    wp.atomic_add(total, 0, values[i])
-
-
-def _ensure_capacity(capacity: int, minimum: int) -> int:
-    """Clamp capacity to at least the requested minimum."""
-    cap = int(capacity)
-    min_cap = int(minimum)
-    if cap < min_cap:
-        return min_cap
-    return cap
-
-
-def apply_policy_deltas(
-    G: wp.array,
-    P: wp.array,
-    delta_genes: wp.array,
-    delta_polarities: wp.array,
-    particle_count: int,
-    dt: float,
-) -> None:
-    """Apply policy-driven gene and polarity updates in-place."""
-    count = int(particle_count)
-    if count <= 0:
-        return
-
-    wp.launch(
-        _apply_gene_deltas,
-        dim=(int(G.shape[0]), int(G.shape[1])),
-        inputs=[G, delta_genes, float(dt), count],
-        device=G.device,
-    )
-
-    wp.launch(
-        _apply_polarity_normalized_deltas,
-        dim=int(P.shape[0]),
-        inputs=[P, delta_polarities, float(dt), count],
-        device=P.device,
-    )
 
 
 ############################################################
@@ -317,6 +182,31 @@ def _gene_diffusion_laplacian(
 
 
 @wp.kernel
+def _gene_diffusion_laplacian_from_pairs(
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
+    G: wp.array2d(dtype=wp.float32),
+    edges_i: wp.array(dtype=wp.int32),
+    edges_j: wp.array(dtype=wp.int32),
+    lap_G: wp.array2d(dtype=wp.float32),
+):
+    """Accumulate graph-Laplacian from precomputed neighbor pairs (tape-compatible).
+
+    Launched with ``dim=num_edges``. No hash grid queries — all operations
+    (reads, arithmetic, atomic_add) are differentiable in Warp.
+    """
+    e = wp.tid()
+    i = edges_i[e]
+    j = edges_j[e]
+
+    num_genes = G.shape[1]
+    for g in range(num_genes):
+        flux = G[j, g] - G[i, g]
+        wp.atomic_add(lap_G, i, g, flux)
+        wp.atomic_add(lap_G, j, g, -flux)
+
+
+@wp.kernel
 def _gene_diffusion_step(
     G: wp.array2d(dtype=wp.float32),
     lap_G: wp.array2d(dtype=wp.float32),
@@ -331,6 +221,25 @@ def _gene_diffusion_step(
 
     v = G[i, g] + dt * alpha * lap_G[i, g]
     G[i, g] = wp.max(v, wp.float32(0.0))
+
+
+@wp.kernel
+def _gene_diffusion_step_out(
+    G: wp.array2d(dtype=wp.float32),
+    lap_G: wp.array2d(dtype=wp.float32),
+    alpha: wp.float32,
+    dt: wp.float32,
+    particle_count: wp.int32,
+    G_out: wp.array2d(dtype=wp.float32),
+):
+    """Out-of-place Euler step (tape-safe: G and G_out must be distinct arrays)."""
+    i, g = wp.tid()
+    if i >= particle_count:
+        G_out[i, g] = G[i, g]
+        return
+
+    v = G[i, g] + dt * alpha * lap_G[i, g]
+    G_out[i, g] = wp.max(v, wp.float32(0.0))
 
 
 def diffusion_step(
@@ -431,65 +340,133 @@ def mech_step_sticky(
     wp.launch(_gd_update, dim=particle_count, inputs=[X, gx, dt], outputs=[X], device=device)
 
 
-def divide_cells(
+def mech_step_sticky_differentiable(
+    tape: "wp.Tape",
     X: wp.array,
     R: wp.array,
-    P: wp.array,
-    G: wp.array,
-    hard_division: wp.array,
-    division_direction: wp.array,
-    max_particles: int,
     particle_count: int,
-    num_genes: int,
-    force_tol: float,
-    mesh_id: wp.uint64,
-    max_dist: float,
+    dt: float,
     gx: wp.array,
-    rewards: wp.array,
-):
+    grid: "wp.HashGrid | None" = None,
+) -> wp.array:
+    """Tape-recorded mechanics step. Returns a new position array.
 
-    cap = _ensure_capacity(max_particles, particle_count)
+    Neighbor discovery happens outside the tape (frozen topology).
+    Force computation from precomputed pairs and position update are
+    recorded on the tape so that ``tape.backward()`` propagates
+    ``dL/dX_out → dL/dX_in`` through the force law.
+    """
+    gx.zero_()
+    gx.requires_grad = True
 
-    div_count = wp.full(1, value=particle_count, dtype=wp.int32)
-    div_slots = wp.full(particle_count, value=-1, dtype=wp.int32)
+    device = X.device
+    r_max = float(R.numpy()[:particle_count].max())
+    query_radius = 2.0 * r_max + EPS_DIST
+    if grid is None:
+        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+    grid.build(X[:particle_count], query_radius)
+
+    # Step 1: Build neighbor pairs OUTSIDE the tape (frozen topology)
+    max_edges = particle_count * 20
+    edges_i = wp.zeros(max_edges, dtype=wp.int32, device=device)
+    edges_j = wp.zeros(max_edges, dtype=wp.int32, device=device)
+    edge_count = wp.zeros(1, dtype=wp.int32, device=device)
 
     wp.launch(
-        _plan_divisions_from_hard_sample,
+        _build_neighbor_pairs,
         dim=particle_count,
-        inputs=[hard_division, div_count, div_slots, cap],
+        inputs=[wp.uint64(grid.id), X, R, query_radius, edges_i, edges_j, edge_count, max_edges],
+        device=device,
     )
+    num_edges = int(edge_count.numpy()[0])
+
+    # Step 2: Compute forces from pairs and update positions ON the tape
+    X_out = wp.zeros_like(X, device=device, requires_grad=True)
+
+    with tape:
+        if num_edges > 0:
+            wp.launch(
+                _sticky_sphere_grads_from_pairs,
+                dim=num_edges,
+                inputs=[X, R, edges_i[:num_edges], edges_j[:num_edges]],
+                outputs=[gx],
+                device=device,
+            )
+        wp.launch(
+            _gd_update,
+            dim=particle_count,
+            inputs=[X, gx, dt],
+            outputs=[X_out],
+            device=device,
+        )
+
+    return X_out
+
+
+def diffusion_step_differentiable(
+    tape: "wp.Tape",
+    X: wp.array,
+    R: wp.array,
+    G: wp.array,
+    lap_G: wp.array,
+    particle_count: int,
+    alpha: float = 0.1,
+    dt: float = 1e-2,
+    grid: "wp.HashGrid | None" = None,
+) -> wp.array:
+    """Tape-recorded diffusion step. Returns a new gene array.
+
+    Neighbor discovery happens outside the tape (frozen topology).
+    Laplacian computation from precomputed pairs and the Euler update
+    are recorded on the tape so that ``tape.backward()`` propagates
+    ``dL/dG_out → dL/dG_in`` through the full diffusion operator.
+    """
+    lap_G.zero_()
+    lap_G.requires_grad = True
+
+    device = X.device
+    r_max = float(R.numpy()[:particle_count].max())
+    query_radius = 2.0 * r_max + EPS_DIST
+    if grid is None:
+        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+    grid.build(X[:particle_count], query_radius)
+
+    # Step 1: Build neighbor pairs OUTSIDE the tape (frozen topology)
+    max_edges = particle_count * 20
+    edges_i = wp.zeros(max_edges, dtype=wp.int32, device=device)
+    edges_j = wp.zeros(max_edges, dtype=wp.int32, device=device)
+    edge_count = wp.zeros(1, dtype=wp.int32, device=device)
 
     wp.launch(
-        _apply_division_geometry,
+        _build_neighbor_pairs,
         dim=particle_count,
-        inputs=[X, R, P, div_slots, division_direction],
+        inputs=[wp.uint64(grid.id), X, R, query_radius, edges_i, edges_j, edge_count, max_edges],
+        device=device,
     )
+    num_edges = int(edge_count.numpy()[0])
 
-    wp.launch(
-        _apply_division_gene_split,
-        dim=(particle_count, num_genes),
-        inputs=[G, div_slots],
-    )
+    # Step 2: Laplacian + Euler step ON the tape
+    num_genes = int(G.shape[1])
+    G_out = wp.zeros_like(G, device=device, requires_grad=True)
 
-    # gx.zero_()
+    with tape:
+        if num_edges > 0:
+            wp.launch(
+                _gene_diffusion_laplacian_from_pairs,
+                dim=num_edges,
+                inputs=[X, R, G, edges_i[:num_edges], edges_j[:num_edges]],
+                outputs=[lap_G],
+                device=device,
+            )
+        wp.launch(
+            _gene_diffusion_step_out,
+            dim=(int(G.shape[0]), num_genes),
+            inputs=[G, lap_G, float(alpha), float(dt), particle_count],
+            outputs=[G_out],
+            device=device,
+        )
 
-    # wp.launch(
-    #     _sticky_sphere_grads,
-    #     dim=(particle_count, particle_count),
-    #     inputs=[X, R],
-    #     outputs=[gx],
-    # )
-
-    rewards.zero_()
-
-    wp.launch(
-        _apply_division_reward,
-        dim=particle_count,
-        inputs=[X, R, P, div_slots, gx, force_tol, mesh_id, max_dist],
-        outputs=[rewards],
-    )
-
-    return min([max_particles, div_count.numpy().item()])
+    return G_out
 
 
 wp.clear_lto_cache()

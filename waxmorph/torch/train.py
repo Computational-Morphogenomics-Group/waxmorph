@@ -14,9 +14,10 @@ import torch
 import warp as wp
 from tqdm import trange
 
-from waxmorph.emulator import diffusion_step, mech_step_sticky
+from waxmorph.constants import HASH_GRID_DIM
 from waxmorph.torch.gnn import GNS
 from waxmorph.torch.graph import build_graph
+from waxmorph.torch.warp_autograd import WarpDiffusionStep, WarpMechStep
 
 
 @dataclasses.dataclass(frozen=True)
@@ -37,6 +38,86 @@ class TrainConfig:
 class TrainResult:
     model: Any
     log: dict
+
+
+def _run_epoch(
+    *,
+    model,
+    config,
+    source_pos,
+    polarities,
+    genes,
+    R,
+    gx,
+    lap_G,
+    grid,
+    N,
+    X_target,
+    X_source_t,
+    loss_fn,
+    torch_device,
+    epoch_trajectory,
+):
+    """Run one training epoch with differentiable physics.
+
+    Positions and genes stay on the PyTorch computation graph throughout.
+    Physics corrections are applied via WarpMechStep / WarpDiffusionStep
+    autograd functions, so gradients flow through the full trajectory.
+    """
+    X_t = X_source_t.clone().requires_grad_(True)
+    G_t = torch.from_numpy(genes.copy()).to(torch_device).requires_grad_(True)
+    P_t = torch.from_numpy(polarities.copy()).to(torch_device)
+
+    loss_l2 = torch.tensor(0.0, device=torch_device)
+
+    for _t in range(config.t_rollout):
+        # Build graph from current state (frozen topology — not differentiated)
+        X_wp = wp.from_torch(X_t.detach().contiguous(), dtype=wp.vec3f)
+        P_wp = wp.from_torch(P_t.detach().contiguous(), dtype=wp.vec3f)
+        G_wp = wp.from_torch(G_t.detach().contiguous().view(-1), dtype=wp.float32)
+        G_wp = G_wp.reshape((N, genes.shape[1]))
+
+        node_feats, edge_index, edge_feats = build_graph(
+            X_wp,
+            P_wp,
+            R,
+            particle_count=N,
+            G=G_wp,
+        )
+
+        # GNS forward (differentiable)
+        out = model(node_feats, edge_index, edge_feats)
+        dX = out["dX"] * config.dt_gns
+        dP = out["dP"] * config.dt_gns
+        dG = out["dG"] * config.dt_gns
+
+        loss_l2 = loss_l2 + dX.square().sum() + dP.square().sum() + dG.square().sum()
+
+        # Apply GNS deltas (stays on PyTorch graph)
+        X_t = X_t + dX
+        P_t = torch.nn.functional.normalize(P_t + dP, dim=-1)
+        G_t = G_t + dG
+
+        # Physics correction (differentiable via autograd functions)
+        for _ in range(config.mech_steps):
+            X_t = WarpMechStep.apply(X_t, R, N, config.dt_mech, gx, grid)
+        for _ in range(config.diff_steps):
+            X_wp_diff = wp.from_torch(X_t.detach().contiguous(), dtype=wp.vec3f)
+            G_t = WarpDiffusionStep.apply(
+                G_t, X_wp_diff, R, lap_G, N, config.alpha_diff, config.dt_diff, grid
+            )
+
+        epoch_trajectory.append(
+            {
+                "pos": X_t.detach().cpu().numpy().copy(),
+                "pol": P_t.detach().cpu().numpy().copy(),
+                "genes": G_t.detach().cpu().numpy().copy(),
+            }
+        )
+
+    # Loss on actual physics-integrated final positions
+    loss_shape = loss_fn(X_t, X_target)
+    return loss_shape, loss_l2, epoch_trajectory
 
 
 def train(
@@ -122,81 +203,34 @@ def train(
     best_shape_loss = 0.0
     best_l2_loss = 0.0
 
+    # Pre-allocate hash grid
+    grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=wp_device)
+
     for epoch in trange(config.n_epochs):
         optimizer.zero_grad()
-
-        # Reset Warp state
-        X_current = wp.from_numpy(source_pos.copy(), dtype=wp.vec3f, device=wp_device)
-        G_current = wp.from_numpy(genes.copy(), dtype=wp.float32, device=wp_device)
-        P_current = wp.from_numpy(polarities.copy(), dtype=wp.vec3f, device=wp_device)
-
-        total_dX = torch.zeros(N, 3, device=torch_device)
-        loss_l2 = torch.tensor(0.0, requires_grad=True)
 
         epoch_trajectory = [
             {"pos": source_pos.copy(), "pol": polarities.copy(), "genes": genes.copy()}
         ]
 
-        for _t in range(config.t_rollout):
-            node_feats, edge_index, edge_feats = build_graph(
-                X_current,
-                P_current,
-                R,
-                particle_count=N,
-                G=G_current,
-            )
+        loss_shape, loss_l2, epoch_trajectory = _run_epoch(
+            model=model,
+            config=config,
+            source_pos=source_pos,
+            polarities=polarities,
+            genes=genes,
+            R=R,
+            gx=gx,
+            lap_G=lap_G,
+            grid=grid,
+            N=N,
+            X_target=X_target,
+            X_source_t=X_source_t,
+            loss_fn=loss_fn,
+            torch_device=torch_device,
+            epoch_trajectory=epoch_trajectory,
+        )
 
-            out = model(node_feats, edge_index, edge_feats)
-
-            dX = out["dX"] * config.dt_gns
-            dP = out["dP"] * config.dt_gns
-            dG = out["dG"] * config.dt_gns
-
-            total_dX = total_dX + dX
-
-            loss_l2 = loss_l2 + dX.square().sum()
-            loss_l2 = loss_l2 + dP.square().sum()
-            loss_l2 = loss_l2 + dG.square().sum()
-
-            # Detach to numpy for Warp state update
-            dX_np = dX.detach().cpu().numpy()
-            dP_np = dP.detach().cpu().numpy()
-            dG_np = dG.detach().cpu().numpy()
-
-            # Update positions
-            x_np = X_current.numpy()
-            x_np += dX_np
-            X_current = wp.from_numpy(x_np, dtype=wp.vec3f, device=wp_device)
-
-            # Update polarities (normalize)
-            p_np = P_current.numpy()
-            p_np += dP_np
-            p_norms = np.linalg.norm(p_np, axis=-1, keepdims=True)
-            p_np /= np.maximum(p_norms, 1e-9)
-            P_current = wp.from_numpy(p_np, dtype=wp.vec3f, device=wp_device)
-
-            # Update genes
-            g_np = G_current.numpy()
-            g_np += dG_np
-            G_current = wp.from_numpy(g_np, dtype=wp.float32, device=wp_device)
-
-            # Physics steps
-            for _ in range(config.mech_steps):
-                mech_step_sticky(X_current, R, N, config.dt_mech, gx)
-            for _ in range(config.diff_steps):
-                diffusion_step(X_current, R, G_current, lap_G, N, config.alpha_diff, config.dt_diff)
-
-            epoch_trajectory.append(
-                {
-                    "pos": X_current.numpy().copy(),
-                    "pol": P_current.numpy().copy(),
-                    "genes": G_current.numpy().copy(),
-                }
-            )
-
-        # Loss
-        X_pred = X_source_t + total_dX
-        loss_shape = loss_fn(X_pred, X_target)
         loss = loss_shape + (loss_l2 * config.l2_lambda)
 
         loss.backward()
