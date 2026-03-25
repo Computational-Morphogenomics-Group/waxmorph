@@ -130,6 +130,50 @@ def _gd_update(
     X_next[i] = X[i] + lr * gx[i]
 
 
+def _build_neighbor_pairs_dynamic(
+    X: wp.array,
+    R: wp.array,
+    particle_count: int,
+    query_radius: float,
+    grid: "wp.HashGrid",
+    device,
+) -> tuple[wp.array, wp.array, int]:
+    """Build neighbor pairs with a retry if the initial buffer overflows.
+
+    The differentiable mechanics and diffusion paths launch pair-based kernels
+    with ``dim=num_edges``. If the temporary pair buffers are undersized, using
+    the raw edge count as the launch dimension would index past those buffers.
+    """
+    max_edges = max(particle_count * 20, 1)
+
+    while True:
+        edges_i = wp.zeros(max_edges, dtype=wp.int32, device=device)
+        edges_j = wp.zeros(max_edges, dtype=wp.int32, device=device)
+        edge_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+        wp.launch(
+            _build_neighbor_pairs,
+            dim=particle_count,
+            inputs=[
+                wp.uint64(grid.id),
+                X,
+                R,
+                query_radius,
+                edges_i,
+                edges_j,
+                edge_count,
+                max_edges,
+            ],
+            device=device,
+        )
+        num_edges = int(edge_count.numpy()[0])
+
+        if num_edges <= max_edges:
+            return edges_i, edges_j, num_edges
+
+        max_edges = num_edges
+
+
 ############################################################
 ############################################################
 ############################################################
@@ -354,7 +398,7 @@ def mech_step_sticky_differentiable(
     Neighbor discovery happens outside the tape (frozen topology).
     Force computation from precomputed pairs and position update are
     recorded on the tape so that ``tape.backward()`` propagates
-    ``dL/dX_out → dL/dX_in`` through the force law.
+    ``dL/dX_out → dL/dX_in``.
     """
     gx.zero_()
     gx.requires_grad = True
@@ -367,18 +411,14 @@ def mech_step_sticky_differentiable(
     grid.build(X[:particle_count], query_radius)
 
     # Step 1: Build neighbor pairs OUTSIDE the tape (frozen topology)
-    max_edges = particle_count * 20
-    edges_i = wp.zeros(max_edges, dtype=wp.int32, device=device)
-    edges_j = wp.zeros(max_edges, dtype=wp.int32, device=device)
-    edge_count = wp.zeros(1, dtype=wp.int32, device=device)
-
-    wp.launch(
-        _build_neighbor_pairs,
-        dim=particle_count,
-        inputs=[wp.uint64(grid.id), X, R, query_radius, edges_i, edges_j, edge_count, max_edges],
-        device=device,
+    edges_i, edges_j, num_edges = _build_neighbor_pairs_dynamic(
+        X,
+        R,
+        particle_count,
+        query_radius,
+        grid,
+        device,
     )
-    num_edges = int(edge_count.numpy()[0])
 
     # Step 2: Compute forces from pairs and update positions ON the tape
     X_out = wp.zeros_like(X, device=device, requires_grad=True)
@@ -432,18 +472,14 @@ def diffusion_step_differentiable(
     grid.build(X[:particle_count], query_radius)
 
     # Step 1: Build neighbor pairs OUTSIDE the tape (frozen topology)
-    max_edges = particle_count * 20
-    edges_i = wp.zeros(max_edges, dtype=wp.int32, device=device)
-    edges_j = wp.zeros(max_edges, dtype=wp.int32, device=device)
-    edge_count = wp.zeros(1, dtype=wp.int32, device=device)
-
-    wp.launch(
-        _build_neighbor_pairs,
-        dim=particle_count,
-        inputs=[wp.uint64(grid.id), X, R, query_radius, edges_i, edges_j, edge_count, max_edges],
-        device=device,
+    edges_i, edges_j, num_edges = _build_neighbor_pairs_dynamic(
+        X,
+        R,
+        particle_count,
+        query_radius,
+        grid,
+        device,
     )
-    num_edges = int(edge_count.numpy()[0])
 
     # Step 2: Laplacian + Euler step ON the tape
     num_genes = int(G.shape[1])

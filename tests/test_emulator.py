@@ -6,7 +6,9 @@ import warp as wp
 
 from waxmorph.emulator import (
     diffusion_step,
+    diffusion_step_differentiable,
     mech_step_sticky,
+    mech_step_sticky_differentiable,
 )
 
 wp.init()
@@ -160,3 +162,40 @@ class TestDiffusionStep:
 
         assert g_after[0, 0] == pytest.approx(1.0, abs=1e-6)
         assert g_after[1, 0] == pytest.approx(0.0, abs=1e-6)
+
+
+class TestDifferentiableNeighborPairOverflow:
+    def test_mech_step_sticky_differentiable_handles_dense_graph(self):
+        """Dense contact graphs should resize pair buffers instead of indexing past them."""
+        positions = np.zeros((50, 3), dtype=np.float32)
+        radii = np.full(50, 0.5, dtype=np.float32)
+        X, R, _P, _G, gx, _lap_G, n = _make_cluster(positions, radii)
+
+        tape = wp.Tape()
+        X_out = mech_step_sticky_differentiable(tape, X, R, n, dt=0.01, gx=gx)
+
+        x_after = X_out.numpy()
+        assert x_after.shape == (n, 3)
+        assert np.isfinite(x_after).all()
+
+    def test_diffusion_step_differentiable_handles_dense_graph(self):
+        """Dense contact graphs should resize diffusion pair buffers instead of overflowing."""
+        positions = np.zeros((50, 3), dtype=np.float32)
+        radii = np.full(50, 0.5, dtype=np.float32)
+        X, R, _P, G, _gx, lap_G, n = _make_cluster(positions, radii, num_genes=2)
+
+        tape = wp.Tape()
+        G_out = diffusion_step_differentiable(
+            tape,
+            X,
+            R,
+            G,
+            lap_G,
+            n,
+            alpha=0.1,
+            dt=0.01,
+        )
+
+        g_after = G_out.numpy()
+        assert g_after.shape == (n, 2)
+        assert np.isfinite(g_after).all()

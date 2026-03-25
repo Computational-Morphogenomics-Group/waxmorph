@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import torch
 import warp as wp
 
 from waxmorph.graph import (
@@ -135,8 +136,9 @@ class TestBuildEdgeFeatures:
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
 
-        # angle column (index 1) should be ~0
-        assert edge_feats[:, 1].abs().max().item() == pytest.approx(0.0, abs=1e-5)
+        # angle column (index 1) should stay very close to 0 while avoiding
+        # the singular acos gradient at exactly cos(theta)=1.
+        assert edge_feats[:, 1].abs().max().item() == pytest.approx(0.0, abs=2e-3)
 
     def test_antiparallel_polarities_pi_angle(self):
         """Opposite polarity direction → angle = pi."""
@@ -148,7 +150,7 @@ class TestBuildEdgeFeatures:
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
 
-        assert edge_feats[:, 1].max().item() == pytest.approx(np.pi, abs=1e-5)
+        assert edge_feats[:, 1].max().item() == pytest.approx(np.pi, abs=2e-3)
 
     def test_distance_symmetric(self):
         """Distance should be the same for i->j and j->i."""
@@ -193,3 +195,74 @@ class TestBuildGraph:
         assert edge_index.shape[0] == 2
         assert edge_feats.shape[1] == 2  # dist, angle
         assert edge_feats.shape[0] == edge_index.shape[1]
+
+
+class TestTorchGraphGradients:
+    def test_node_features_preserve_gene_gradients(self):
+        genes = torch.tensor(
+            [[0.2, -0.5, 0.1], [0.7, 0.4, -0.3]],
+            dtype=torch.float32,
+            requires_grad=True,
+        )
+
+        feats = build_node_features(genes, particle_count=2)
+        loss = feats.square().sum()
+        loss.backward()
+
+        assert genes.grad is not None
+        torch.testing.assert_close(genes.grad, 2.0 * genes.detach())
+
+    def test_edge_features_preserve_position_and_polarity_gradients(self):
+        positions = torch.tensor(
+            [[0.0, 0.0, 0.0], [0.5, 0.25, 0.0]],
+            dtype=torch.float32,
+            requires_grad=True,
+        )
+        radii = torch.tensor([0.5, 0.5], dtype=torch.float32)
+        polarities = torch.tensor(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=torch.float32,
+            requires_grad=True,
+        )
+
+        edge_index = build_edge_index(positions, radii, particle_count=2)
+        edge_feats = build_edge_features(
+            positions,
+            polarities,
+            edge_index,
+            particle_count=2,
+        )
+        loss = edge_feats.sum()
+        loss.backward()
+
+        assert edge_index.requires_grad is False
+        assert positions.grad is not None
+        assert polarities.grad is not None
+        assert torch.isfinite(positions.grad).all()
+        assert torch.isfinite(polarities.grad).all()
+
+    @pytest.mark.parametrize(
+        ("polarities", "target_angle"),
+        [
+            ([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], 0.0),
+            ([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], np.pi),
+        ],
+    )
+    def test_edge_feature_angle_gradients_stay_finite_at_extreme_cosines(
+        self, polarities, target_angle
+    ):
+        positions = torch.tensor(
+            [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+            dtype=torch.float32,
+        )
+        radii = torch.tensor([0.5, 0.5], dtype=torch.float32)
+        polarities = torch.tensor(polarities, dtype=torch.float32, requires_grad=True)
+
+        edge_index = build_edge_index(positions, radii, particle_count=2)
+        edge_feats = build_edge_features(positions, polarities, edge_index, particle_count=2)
+        loss = edge_feats[:, 1].sum()
+        loss.backward()
+
+        assert edge_feats[:, 1].mean().item() == pytest.approx(target_angle, abs=2e-3)
+        assert polarities.grad is not None
+        assert torch.isfinite(polarities.grad).all()

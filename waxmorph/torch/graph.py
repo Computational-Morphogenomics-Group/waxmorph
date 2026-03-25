@@ -1,8 +1,12 @@
-"""Build PyTorch-geometric-style graph data from Warp simulation state.
+"""Build PyTorch-geometric-style graph data from simulation state.
 
-Converts Warp arrays into PyTorch tensors and constructs the adjacency
-graph, node features, and edge features needed by the GNS.
+Supports both Warp arrays and Torch tensors as inputs. When Torch
+tensors are provided, node and edge feature construction remains on the
+PyTorch autograd graph; only adjacency construction uses a detached
+snapshot of positions and radii.
 """
+
+from __future__ import annotations
 
 import numpy as np
 import torch
@@ -10,6 +14,35 @@ import warp as wp
 
 from .._graph_core import build_edge_index_np
 from ..constants import EPS_DIST
+
+ANGLE_EPS = 1e-6
+
+
+def _resolve_device(
+    device: torch.device | str | None,
+    *arrays: torch.Tensor | wp.array | None,
+) -> torch.device:
+    """Pick the output device from an explicit request or the first input."""
+    if device is not None:
+        return torch.device(device)
+
+    for arr in arrays:
+        if isinstance(arr, torch.Tensor):
+            return arr.device
+        if arr is not None:
+            return torch.device(str(arr.device))
+
+    return torch.device("cpu")
+
+
+def _slice_active(
+    arr: torch.Tensor | wp.array,
+    particle_count: int,
+) -> torch.Tensor | wp.array:
+    """Slice inputs down to active particles when a count is provided."""
+    if particle_count <= 0:
+        return arr
+    return arr[:particle_count]
 
 
 def _wp_to_torch(arr: wp.array, particle_count: int) -> torch.Tensor:
@@ -23,44 +56,71 @@ def _wp_to_torch(arr: wp.array, particle_count: int) -> torch.Tensor:
         t = wp.to_torch(arr)
     except Exception:
         t = torch.from_numpy(arr.numpy())
-    # vec3f arrays come out as (max_particles, 3); scalars as (max_particles,)
-    return t[:particle_count]
+    return _slice_active(t, particle_count)
+
+
+def _as_torch(
+    arr: torch.Tensor | wp.array,
+    particle_count: int,
+    device: torch.device | str | None = None,
+) -> torch.Tensor:
+    """Convert Warp arrays or slice Torch tensors without breaking autograd."""
+    target = None if device is None else torch.device(device)
+
+    if isinstance(arr, torch.Tensor):
+        t = _slice_active(arr, particle_count)
+        if target is not None and t.device != target:
+            t = t.to(target)
+        return t
+
+    t = _wp_to_torch(arr, particle_count)
+    if target is not None and t.device != target:
+        t = t.to(target)
+    return t
+
+
+def _snapshot_numpy(arr: torch.Tensor | wp.array, particle_count: int) -> np.ndarray:
+    """Materialize a detached CPU snapshot for non-differentiable topology."""
+    return _as_torch(arr, particle_count).detach().cpu().numpy()
+
+
+def _validate_finite_numpy(name: str, arr: np.ndarray) -> None:
+    """Raise a clear error before passing invalid data into scipy/spatial ops."""
+    finite_mask = np.isfinite(arr)
+    if finite_mask.all():
+        return
+
+    bad_indices = np.argwhere(~finite_mask)
+    first_bad = tuple(int(i) for i in bad_indices[0])
+    bad_value = arr[first_bad]
+    raise ValueError(
+        f"Non-finite values detected in {name} before KDTree construction: "
+        f"total_bad={(~finite_mask).sum()}, first_bad_index={first_bad}, "
+        f"first_bad_value={bad_value!r}"
+    )
 
 
 def build_edge_index(
-    X: wp.array,
-    R: wp.array,
+    X: torch.Tensor | wp.array,
+    R: torch.Tensor | wp.array,
     particle_count: int,
     eps_dist: float = EPS_DIST,
-    device: torch.device | None = None,
+    device: torch.device | str | None = None,
 ) -> torch.Tensor:
     """Construct COO edge_index ``[2, E]`` from contact adjacency.
 
     An edge ``(i, j)`` exists when ``dist(X[i], X[j]) <= R[i] + R[j] + eps_dist``
-    and ``i != j``.  Returns directed edges (both ``i->j`` and ``j->i``).
+    and ``i != j``. Returns directed edges (both ``i->j`` and ``j->i``).
 
-    Uses ``scipy.spatial.cKDTree`` for O(N log N) neighbour queries instead
-    of an O(N^2) pairwise distance matrix.
-
-    Parameters
-    ----------
-    X : wp.array(dtype=wp.vec3f)
-        Position array (preallocated to ``max_particles``).
-    R : wp.array(dtype=wp.float32)
-        Radius array.
-    particle_count : int
-        Number of active particles.
-    eps_dist : float
-        Contact buffer matching ``simulator.EPS_DIST``.
-    device : torch.device, optional
-        Target device.  Defaults to CUDA if available.
-
-    Returns
-    -------
-    edge_index : torch.Tensor, shape ``[2, E]``, dtype ``torch.long``
+    Uses ``scipy.spatial.cKDTree`` for O(N log N) neighbor queries instead
+    of an O(N^2) pairwise distance matrix. For Torch inputs this function
+    intentionally snapshots detached CPU copies of positions and radii, so
+    edge construction is frozen for the current rollout step.
     """
-    pos = _wp_to_torch(X, particle_count).float().cpu().numpy()
-    rad = _wp_to_torch(R, particle_count).float().cpu().numpy()
+    pos = _snapshot_numpy(X, particle_count).astype(np.float32, copy=False)
+    rad = _snapshot_numpy(R, particle_count).astype(np.float32, copy=False)
+    _validate_finite_numpy("positions", pos)
+    _validate_finite_numpy("radii", rad)
 
     senders, receivers = build_edge_index_np(pos, rad, eps_dist)
 
@@ -69,44 +129,34 @@ def build_edge_index(
     else:
         edge_index = torch.from_numpy(np.stack([senders, receivers], axis=0))
 
-    target = device if device is not None else str(X.device)
-    edge_index = edge_index.to(target)
-    return edge_index
+    return edge_index.to(_resolve_device(device, X, R))
 
 
 def build_node_features(
-    G: wp.array,
+    G: torch.Tensor | wp.array,
     particle_count: int,
-    device: torch.device | None = None,
+    device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Assemble per-node feature tensor from Warp state arrays.
+    """Assemble per-node feature tensor from Warp state arrays or Torch tensors.
 
     Feature layout per node::
 
         [g_0, g_1, ..., g_{G-1}]
 
     Dimensions: ``G`` (number of genes).
-
-    Returns
-    -------
-    node_features : torch.Tensor, shape ``[N, G]``
     """
-    genes = _wp_to_torch(G, particle_count).float()
+    genes = _as_torch(G, particle_count, device).float()
     if genes.ndim == 1:
         genes = genes.unsqueeze(-1)
-
-    if device is not None:
-        genes = genes.to(device)
-
     return genes
 
 
 def build_edge_features(
-    X: wp.array,
-    P: wp.array,
+    X: torch.Tensor | wp.array,
+    P: torch.Tensor | wp.array,
     edge_index: torch.Tensor,
     particle_count: int,
-    device: torch.device | None = None,
+    device: torch.device | str | None = None,
 ) -> torch.Tensor:
     """Compute per-edge feature tensor.
 
@@ -115,13 +165,12 @@ def build_edge_features(
         [dist, angle(P_i, P_j)]
 
     Dimensions: ``1 + 1 = 2``.
-
-    Returns
-    -------
-    edge_features : torch.Tensor, shape ``[E, 2]``
     """
-    pos = _wp_to_torch(X, particle_count).float()
-    pol = _wp_to_torch(P, particle_count).float()
+    target = _resolve_device(device, X, P)
+    pos = _as_torch(X, particle_count, target).float()
+    pol = _as_torch(P, particle_count, target).float()
+    if edge_index.device != pos.device:
+        edge_index = edge_index.to(pos.device)
 
     senders = edge_index[0]
     receivers = edge_index[1]
@@ -131,33 +180,27 @@ def build_edge_features(
 
     p_s = pol[senders]
     p_r = pol[receivers]
-    cos_angle = (p_s * p_r).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
+    cos_angle = (p_s * p_r).sum(dim=-1, keepdim=True).clamp(-1.0 + ANGLE_EPS, 1.0 - ANGLE_EPS)
     angle = torch.acos(cos_angle)
 
-    feats = torch.cat([dist, angle], dim=-1)
-
-    if device is not None:
-        feats = feats.to(device)
-
-    return feats
+    return torch.cat([dist, angle], dim=-1)
 
 
 def build_graph(
-    X: wp.array,
-    P: wp.array,
-    R: wp.array,
+    X: torch.Tensor | wp.array,
+    P: torch.Tensor | wp.array,
+    R: torch.Tensor | wp.array,
     particle_count: int = 0,
-    G: wp.array | None = None,
+    G: torch.Tensor | wp.array | None = None,
     eps_dist: float = EPS_DIST,
-    device: torch.device | None = None,
+    device: torch.device | str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Build ``(node_features, edge_index, edge_features)`` in one call.
 
-    Returns
-    -------
-    node_features : torch.Tensor ``[N, G]``
-    edge_index    : torch.Tensor ``[2, E]``
-    edge_features : torch.Tensor ``[E, 2]``
+    For Torch inputs, gradients flow through ``node_features`` and
+    ``edge_features`` back to the live state tensors. ``edge_index`` is
+    intentionally built from a detached snapshot of ``X`` and ``R`` and
+    should be treated as frozen for that rollout step.
     """
     edge_index = build_edge_index(X, R, particle_count, eps_dist, device)
     node_features = build_node_features(G, particle_count, device)

@@ -31,6 +31,7 @@ class TrainConfig:
     dt_gns: float = 1e-2
     alpha_diff: float = 0.1
     l2_lambda: float = 1e-3
+    grad_clip_norm: float | None = 1.0
     log_every: int = 10
 
 
@@ -40,6 +41,66 @@ class TrainResult:
     log: dict
 
 
+def _validate_finite_numpy(name: str, arr: np.ndarray) -> None:
+    """Fail fast on invalid host inputs before training starts."""
+    finite_mask = np.isfinite(arr)
+    if finite_mask.all():
+        return
+
+    bad_indices = np.argwhere(~finite_mask)
+    first_bad = tuple(int(i) for i in bad_indices[0])
+    bad_value = arr[first_bad]
+    raise ValueError(
+        f"Non-finite values detected in {name} before training: "
+        f"total_bad={(~finite_mask).sum()}, first_bad_index={first_bad}, "
+        f"first_bad_value={bad_value!r}"
+    )
+
+
+def _validate_finite_tensor(
+    name: str, tensor: torch.Tensor, *, rollout_step: int, phase: str
+) -> None:
+    """Raise a contextual error before invalid tensors reach later pipeline stages."""
+    finite_mask = torch.isfinite(tensor)
+    if bool(finite_mask.all()):
+        return
+
+    bad_indices = (~finite_mask).nonzero(as_tuple=False)
+    first_bad = tuple(int(i) for i in bad_indices[0].tolist())
+    bad_value = tensor[first_bad].detach().cpu().item()
+    raise ValueError(
+        f"Non-finite values detected in {name} during {phase} at rollout step {rollout_step}: "
+        f"total_bad={int((~finite_mask).sum().item())}, first_bad_index={first_bad}, "
+        f"first_bad_value={bad_value!r}"
+    )
+
+
+def _raise_on_nonfinite_named_tensors(
+    kind: str,
+    named_tensors,
+    *,
+    epoch: int,
+    phase: str,
+) -> None:
+    """Fail fast on invalid parameter tensors or gradients."""
+    for name, tensor in named_tensors:
+        if tensor is None:
+            continue
+
+        finite_mask = torch.isfinite(tensor)
+        if bool(finite_mask.all()):
+            continue
+
+        bad_indices = (~finite_mask).nonzero(as_tuple=False)
+        first_bad = tuple(int(i) for i in bad_indices[0].tolist())
+        bad_value = tensor[first_bad].detach().cpu().item()
+        raise ValueError(
+            f"Non-finite values detected in model {kind} during {phase} at epoch {epoch}: "
+            f"parameter={name!r}, total_bad={int((~finite_mask).sum().item())}, "
+            f"first_bad_index={first_bad}, first_bad_value={bad_value!r}"
+        )
+
+
 def _run_epoch(
     *,
     model,
@@ -47,7 +108,8 @@ def _run_epoch(
     source_pos,
     polarities,
     genes,
-    R,
+    R_t,
+    R_wp,
     gx,
     lap_G,
     grid,
@@ -70,19 +132,23 @@ def _run_epoch(
 
     loss_l2 = torch.tensor(0.0, device=torch_device)
 
-    for _t in range(config.t_rollout):
-        # Build graph from current state (frozen topology — not differentiated)
-        X_wp = wp.from_torch(X_t.detach().contiguous(), dtype=wp.vec3f)
-        P_wp = wp.from_torch(P_t.detach().contiguous(), dtype=wp.vec3f)
-        G_wp = wp.from_torch(G_t.detach().contiguous().view(-1), dtype=wp.float32)
-        G_wp = G_wp.reshape((N, genes.shape[1]))
+    _validate_finite_tensor("X_t", X_t, rollout_step=0, phase="epoch start")
+    _validate_finite_tensor("P_t", P_t, rollout_step=0, phase="epoch start")
+    _validate_finite_tensor("G_t", G_t, rollout_step=0, phase="epoch start")
 
+    for _t in range(config.t_rollout):
+        _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="pre-graph build")
+        _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="pre-graph build")
+        _validate_finite_tensor("G_t", G_t, rollout_step=_t, phase="pre-graph build")
+
+        # Build graph from the live Torch state. Feature gradients remain
+        # connected to X_t / P_t / G_t; edge_index is rebuilt from a snapshot.
         node_feats, edge_index, edge_feats = build_graph(
-            X_wp,
-            P_wp,
-            R,
+            X_t,
+            P_t,
+            R_t,
             particle_count=N,
-            G=G_wp,
+            G=G_t,
         )
 
         # GNS forward (differentiable)
@@ -90,22 +156,31 @@ def _run_epoch(
         dX = out["dX"] * config.dt_gns
         dP = out["dP"] * config.dt_gns
         dG = out["dG"] * config.dt_gns
+        _validate_finite_tensor("dX", dX, rollout_step=_t, phase="gns output")
+        _validate_finite_tensor("dP", dP, rollout_step=_t, phase="gns output")
+        _validate_finite_tensor("dG", dG, rollout_step=_t, phase="gns output")
 
         loss_l2 = loss_l2 + dX.square().sum() + dP.square().sum() + dG.square().sum()
 
         # Apply GNS deltas (stays on PyTorch graph)
         X_t = X_t + dX
         P_t = torch.nn.functional.normalize(P_t + dP, dim=-1)
-        G_t = G_t + dG
+        G_t = torch.clamp_min(G_t + dG, 0.0)
+        _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="post-gns update")
+        _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="post-gns update")
+        _validate_finite_tensor("G_t", G_t, rollout_step=_t, phase="post-gns update")
 
         # Physics correction (differentiable via autograd functions)
         for _ in range(config.mech_steps):
-            X_t = WarpMechStep.apply(X_t, R, N, config.dt_mech, gx, grid)
+            X_t = WarpMechStep.apply(X_t, R_wp, N, config.dt_mech, gx, grid)
+        _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="post-mechanics")
+
         for _ in range(config.diff_steps):
             X_wp_diff = wp.from_torch(X_t.detach().contiguous(), dtype=wp.vec3f)
             G_t = WarpDiffusionStep.apply(
-                G_t, X_wp_diff, R, lap_G, N, config.alpha_diff, config.dt_diff, grid
+                G_t, X_wp_diff, R_wp, lap_G, N, config.alpha_diff, config.dt_diff, grid
             )
+        _validate_finite_tensor("G_t", G_t, rollout_step=_t, phase="post-diffusion")
 
         epoch_trajectory.append(
             {
@@ -169,6 +244,12 @@ def train(
     if config is None:
         config = TrainConfig()
 
+    _validate_finite_numpy("source_pos", source_pos)
+    _validate_finite_numpy("target_pos", target_pos)
+    _validate_finite_numpy("polarities", polarities)
+    _validate_finite_numpy("genes", genes)
+    _validate_finite_numpy("radii", radii)
+
     # Detect devices
     wp_device = device
     torch_device = torch.device(device)
@@ -185,7 +266,8 @@ def train(
 
     # Warp scratch buffers
     gx = wp.zeros(max_particles, dtype=wp.vec3f, device=wp_device)
-    R = wp.from_numpy(radii.copy(), dtype=wp.float32, device=wp_device)
+    R_t = torch.from_numpy(radii.copy()).to(torch_device)
+    R_wp = wp.from_numpy(radii.copy(), dtype=wp.float32, device=wp_device)
     lap_G = wp.zeros((max_particles, num_genes), dtype=wp.float32, device=wp_device)
 
     # Target tensor
@@ -207,7 +289,7 @@ def train(
     grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=wp_device)
 
     for epoch in trange(config.n_epochs):
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         epoch_trajectory = [
             {"pos": source_pos.copy(), "pol": polarities.copy(), "genes": genes.copy()}
@@ -219,7 +301,8 @@ def train(
             source_pos=source_pos,
             polarities=polarities,
             genes=genes,
-            R=R,
+            R_t=R_t,
+            R_wp=R_wp,
             gx=gx,
             lap_G=lap_G,
             grid=grid,
@@ -234,7 +317,28 @@ def train(
         loss = loss_shape + (loss_l2 * config.l2_lambda)
 
         loss.backward()
+        _raise_on_nonfinite_named_tensors(
+            "gradients",
+            ((name, param.grad) for name, param in model.named_parameters()),
+            epoch=epoch,
+            phase="post-backward",
+        )
+        if config.grad_clip_norm is not None:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)
+            if not torch.isfinite(grad_norm):
+                optimizer.zero_grad(set_to_none=True)
+                raise ValueError(
+                    f"Non-finite gradient norm after clipping at epoch {epoch}: "
+                    f"grad_norm={grad_norm.detach().cpu().item()!r}"
+                )
         optimizer.step()
+        _raise_on_nonfinite_named_tensors(
+            "parameters",
+            model.named_parameters(),
+            epoch=epoch,
+            phase="post-optimizer step",
+        )
+        optimizer.zero_grad(set_to_none=True)
 
         epoch_loss = loss.item()
         epoch_shape_loss = loss_shape.item()
