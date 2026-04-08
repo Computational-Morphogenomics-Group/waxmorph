@@ -160,7 +160,7 @@ def _run_epoch(
         _validate_finite_tensor("dP", dP, rollout_step=_t, phase="gns output")
         _validate_finite_tensor("dG", dG, rollout_step=_t, phase="gns output")
 
-        loss_l2 = loss_l2 + dX.square().sum() + dP.square().sum() + dG.square().sum()
+        loss_l2 = loss_l2 + dX.square().sum()
 
         # Apply GNS deltas (stays on PyTorch graph)
         X_t = X_t + dX

@@ -430,16 +430,8 @@ def mech_step_sticky(
 ############################################################
 ############################################################
 
-# AUTODIFF-BASED POLARITY/THICKNESS MECHANICS
-#
-# The three polarity/thickness potentials below are scalar energy functions
-# whose *negative gradients* reproduce ``epi_polarity_grads``,
-# ``epi_thickness_grads``, and ``mes_polarity_grads``.  By writing only the
-# potential and letting Warp's autodiff engine differentiate automatically,
-# we can handle arbitrarily complex energy landscapes without hand-deriving
-# the gradient.  ``mech_step_sticky_implicit`` is functionally equivalent
-# to ``mech_step_sticky`` but obtains polarity/thickness gradients this way.
-#
+# MECHANICS - AUTODIFF
+
 ############################################################
 ############################################################
 ############################################################
@@ -509,131 +501,73 @@ def mes_polarity_potential(p_i: wp.vec3f, p_j: wp.vec3f) -> wp.float32:
 
 
 @wp.kernel(enable_backward=False)
-def sticky_sphere_forces_only(
+def sticky_sphere_grads_implicit(
     grid: wp.uint64,
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
+    P: wp.array(dtype=wp.vec3f),
     CT: wp.array(dtype=wp.uint32),
     query_radius: wp.float32,
     gx: wp.array(dtype=wp.vec3f),
+    gp: wp.array(dtype=wp.vec3f),
 ):
-    """Accumulate only sticky-sphere force gradients (no polarity/thickness)."""
+    """Autodiff-based counterpart of ``sticky_sphere_grads`` using ``wp.grad``."""
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
+
     x_i = X[i]
     r_i = R[i]
     c_i = CT[i]
+    p_i = P[i]
 
     for j in wp.hash_grid_query(grid, x_i, query_radius):
         if j <= i:
             continue
+
         x_j = X[j]
         r_j = R[j]
         c_j = CT[j]
-        grad_x_i, grad_x_j = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
-        wp.atomic_add(gx, i, grad_x_i)
-        wp.atomic_add(gx, j, grad_x_j)
+        p_j = P[j]
 
+        # Forces
+        grad_x_i_f, grad_x_j_f = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
+        wp.atomic_add(gx, i, grad_x_i_f)
+        wp.atomic_add(gx, j, grad_x_j_f)
 
-@wp.kernel(enable_backward=False)
-def build_adjacency_pairs(
-    grid: wp.uint64,
-    X: wp.array(dtype=wp.vec3f),
-    R: wp.array(dtype=wp.float32),
-    query_radius: wp.float32,
-    edges_i: wp.array(dtype=wp.int32),
-    edges_j: wp.array(dtype=wp.int32),
-    edge_count: wp.array(dtype=wp.int32),
-    max_edges: wp.int32,
-):
-    """Build adjacency pair list from hash-grid neighbors.
+        # Polarity Neighbors
+        dist = wp.norm_l2(x_i - x_j)
+        w = adj_weight(dist, r_i, r_j)
 
-    An unordered pair ``(i, j)`` with ``i < j`` is emitted when the two
-    particles are within the contact threshold ``adj_weight``.
-    """
-    tid = wp.tid()
-    i = wp.hash_grid_point_id(grid, tid)
-    x_i = X[i]
-    r_i = R[i]
-
-    for j in wp.hash_grid_query(grid, x_i, query_radius):
-        if j <= i:
+        if not wp.bool(w):
             continue
-        dist = wp.norm_l2(x_i - X[j])
-        if not wp.bool(adj_weight(dist, r_i, R[j])):
-            continue
-        idx = wp.atomic_add(edge_count, 0, 1)
-        if idx < max_edges:
-            edges_i[idx] = i
-            edges_j[idx] = j
 
+        # Polarities - epithelium
+        if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
+            grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = wp.grad(epi_polarity_potential)(
+                x_i, x_j, p_i, p_j
+            )
+            grad_x_i_t, grad_x_j_t, _, _ = wp.grad(epi_thickness_potential)(x_i, x_j, p_i, p_j)
 
-@wp.kernel
-def polarity_thickness_energy(
-    edges_i: wp.array(dtype=wp.int32),
-    edges_j: wp.array(dtype=wp.int32),
-    X: wp.array(dtype=wp.vec3f),
-    P: wp.array(dtype=wp.vec3f),
-    CT: wp.array(dtype=wp.uint32),
-    energy: wp.array(dtype=wp.float32),
-):
-    """Differentiable kernel: accumulate polarity + thickness scalar potentials.
+            # Match magnitudes so movement doesn't blink
+            for k in range(3):
+                v_i = wp.max(wp.abs(grad_x_i_f[k]), wp.float32(1e-3))
+                v_j = wp.max(wp.abs(grad_x_j_f[k]), wp.float32(1e-3))
 
-    Warp's autodiff engine differentiates through this kernel to produce
-    gradients of the total energy w.r.t. ``X`` and ``P``.
-    """
-    e = wp.tid()
-    i = edges_i[e]
-    j = edges_j[e]
+                grad_x_i_p[k] = wp.clamp(grad_x_i_p[k], -1.0 * v_i, 1.0 * v_i)
+                grad_x_j_p[k] = wp.clamp(grad_x_j_p[k], -1.0 * v_j, 1.0 * v_j)
 
-    x_i = X[i]
-    x_j = X[j]
-    p_i = P[i]
-    p_j = P[j]
-    c_i = CT[i]
-    c_j = CT[j]
+            wp.atomic_add(gx, i, grad_x_i_p)
+            wp.atomic_add(gx, j, grad_x_j_p)
+            wp.atomic_add(gx, i, grad_x_i_t)
+            wp.atomic_add(gx, j, grad_x_j_t)
+            wp.atomic_add(gp, i, grad_p_i)
+            wp.atomic_add(gp, j, grad_p_j)
 
-    U = wp.float32(0.0)
-
-    # Epi-epi: polarity perpendicularity + thickness penalty
-    if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
-        U = U + epi_polarity_potential(x_i, x_j, p_i, p_j)
-        U = U + epi_thickness_potential(x_i, x_j, p_i, p_j)
-
-    # Mes-mes: polarity alignment
-    if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
-        U = U + mes_polarity_potential(p_i, p_j)
-
-    wp.atomic_add(energy, 0, U)
-
-
-@wp.kernel(enable_backward=False)
-def clamp_and_combine_grads(
-    gx_force: wp.array(dtype=wp.vec3f),
-    gx_pol: wp.array(dtype=wp.vec3f),
-    gx_out: wp.array(dtype=wp.vec3f),
-):
-    """Add polarity x-gradients to force gradients with per-component clamping.
-
-    This matches the magnitude-clamping in ``sticky_sphere_grads`` that
-    prevents polarity-induced position updates from overshooting the
-    force-based updates.
-    """
-    i = wp.tid()
-    f = gx_force[i]
-    p = gx_pol[i]
-
-    px = wp.clamp(
-        p[0], -wp.max(wp.abs(f[0]), wp.float32(1e-3)), wp.max(wp.abs(f[0]), wp.float32(1e-3))
-    )
-    py = wp.clamp(
-        p[1], -wp.max(wp.abs(f[1]), wp.float32(1e-3)), wp.max(wp.abs(f[1]), wp.float32(1e-3))
-    )
-    pz = wp.clamp(
-        p[2], -wp.max(wp.abs(f[2]), wp.float32(1e-3)), wp.max(wp.abs(f[2]), wp.float32(1e-3))
-    )
-
-    gx_out[i] = f + wp.vec3f(px, py, pz)
+        # Polarities - mesenchyme
+        if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
+            grad_p_i, grad_p_j = wp.grad(mes_polarity_potential)(p_i, p_j)
+            wp.atomic_add(gp, i, grad_p_i)
+            wp.atomic_add(gp, j, grad_p_j)
 
 
 def mech_step_sticky_implicit(
@@ -648,111 +582,32 @@ def mech_step_sticky_implicit(
     device: str = "cuda",
     grid: "wp.HashGrid | None" = None,
 ):
-    """Mechanics step using Warp autodiff for polarity/thickness gradients.
+    """Mechanics step matching ``mech_step_sticky`` but using ``wp.grad`` locally."""
 
-    Functionally equivalent to :func:`mech_step_sticky` but obtains the
-    polarity and thickness gradients (``epi_polarity_grads``,
-    ``epi_thickness_grads``, ``mes_polarity_grads``) by automatic
-    differentiation of the scalar potential energies instead of hand-derived
-    gradient formulas.
+    gx = wp.zeros_like(X, device=device)
+    gp = wp.zeros_like(P, device=device)
 
-    The sticky-sphere contact force gradients are still computed analytically
-    (they involve long-range cutoffs that are more naturally expressed as
-    direct gradient code).
-
-    Flow:
-        1. Compute force-only gradients (hand-derived, via hash grid).
-        2. Build adjacency pair list (non-differentiable).
-        3. Compute total polarity/thickness energy (differentiable kernel).
-        4. ``wp.Tape.backward()`` to obtain autodiff gradients w.r.t. X and P.
-        5. Clamp polarity x-gradients and combine with force gradients.
-        6. Euler update for X and P.
-    """
-    # Hash grid
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + ATR_EE_CUTOFF
     if grid is None:
         grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
     grid.build(X[:particle_count], query_radius)
 
-    # Force-only gradients (propto exact, see Mao et al. 2013, Okuda et. al. 2015, Germann et. al. 2019)
-    gx_forces = wp.zeros_like(X, device=device)
     wp.launch(
-        sticky_sphere_forces_only,
+        sticky_sphere_grads_implicit,
         dim=particle_count,
-        inputs=[wp.uint64(grid.id), X, R, CT, query_radius],
-        outputs=[gx_forces],
+        inputs=[wp.uint64(grid.id), X, R, P, CT, query_radius],
+        outputs=[gx, gp],
         device=device,
     )
 
-    # Build adjacency pairs
-    max_edges = particle_count * 20
-    edges_i = wp.zeros(max_edges, dtype=wp.int32, device=device)
-    edges_j = wp.zeros(max_edges, dtype=wp.int32, device=device)
-    edge_count = wp.zeros(1, dtype=wp.int32, device=device)
-
-    wp.launch(
-        build_adjacency_pairs,
-        dim=particle_count,
-        inputs=[
-            wp.uint64(grid.id),
-            X,
-            R,
-            query_radius,
-            edges_i,
-            edges_j,
-            edge_count,
-            max_edges,
-        ],
-        device=device,
-    )
-
-    num_edges = int(edge_count.numpy()[0])
-
-    if num_edges > 0:
-        # Autodiff: compute energy and backward
-        # Create grad-enabled arrays for the autodiff pass
-        x_np = X.numpy()
-        p_np = P.numpy()
-        X_ad = wp.array(x_np, dtype=wp.vec3f, device=device, requires_grad=True)
-        P_ad = wp.array(p_np, dtype=wp.vec3f, device=device, requires_grad=True)
-        energy = wp.zeros(1, dtype=wp.float32, requires_grad=True, device=device)
-
-        tape = wp.Tape()
-        with tape:
-            wp.launch(
-                polarity_thickness_energy,
-                dim=num_edges,
-                inputs=[edges_i, edges_j, X_ad, P_ad, CT],
-                outputs=[energy],
-                device=device,
-            )
-        tape.backward(loss=energy)
-
-        gx_pol = X_ad.grad
-        gp = P_ad.grad
-
-        tape.zero()
-
-        # Clamp polarity x-gradients and combine
-        gx = wp.zeros_like(X, device=device)
-        wp.launch(
-            clamp_and_combine_grads,
-            dim=particle_count,
-            inputs=[gx_forces, gx_pol, gx],
-            device=device,
-        )
-    else:
-        gx = gx_forces
-        gp = wp.zeros_like(P, device=device)
-
-    # Euler update
     wp.launch(
         gd_update,
         dim=particle_count,
         inputs=[X, gx, dt, X_next],
         device=device,
     )
+
     wp.launch(
         gd_update_normalized,
         dim=particle_count,

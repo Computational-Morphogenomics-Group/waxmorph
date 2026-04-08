@@ -727,6 +727,10 @@ class WarpMovieRenderer:
         morph_mode: wp.int32,  # 0:A, 1:I, 2:A/(A+I)
         morph_scale: wp.float32,  # divide then clamp to [0,1]
         hue: wp.float32,  # fixed hue in [0,1]
+        use_base_color: wp.int32,
+        base_r: wp.float32,
+        base_g: wp.float32,
+        base_b: wp.float32,
     ):
         i = wp.tid()
 
@@ -739,6 +743,10 @@ class WarpMovieRenderer:
         c = centers_in[i]
         points_out[i] = wp.vec3(wp.float32(c[0]), wp.float32(c[1]), wp.float32(c[2]))
         radii_out[i] = wp.float32(radii_in[i])
+
+        if use_base_color != 0:
+            colors_out[i] = wp.vec3(base_r, base_g, base_b)
+            return
 
         a = wp.float32(A_in[i])
         b = wp.float32(I_in[i])
@@ -804,6 +812,7 @@ class WarpMovieRenderer:
         morph: str = "A",
         morph_scale: float = 1.0,
         hue: float = 0.80,
+        base_color: tuple[float, float, float] | None = None,
     ) -> int:
         n = int(particle_count)
         n = max(0, min(n, self.max_particles))
@@ -813,6 +822,12 @@ class WarpMovieRenderer:
             morph_mode = 1
         elif morph.lower() in ("ratio", "a_over_a_plus_i", "a/(a+i)"):
             morph_mode = 2
+
+        use_base_color = 0
+        base_r = base_g = base_b = 0.0
+        if base_color is not None:
+            base_r, base_g, base_b = [float(np.clip(value, 0.0, 1.0)) for value in base_color]
+            use_base_color = 1
 
         wp.launch(
             self._pack_buffers_kernel,
@@ -829,6 +844,10 @@ class WarpMovieRenderer:
                 morph_mode,
                 float(morph_scale),
                 float(hue),
+                use_base_color,
+                base_r,
+                base_g,
+                base_b,
             ],
             device=self.device,
         )
@@ -926,6 +945,7 @@ class WarpMovieRenderer:
         morph: str = "A",
         morph_scale: float = 1.0,
         hue: float = 0.80,
+        base_color: tuple[float, float, float] | None = None,
         mesh_points=None,
         mesh_indices=None,
     ) -> None:
@@ -938,6 +958,7 @@ class WarpMovieRenderer:
             morph=morph,
             morph_scale=morph_scale,
             hue=hue,
+            base_color=base_color,
         )
 
         self._render(t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices)
