@@ -217,8 +217,12 @@ def sample_volume(
     extent = mesh.vertices.max(axis=0) - mesh.vertices.min(axis=0)
     bbox_vol = extent.prod()
 
+    auto_pitch = float((bbox_vol / (10.0 * n_points)) ** (1.0 / 3.0))
     if pitch is None:
-        pitch = float((bbox_vol / (10.0 * n_points)) ** (1.0 / 3.0))
+        pitch = auto_pitch
+
+    if min_dist is not None and pitch > float(min_dist) * 0.6:
+        pitch = float(min_dist) * 0.4
 
     candidates = _voxel_fill_candidates(mesh, pitch)
 
@@ -239,47 +243,159 @@ def sample_volume(
     return pts
 
 
+def _connected_poisson_min_dist(radius: float) -> float:
+    """Choose a dense spacing that keeps neighboring spheres visually connected."""
+    return 1.6 * float(radius)
+
+
 def sample_mesh_pair(
     source_path: str | Path,
     target_path: str | Path,
     n_points: int = 2000,
-    target_extent: float = 10.0,
+    target_extent: float | None = None,
+    *,
+    n_source: int | None = None,
+    n_target: int | None = None,
+    source_extent: float | None = None,
+    max_particles: int | None = None,
     radius: float = 0.2,
+    source_radius: float | None = None,
+    target_radius: float | None = None,
     seed: int = 0,
 ) -> dict:
     """Load two meshes, normalize, and sample matching point clouds.
 
     Returns a dict ready for use with Warp arrays and the GNS pipeline.
 
+    The function has two modes:
+    - Legacy mode: when ``source_extent`` is omitted, preserve the latest
+      symmetric shared-extent behavior.
+    - Growing mode: when both ``source_extent`` and ``target_extent`` are
+      provided, sample each mesh with dense radius-aware Poisson disk spacing
+      and allow asymmetric counts / radii.
+
     Parameters
     ----------
     source_path, target_path : str or Path
         Paths to the source and target mesh files.
     n_points : int
-        Number of points to sample from each mesh volume.
-    target_extent : float
-        Bounding-box normalization scale.
+        Legacy symmetric number of points to sample from each mesh volume.
+    target_extent : float, optional
+        Target normalization scale. If provided without ``source_extent``, the
+        legacy shared-extent path is used.
+    n_source, n_target : int, optional
+        Asymmetric source and target point counts. If omitted, both fall back
+        to ``n_points``.
+    source_extent : float, optional
+        Independent normalization extent for the source mesh. Must be provided
+        together with ``target_extent`` to enable the growing-mode path.
+    max_particles : int, optional
+        Preallocation capacity for growing rollouts. Defaults to ``n_target``.
     radius : float
-        Uniform sphere radius for all particles.
+        Legacy uniform sphere radius for all particles. Also used as the
+        fallback source/target radius in growing mode.
+    source_radius, target_radius : float, optional
+        Radius metadata used to choose a dense Poisson spacing in growing mode.
     seed : int
         Random seed.
 
     Returns
     -------
     dict with keys:
-        ``source_pos``, ``target_pos`` : ``[n_points, 3]`` float32
+        ``source_pos`` : ``[n_source, 3]`` float32
+        ``target_pos`` : ``[n_target, 3]`` float32
         ``radius`` : float
+        ``R_init`` : float
         ``n_points`` : int
+        ``n_source`` : int
+        ``n_target`` : int
+        ``max_particles`` : int
+        ``target_mesh`` : normalized trimesh target mesh
+        ``source_radius`` : float
+        ``target_radius`` : float
+        ``target_radii`` : float
     """
-    source_mesh = normalize_mesh(load_mesh(source_path), target_extent)
+    use_growing_sampling = source_extent is not None and target_extent is not None
+
+    if not use_growing_sampling:
+        if source_extent is not None:
+            raise ValueError("Growing-mode sampling requires both source_extent and target_extent.")
+        if any(
+            value is not None
+            for value in (n_source, n_target, max_particles, source_radius, target_radius)
+        ):
+            raise ValueError(
+                "Asymmetric counts, radius-aware sampling, and max_particles require "
+                "both source_extent and target_extent."
+            )
+
+        legacy_extent = 10.0 if target_extent is None else float(target_extent)
+        legacy_radius = float(radius)
+        source_mesh = normalize_mesh(load_mesh(source_path), legacy_extent)
+        target_mesh = normalize_mesh(load_mesh(target_path), legacy_extent)
+
+        source_pts = sample_volume(source_mesh, n_points, seed=seed)
+        target_pts = sample_volume(target_mesh, n_points, seed=seed + 1)
+
+        return {
+            "source_pos": source_pts,
+            "target_pos": target_pts,
+            "radius": legacy_radius,
+            "R_init": legacy_radius,
+            "n_points": n_points,
+            "n_source": n_points,
+            "n_target": n_points,
+            "max_particles": n_points,
+            "source_extent": legacy_extent,
+            "target_extent": legacy_extent,
+            "source_radius": legacy_radius,
+            "target_radius": legacy_radius,
+            "target_radii": legacy_radius,
+            "target_mesh": target_mesh,
+        }
+
+    n_source = n_points if n_source is None else int(n_source)
+    n_target = n_points if n_target is None else int(n_target)
+    if n_source > n_target:
+        raise ValueError("sample_mesh_pair() requires n_source <= n_target for growing rollouts.")
+
+    source_extent = float(source_extent)
+    target_extent = float(target_extent)
+    source_radius = float(radius) if source_radius is None else float(source_radius)
+    target_radius = float(radius) if target_radius is None else float(target_radius)
+
+    source_mesh = normalize_mesh(load_mesh(source_path), source_extent)
     target_mesh = normalize_mesh(load_mesh(target_path), target_extent)
 
-    source_pts = sample_volume(source_mesh, n_points, seed=seed)
-    target_pts = sample_volume(target_mesh, n_points, seed=seed + 1)
+    source_pts = sample_volume(
+        source_mesh,
+        n_source,
+        min_dist=_connected_poisson_min_dist(source_radius),
+        seed=seed,
+    )
+    target_pts = sample_volume(
+        target_mesh,
+        n_target,
+        min_dist=_connected_poisson_min_dist(target_radius),
+        seed=seed + 1,
+    )
+
+    max_particles = n_target if max_particles is None else int(max_particles)
+    max_particles = max(max_particles, n_target)
 
     return {
         "source_pos": source_pts,
         "target_pos": target_pts,
-        "radius": radius,
+        "radius": source_radius,
+        "R_init": source_radius,
         "n_points": n_points,
+        "n_source": n_source,
+        "n_target": n_target,
+        "max_particles": max_particles,
+        "source_extent": source_extent,
+        "target_extent": target_extent,
+        "source_radius": source_radius,
+        "target_radius": target_radius,
+        "target_radii": target_radius,
+        "target_mesh": target_mesh,
     }
