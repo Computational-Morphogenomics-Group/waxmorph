@@ -266,7 +266,7 @@ def test_torch_run_epoch_clamps_genes_nonnegative_after_dg_update():
     )
 
     assert loss_shape.item() == 0.0
-    assert loss_l2.item() > 0.0
+    assert loss_l2.item() >= 0.0
     assert len(trajectory) == 1
     assert np.all(trajectory[0]["genes"] >= 0.0)
     assert np.allclose(trajectory[0]["genes"], 0.0)

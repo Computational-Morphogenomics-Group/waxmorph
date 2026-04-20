@@ -207,6 +207,12 @@ class TestSampleMeshPair:
         assert "target_pos" in data
         assert "radius" in data
         assert "n_points" in data
+        assert "R_init" in data
+        assert "max_particles" in data
+        assert "target_mesh" in data
+        assert "source_radius" in data
+        assert "target_radius" in data
+        assert "target_radii" in data
 
     def test_output_shapes(self):
         data = sample_mesh_pair(
@@ -219,3 +225,65 @@ class TestSampleMeshPair:
         assert data["target_pos"].ndim == 2
         assert data["target_pos"].shape[1] == 3
         assert data["source_pos"].dtype == np.float32
+
+    def test_legacy_mode_preserves_shared_sampling_behavior(self):
+        data = sample_mesh_pair(
+            f"{MESHES_DIR}/armadillo.ply",
+            f"{MESHES_DIR}/bunny.ply",
+            n_points=100,
+        )
+        assert data["n_source"] == 100
+        assert data["n_target"] == 100
+        assert data["max_particles"] == 100
+        assert data["source_extent"] == pytest.approx(10.0)
+        assert data["target_extent"] == pytest.approx(10.0)
+        assert data["R_init"] == pytest.approx(0.2)
+        assert data["source_radius"] == pytest.approx(0.2)
+        assert data["target_radius"] == pytest.approx(0.2)
+        assert data["target_radii"] == pytest.approx(0.2)
+
+    def test_asymmetric_counts_supported_when_both_extents_are_provided(self):
+        data = sample_mesh_pair(
+            f"{MESHES_DIR}/armadillo.ply",
+            f"{MESHES_DIR}/bunny.ply",
+            n_source=60,
+            n_target=100,
+            source_extent=8.0,
+            target_extent=10.0,
+            max_particles=140,
+            source_radius=0.15,
+            target_radius=0.25,
+        )
+        assert data["n_source"] == 60
+        assert data["n_target"] == 100
+        assert data["max_particles"] == 140
+        assert data["source_extent"] == pytest.approx(8.0)
+        assert data["target_extent"] == pytest.approx(10.0)
+        assert data["source_radius"] == pytest.approx(0.15)
+        assert data["target_radius"] == pytest.approx(0.25)
+        assert data["target_radii"] == pytest.approx(0.25)
+        assert data["R_init"] == pytest.approx(0.15)
+        assert isinstance(data["target_mesh"], trimesh.Trimesh)
+        assert data["source_pos"].shape[1] == 3
+        assert data["target_pos"].shape[1] == 3
+        assert len(data["source_pos"]) <= 60
+        assert len(data["target_pos"]) <= 100
+
+    def test_rejects_growing_args_without_both_extents(self):
+        with pytest.raises(ValueError, match="both source_extent and target_extent"):
+            sample_mesh_pair(
+                f"{MESHES_DIR}/armadillo.ply",
+                f"{MESHES_DIR}/bunny.ply",
+                n_source=60,
+            )
+
+    def test_rejects_source_larger_than_target(self):
+        with pytest.raises(ValueError, match="n_source <= n_target"):
+            sample_mesh_pair(
+                f"{MESHES_DIR}/armadillo.ply",
+                f"{MESHES_DIR}/bunny.ply",
+                n_source=101,
+                n_target=100,
+                source_extent=10.0,
+                target_extent=10.0,
+            )

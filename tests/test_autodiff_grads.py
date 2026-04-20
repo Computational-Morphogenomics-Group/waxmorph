@@ -278,6 +278,108 @@ def _hand_grads_mes_polarity(p_i_val, p_j_val):
     return gp_i.numpy()[0], gp_j.numpy()[0]
 
 
+def _state_from_arrays(centers, radii, polarities, cell_types, max_particles=None):
+    """Build a padded simulator state from compact numpy-like inputs."""
+    centers = np.asarray(centers, dtype=np.float64)
+    radii = np.asarray(radii, dtype=np.float64)
+    polarities = np.asarray(polarities, dtype=np.float64)
+    cell_types = np.asarray(cell_types, dtype=np.uint32)
+
+    particle_count = int(centers.shape[0])
+    if max_particles is None:
+        max_particles = particle_count
+
+    centers_pad = np.zeros((max_particles, 3), dtype=np.float64)
+    centers_pad[:particle_count] = centers
+
+    radii_pad = np.full(max_particles, -1000.0, dtype=np.float64)
+    radii_pad[:particle_count] = radii
+
+    polarities_pad = np.ones((max_particles, 3), dtype=np.float64) / np.sqrt(3.0)
+    polarities_pad[:particle_count] = polarities
+
+    cell_types_pad = np.full(max_particles, 3, dtype=np.uint32)
+    cell_types_pad[:particle_count] = cell_types
+
+    return {
+        "X": wp.from_numpy(centers_pad, dtype=wp.vec3f, device=DEVICE),
+        "R": wp.from_numpy(radii_pad, dtype=wp.float32, device=DEVICE),
+        "P": wp.from_numpy(polarities_pad, dtype=wp.vec3f, device=DEVICE),
+        "CT": wp.from_numpy(cell_types_pad, dtype=wp.uint32, device=DEVICE),
+        "particle_count": particle_count,
+        "max_particles": max_particles,
+    }
+
+
+def _dense_cluster_state(particle_count=50, spacing=0.05, radius=0.6):
+    """Create a dense epithelial cluster whose pair count exceeds the old cap."""
+    assert particle_count == 50
+
+    coords = []
+    for z in range(2):
+        for y in range(5):
+            for x in range(5):
+                coords.append([spacing * x, spacing * y, spacing * z])
+
+    centers = np.array(coords[:particle_count], dtype=np.float64)
+    radii = np.full(particle_count, radius, dtype=np.float64)
+    polarities = np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float64), (particle_count, 1))
+    cell_types = np.ones(particle_count, dtype=np.uint32)
+    return _state_from_arrays(centers, radii, polarities, cell_types)
+
+
+def _run_mech_steps(state, dt):
+    """Run both mechanics implementations from the same input state."""
+    particle_count = state["particle_count"]
+
+    X_explicit = wp.zeros_like(state["X"], device=DEVICE)
+    P_explicit = wp.zeros_like(state["P"], device=DEVICE)
+    X_implicit = wp.zeros_like(state["X"], device=DEVICE)
+    P_implicit = wp.zeros_like(state["P"], device=DEVICE)
+
+    gx_explicit = simulator.mech_step_sticky(
+        state["X"],
+        state["R"],
+        state["P"],
+        state["CT"],
+        particle_count,
+        dt,
+        X_explicit,
+        P_explicit,
+        device=DEVICE,
+        grad_consist=False,
+    )
+    gx_implicit = simulator.mech_step_sticky_implicit(
+        state["X"],
+        state["R"],
+        state["P"],
+        state["CT"],
+        particle_count,
+        dt,
+        X_implicit,
+        P_implicit,
+        device=DEVICE,
+    )
+
+    return {
+        "gx_explicit": gx_explicit.numpy()[:particle_count],
+        "gx_implicit": gx_implicit.numpy()[:particle_count],
+        "x_explicit": X_explicit.numpy()[:particle_count],
+        "x_implicit": X_implicit.numpy()[:particle_count],
+        "p_explicit": P_explicit.numpy()[:particle_count],
+        "p_implicit": P_implicit.numpy()[:particle_count],
+    }
+
+
+def _assert_mech_steps_match(state, dt=1e-2, atol=1e-4, rtol=1e-4):
+    """Assert that the explicit and implicit mechanics steps agree."""
+    out = _run_mech_steps(state, dt=dt)
+    np.testing.assert_allclose(out["gx_implicit"], out["gx_explicit"], atol=atol, rtol=rtol)
+    np.testing.assert_allclose(out["x_implicit"], out["x_explicit"], atol=atol, rtol=rtol)
+    np.testing.assert_allclose(out["p_implicit"], out["p_explicit"], atol=atol, rtol=rtol)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tests: epi_polarity_potential vs epi_polarity_grads
 # ---------------------------------------------------------------------------
@@ -340,8 +442,8 @@ class TestEpiThicknessAutodiff:
         np.testing.assert_allclose(ad_gx_i, hd_gx_i, atol=1e-4, rtol=1e-3)
         np.testing.assert_allclose(ad_gx_j, hd_gx_j, atol=1e-4, rtol=1e-3)
 
-    def test_thickness_autodiff_produces_p_grads(self):
-        """Autodiff additionally computes p-gradients (hand-derived omits them).
+    def test_thickness_potential_autodiff_produces_p_grads(self):
+        """The thickness potential has non-zero p-grads away from the axis.
 
         Use an off-axis displacement so d is NOT parallel to n — otherwise
         ∂(d·n)/∂p = (d - (d·n)n)/|s| = 0 and the gradient vanishes.
@@ -516,69 +618,48 @@ class TestMechStepStickyImplicit:
         norms = np.linalg.norm(p, axis=1)
         np.testing.assert_allclose(norms, 1.0, atol=1e-4)
 
-    def test_close_to_explicit(self):
-        """Implicit and explicit mech steps should produce similar results.
+    def test_matches_explicit_for_epi_pair(self):
+        state = _state_from_arrays(
+            centers=[[0.0, 0.0, 0.0], [0.3, 0.0, 0.4]],
+            radii=[0.6, 0.6],
+            polarities=[[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            cell_types=[1, 1],
+        )
+        _assert_mech_steps_match(state, dt=1e-2)
 
-        They won't be identical because:
-        - The implicit version gets additional polarity gradients for thickness
-          (through P), which the hand-derived version omits.
-        - Clamping interacts differently since forces and polarity grads are
-          computed in separate kernels.
+    def test_matches_explicit_for_mes_pair(self):
+        state = _state_from_arrays(
+            centers=[[0.0, 0.0, 0.0], [0.35, 0.2, 0.0]],
+            radii=[0.6, 0.6],
+            polarities=[[0.0, 0.0, 1.0], [0.8, 0.0, 0.6]],
+            cell_types=[0, 0],
+        )
+        _assert_mech_steps_match(state, dt=1e-2)
 
-        We check that the overall trajectory direction is similar.
-        """
-        s1 = _sphere_state(30, 60)
-        s2 = _sphere_state(30, 60)  # identical initial state
+    def test_matches_explicit_for_mixed_pair(self):
+        state = _state_from_arrays(
+            centers=[[0.0, 0.0, 0.0], [0.45, 0.0, 0.0]],
+            radii=[0.6, 0.6],
+            polarities=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            cell_types=[0, 1],
+        )
+        _assert_mech_steps_match(state, dt=1e-2)
 
-        X1_next = wp.zeros_like(s1["X"], device=DEVICE)
-        P1_next = wp.zeros_like(s1["P"], device=DEVICE)
-        X2_next = wp.zeros_like(s2["X"], device=DEVICE)
-        P2_next = wp.zeros_like(s2["P"], device=DEVICE)
+    def test_matches_explicit_for_small_multicell_state(self):
+        _assert_mech_steps_match(_sphere_state(12, 12), dt=1e-2, atol=2e-4, rtol=2e-4)
 
-        # Explicit (hand-derived)
-        simulator.mech_step_sticky(
-            s1["X"],
-            s1["R"],
-            s1["P"],
-            s1["CT"],
-            s1["particle_count"],
-            1e-2,
-            X1_next,
-            P1_next,
-            device=DEVICE,
-            grad_consist=False,
+    def test_matches_explicit_for_dense_pair_list(self):
+        _assert_mech_steps_match(_dense_cluster_state(), dt=1e-3, atol=3e-4, rtol=3e-4)
+
+    def test_matches_explicit_polarity_rotation_regression(self):
+        state = _state_from_arrays(
+            centers=[[0.0, 0.0, 0.0], [0.3, 0.0, 0.4]],
+            radii=[0.6, 0.6],
+            polarities=[[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            cell_types=[1, 1],
         )
 
-        # Implicit (autodiff)
-        simulator.mech_step_sticky_implicit(
-            s2["X"],
-            s2["R"],
-            s2["P"],
-            s2["CT"],
-            s2["particle_count"],
-            1e-2,
-            X2_next,
-            P2_next,
-            device=DEVICE,
-        )
+        p_before = state["P"].numpy()[:2].copy()
+        out = _assert_mech_steps_match(state, dt=1e-2)
 
-        x1 = X1_next.numpy()[:30]
-        x2 = X2_next.numpy()[:30]
-
-        # Displacement vectors should point in broadly similar directions
-        dx1 = x1 - s1["X"].numpy()[:30]
-        dx2 = x2 - s2["X"].numpy()[:30]
-
-        # Positions should be within 10% relative error for most particles
-        # (exact match is not expected due to the thickness p-grad difference)
-        norms1 = np.linalg.norm(dx1, axis=1)
-        norms2 = np.linalg.norm(dx2, axis=1)
-        active = norms1 > 1e-6  # only compare particles that moved
-        if active.sum() > 0:
-            cos_sim = np.sum(dx1[active] * dx2[active], axis=1) / (
-                norms1[active] * norms2[active] + 1e-12
-            )
-            # Most displacement vectors should point in similar directions
-            assert (
-                np.median(cos_sim) > 0.5
-            ), f"Displacement directions too different: median cos_sim={np.median(cos_sim):.3f}"
+        assert not np.allclose(out["p_explicit"], p_before, atol=1e-8)
