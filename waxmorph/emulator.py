@@ -185,46 +185,6 @@ def _build_neighbor_pairs_dynamic(
 ############################################################
 
 
-@wp.func
-def _adj_weight(dist: wp.float32, ri: wp.float32, rj: wp.float32) -> wp.bool:
-    """Neighborhood predicate matching the simulator adjacency."""
-    return wp.bool((dist - (ri + rj)) <= EPS_DIST)
-
-
-@wp.kernel
-def _gene_diffusion_laplacian(
-    grid: wp.uint64,
-    X: wp.array(dtype=wp.vec3f),
-    R: wp.array(dtype=wp.float32),
-    query_radius: wp.float32,
-    G: wp.array2d(dtype=wp.float32),
-    lap_G: wp.array2d(dtype=wp.float32),
-):
-    """Accumulate graph-Laplacian diffusion for all gene channels.
-
-    For each adjacent pair (i, j) and each gene g, computes the flux
-    ``G[j, g] - G[i, g]`` and accumulates symmetrically into ``lap_G``.
-    """
-    tid = wp.tid()
-    i = wp.hash_grid_point_id(grid, tid)
-    x_i = X[i]
-    r_i = R[i]
-
-    for j in wp.hash_grid_query(grid, x_i, query_radius):
-        if j <= i:
-            continue
-
-        dist = wp.length(x_i - X[j]) + EPS_NORM
-        if not _adj_weight(dist, r_i, R[j]):
-            continue
-
-        num_genes = G.shape[1]
-        for g in range(num_genes):
-            flux = G[j, g] - G[i, g]
-            wp.atomic_add(lap_G, i, g, flux)
-            wp.atomic_add(lap_G, j, g, -flux)
-
-
 @wp.kernel
 def _gene_diffusion_laplacian_from_pairs(
     X: wp.array(dtype=wp.vec3f),
@@ -251,23 +211,6 @@ def _gene_diffusion_laplacian_from_pairs(
 
 
 @wp.kernel
-def _gene_diffusion_step(
-    G: wp.array2d(dtype=wp.float32),
-    lap_G: wp.array2d(dtype=wp.float32),
-    alpha: wp.float32,
-    dt: wp.float32,
-    particle_count: wp.int32,
-):
-    """Euler step: ``G[i,g] += dt * alpha * lap_G[i,g]``, clamped >= 0."""
-    i, g = wp.tid()
-    if i >= particle_count:
-        return
-
-    v = G[i, g] + dt * alpha * lap_G[i, g]
-    G[i, g] = wp.max(v, wp.float32(0.0))
-
-
-@wp.kernel
 def _gene_diffusion_step_out(
     G: wp.array2d(dtype=wp.float32),
     lap_G: wp.array2d(dtype=wp.float32),
@@ -284,63 +227,6 @@ def _gene_diffusion_step_out(
 
     v = G[i, g] + dt * alpha * lap_G[i, g]
     G_out[i, g] = wp.max(v, wp.float32(0.0))
-
-
-def diffusion_step(
-    X: wp.array,
-    R: wp.array,
-    G: wp.array,
-    lap_G: wp.array,
-    particle_count: int,
-    alpha: float = 0.1,
-    dt: float = 1e-2,
-    grid: "wp.HashGrid | None" = None,
-) -> None:
-    """Run one graph-Laplacian diffusion step for all gene channels.
-
-    Parameters
-    ----------
-    X : wp.array(dtype=wp.vec3f)
-        Positions.
-    R : wp.array(dtype=wp.float32)
-        Radii.
-    G : wp.array2d(dtype=wp.float32), shape ``[max_particles, num_genes]``
-        Gene concentrations (updated in-place).
-    lap_G : wp.array2d(dtype=wp.float32), same shape as G
-        Scratch buffer for the Laplacian (zeroed internally).
-    particle_count : int
-        Number of active particles.
-    alpha : float
-        Diffusion coefficient.
-    dt : float
-        Time step.
-    grid : wp.HashGrid or None
-        Optional pre-allocated hash grid (created internally if *None*).
-    """
-    lap_G.zero_()
-
-    device = X.device
-    r_max = float(R.numpy()[:particle_count].max())
-    query_radius = 2.0 * r_max + EPS_DIST
-    if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
-    grid.build(X[:particle_count], query_radius)
-
-    wp.launch(
-        _gene_diffusion_laplacian,
-        dim=particle_count,
-        inputs=[wp.uint64(grid.id), X, R, query_radius, G],
-        outputs=[lap_G],
-        device=device,
-    )
-
-    num_genes = int(G.shape[1])
-    wp.launch(
-        _gene_diffusion_step,
-        dim=(int(G.shape[0]), num_genes),
-        inputs=[G, lap_G, float(alpha), float(dt), particle_count],
-        device=device,
-    )
 
 
 ############################################################

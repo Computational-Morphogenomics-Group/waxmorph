@@ -35,16 +35,6 @@ def _validate_extent(name: str, extent: float) -> float:
     return extent
 
 
-def _mesh_extent(mesh: trimesh.Trimesh) -> float:
-    bounds = np.asarray(mesh.bounds, dtype=np.float64)
-    if bounds.shape != (2, 3):
-        raise ValueError("mesh bounds must have shape [2, 3].")
-    extent = float((bounds[1] - bounds[0]).max())
-    if not np.isfinite(extent) or extent <= 0:
-        raise ValueError(f"mesh must have positive extent, got {extent}.")
-    return extent
-
-
 def _mesh_volume(mesh: trimesh.Trimesh) -> float:
     volume = abs(float(mesh.volume))
     if np.isfinite(volume) and volume > 0:
@@ -145,16 +135,6 @@ def _poisson_disk_subsample(
     if not accepted:
         return np.empty((0, 3), dtype=np.float32)
     return np.asarray(accepted, dtype=np.float32).reshape(-1, 3)
-
-
-def _make_grid(bbox_min: np.ndarray, extent: np.ndarray, pitch: float) -> np.ndarray:
-    """Generate a regular 3D grid of points within a bounding box."""
-    pitch = _validate_extent("pitch", pitch)
-    bbox_min = np.asarray(bbox_min, dtype=np.float64)
-    extent = np.asarray(extent, dtype=np.float64)
-    axes = [np.arange(bbox_min[d], bbox_min[d] + extent[d], pitch) for d in range(3)]
-    xx, yy, zz = np.meshgrid(*axes, indexing="ij")
-    return np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()]).astype(np.float32)
 
 
 def _voxel_fill_candidates(

@@ -7,7 +7,6 @@ import trimesh
 from waxmorph._graph_core import build_edge_index_np
 from waxmorph.data import (
     _connected_poisson_min_dist,
-    _make_grid,
     _poisson_disk_subsample,
     _radius_from_mesh,
     _voxel_fill_candidates,
@@ -44,31 +43,6 @@ def _assert_mild_contact_packing(points, radius):
     senders, receivers = build_edge_index_np(points.astype(np.float32), rad)
     assert len(senders) > 0
     assert len(receivers) > 0
-
-
-# ---------------------------------------------------------------------------
-# _make_grid
-# ---------------------------------------------------------------------------
-
-
-class TestMakeGrid:
-    def test_shape_and_dtype(self):
-        grid = _make_grid(np.array([0, 0, 0]), np.array([1, 1, 1]), 0.5)
-        assert grid.ndim == 2
-        assert grid.shape[1] == 3
-        assert grid.dtype == np.float32
-
-    def test_covers_bbox(self):
-        bbox_min = np.array([-1.0, -2.0, -3.0])
-        extent = np.array([2.0, 4.0, 6.0])
-        grid = _make_grid(bbox_min, extent, 0.5)
-        assert grid.min(axis=0) == pytest.approx(bbox_min, abs=0.5)
-        assert (grid.max(axis=0) <= bbox_min + extent).all()
-
-    def test_expected_count(self):
-        grid = _make_grid(np.zeros(3), np.array([1.0, 1.0, 1.0]), 0.25)
-        # 4 points per axis -> 64
-        assert grid.shape[0] == 64
 
 
 # ---------------------------------------------------------------------------

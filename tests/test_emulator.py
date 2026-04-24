@@ -1,11 +1,9 @@
 """Tests for the simplified emulator kernels."""
 
 import numpy as np
-import pytest
 import warp as wp
 
 from waxmorph.emulator import (
-    diffusion_step,
     diffusion_step_differentiable,
     mech_step_sticky,
     mech_step_sticky_differentiable,
@@ -98,70 +96,6 @@ class TestMechStepSticky:
                 dist = np.linalg.norm(x_final[i] - x_final[j])
                 # Should be close to or above contact distance
                 assert dist > 0.5  # at least half the sum of radii
-
-
-# ---------------------------------------------------------------------------
-# diffusion_step
-# ---------------------------------------------------------------------------
-
-
-class TestDiffusionStep:
-    def test_uniform_genes_no_change(self):
-        """Uniform gene concentrations should not change under diffusion."""
-        X, R, _P, G, _gx, lap_G, n = _make_cluster(
-            positions=[[0, 0, 0], [0.8, 0, 0]],
-            radii=[0.5, 0.5],
-            num_genes=2,
-        )
-
-        g_before = G.numpy().copy()
-        diffusion_step(X, R, G, lap_G, n, alpha=0.1, dt=0.01)
-        g_after = G.numpy()
-
-        np.testing.assert_allclose(g_before, g_after, atol=1e-6)
-
-    def test_diffusion_equalizes(self):
-        """Diffusion should move gene concentrations toward each other."""
-        X, R, _P, G, _gx, lap_G, n = _make_cluster(
-            positions=[[0, 0, 0], [0.8, 0, 0]],
-            radii=[0.5, 0.5],
-            num_genes=1,
-        )
-
-        # Set different concentrations
-        g_np = G.numpy()
-        g_np[0, 0] = 1.0
-        g_np[1, 0] = 0.0
-        G = wp.from_numpy(g_np, dtype=wp.float32, device=DEVICE)
-        lap_G = wp.zeros_like(G)
-
-        for _ in range(100):
-            diffusion_step(X, R, G, lap_G, n, alpha=1.0, dt=0.01)
-
-        g_final = G.numpy()
-        # Concentrations should be closer together
-        diff = abs(g_final[0, 0] - g_final[1, 0])
-        assert diff < 0.5
-
-    def test_non_adjacent_no_diffusion(self):
-        """Particles too far apart should not exchange genes."""
-        X, R, _P, G, _gx, lap_G, n = _make_cluster(
-            positions=[[0, 0, 0], [100, 0, 0]],
-            radii=[0.5, 0.5],
-            num_genes=1,
-        )
-
-        g_np = G.numpy()
-        g_np[0, 0] = 1.0
-        g_np[1, 0] = 0.0
-        G = wp.from_numpy(g_np, dtype=wp.float32, device=DEVICE)
-        lap_G = wp.zeros_like(G)
-
-        diffusion_step(X, R, G, lap_G, n, alpha=1.0, dt=0.01)
-        g_after = G.numpy()
-
-        assert g_after[0, 0] == pytest.approx(1.0, abs=1e-6)
-        assert g_after[1, 0] == pytest.approx(0.0, abs=1e-6)
 
 
 class TestDifferentiableNeighborPairOverflow:
