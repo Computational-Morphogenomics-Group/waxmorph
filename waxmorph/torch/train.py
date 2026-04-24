@@ -114,7 +114,7 @@ def _run_epoch(
     lap_G,
     grid,
     N,
-    X_target,
+    targets_by_frame,
     X_source_t,
     loss_fn,
     torch_device,
@@ -125,12 +125,18 @@ def _run_epoch(
     Positions and genes stay on the PyTorch computation graph throughout.
     Physics corrections are applied via WarpMechStep / WarpDiffusionStep
     autograd functions, so gradients flow through the full trajectory.
+
+    ``targets_by_frame`` maps rollout-step index -> target position tensor.
+    A shape loss is accumulated at every tagged post-update state; frame ``0``
+    therefore supervises the state after the first rollout update, not the
+    initial source state.
     """
     X_t = X_source_t.clone().requires_grad_(True)
     G_t = torch.from_numpy(genes.copy()).to(torch_device).requires_grad_(True)
     P_t = torch.from_numpy(polarities.copy()).to(torch_device)
 
     loss_l2 = torch.tensor(0.0, device=torch_device)
+    loss_shape = torch.tensor(0.0, device=torch_device)
 
     _validate_finite_tensor("X_t", X_t, rollout_step=0, phase="epoch start")
     _validate_finite_tensor("P_t", P_t, rollout_step=0, phase="epoch start")
@@ -190,8 +196,10 @@ def _run_epoch(
             }
         )
 
-    # Loss on actual physics-integrated final positions
-    loss_shape = loss_fn(X_t, X_target)
+        # Accumulate shape loss at every rollout step tagged with a target
+        if _t in targets_by_frame:
+            loss_shape = loss_shape + loss_fn(X_t, targets_by_frame[_t])
+
     return loss_shape, loss_l2, epoch_trajectory
 
 
@@ -201,10 +209,11 @@ def train(
     loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     *,
     source_pos: np.ndarray,
-    target_pos: np.ndarray,
     polarities: np.ndarray,
     genes: np.ndarray,
     radii: np.ndarray,
+    target_pos: np.ndarray | None = None,
+    targets: list[tuple[int, np.ndarray]] | None = None,
     config: TrainConfig | None = None,
     save_path: str | Path | None = None,
     device: str = "cuda",
@@ -221,14 +230,21 @@ def train(
         Shape loss function mapping (predicted [N,3], target [M,3]) -> scalar.
     source_pos : ndarray [N, 3]
         Initial particle positions.
-    target_pos : ndarray [M, 3]
-        Target positions for shape loss.
     polarities : ndarray [N, 3]
         Initial unit polarity vectors.
     genes : ndarray [N, num_genes]
         Initial gene concentrations.
     radii : ndarray [N]
         Particle radii.
+    target_pos : ndarray [M, 3], optional
+        Legacy single-target input. Equivalent to ``targets=[(t_rollout-1, target_pos)]``.
+        Mutually exclusive with ``targets``.
+    targets : list of (int, ndarray), optional
+        Multi-target trajectory supervision: each ``(frame, pos)`` pair applies
+        ``loss_fn(X_t, pos)`` at tagged post-update rollout step ``frame`` and
+        sums the results into the total shape loss. Frame ``0`` therefore
+        refers to the state after the first rollout update. Frames must lie in
+        ``[0, t_rollout)``; duplicates raise.
     config : TrainConfig, optional
         Training hyperparameters (defaults used if None).
     save_path : str or Path, optional
@@ -244,8 +260,15 @@ def train(
     if config is None:
         config = TrainConfig()
 
+    if targets is None and target_pos is None:
+        raise ValueError("train() requires either `targets` or `target_pos`.")
+    if targets is not None and target_pos is not None:
+        raise ValueError("Pass `targets` OR `target_pos`, not both.")
+
+    if targets is None:
+        targets = [(config.t_rollout - 1, target_pos)]
+
     _validate_finite_numpy("source_pos", source_pos)
-    _validate_finite_numpy("target_pos", target_pos)
     _validate_finite_numpy("polarities", polarities)
     _validate_finite_numpy("genes", genes)
     _validate_finite_numpy("radii", radii)
@@ -270,8 +293,17 @@ def train(
     R_wp = wp.from_numpy(radii.copy(), dtype=wp.float32, device=wp_device)
     lap_G = wp.zeros((max_particles, num_genes), dtype=wp.float32, device=wp_device)
 
-    # Target tensor
-    X_target = torch.from_numpy(target_pos).to(torch_device)
+    # Per-frame target tensors (device-resident)
+    targets_by_frame: dict[int, torch.Tensor] = {}
+    for frame, pos in targets:
+        frame_int = int(frame)
+        if not (0 <= frame_int < config.t_rollout):
+            raise ValueError(f"Target frame {frame_int} outside [0, {config.t_rollout}).")
+        if frame_int in targets_by_frame:
+            raise ValueError(f"Duplicate target frame {frame_int}.")
+        _validate_finite_numpy(f"targets[frame={frame_int}]", pos)
+        targets_by_frame[frame_int] = torch.from_numpy(pos).to(torch_device)
+
     X_source_t = torch.from_numpy(source_pos).to(torch_device)
 
     # Tracking
@@ -307,7 +339,7 @@ def train(
             lap_G=lap_G,
             grid=grid,
             N=N,
-            X_target=X_target,
+            targets_by_frame=targets_by_frame,
             X_source_t=X_source_t,
             loss_fn=loss_fn,
             torch_device=torch_device,
@@ -379,6 +411,7 @@ def train(
         "best_traj_genes": traj_genes,
         "best_epoch": best_epoch,
         "best_loss": best_loss,
+        "target_frames": np.array(sorted(targets_by_frame.keys()), dtype=np.int64),
     }
     for field in dataclasses.fields(config):
         log[f"config_{field.name}"] = getattr(config, field.name)
