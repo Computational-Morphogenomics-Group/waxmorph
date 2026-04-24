@@ -4,9 +4,12 @@ import numpy as np
 import pytest
 import trimesh
 
+from waxmorph._graph_core import build_edge_index_np
 from waxmorph.data import (
+    _connected_poisson_min_dist,
     _make_grid,
     _poisson_disk_subsample,
+    _radius_from_mesh,
     _voxel_fill_candidates,
     load_mesh,
     normalize_mesh,
@@ -29,6 +32,18 @@ def _unit_cube_mesh():
 def _sphere_mesh(radius=1.0):
     """Create a watertight sphere mesh."""
     return trimesh.creation.icosphere(subdivisions=3, radius=radius)
+
+
+def _assert_mild_contact_packing(points, radius):
+    from scipy.spatial.distance import pdist
+
+    dists = pdist(points.astype(np.float64))
+    assert dists.min() >= _connected_poisson_min_dist(radius) * 0.95
+
+    rad = np.full(len(points), radius, dtype=np.float32)
+    senders, receivers = build_edge_index_np(points.astype(np.float32), rad)
+    assert len(senders) > 0
+    assert len(receivers) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +241,9 @@ class TestSampleMeshPair:
         assert data["target_pos"].shape[1] == 3
         assert data["source_pos"].dtype == np.float32
 
-    def test_legacy_mode_preserves_shared_sampling_behavior(self):
+    def test_shared_extent_derives_matching_counts_and_radii(self):
+        source_mesh = normalize_mesh(load_mesh(f"{MESHES_DIR}/armadillo.ply"), 10.0)
+        target_mesh = normalize_mesh(load_mesh(f"{MESHES_DIR}/bunny.ply"), 10.0)
         data = sample_mesh_pair(
             f"{MESHES_DIR}/armadillo.ply",
             f"{MESHES_DIR}/bunny.ply",
@@ -237,53 +254,53 @@ class TestSampleMeshPair:
         assert data["max_particles"] == 100
         assert data["source_extent"] == pytest.approx(10.0)
         assert data["target_extent"] == pytest.approx(10.0)
-        assert data["R_init"] == pytest.approx(0.2)
-        assert data["source_radius"] == pytest.approx(0.2)
-        assert data["target_radius"] == pytest.approx(0.2)
-        assert data["target_radii"] == pytest.approx(0.2)
+        assert data["R_init"] == pytest.approx(data["source_radius"])
+        assert data["source_radius"] <= _radius_from_mesh(source_mesh, 100)
+        assert data["target_radius"] <= _radius_from_mesh(target_mesh, 100)
+        assert data["target_radii"] == pytest.approx(data["target_radius"])
+        assert data["source_pos"].shape == (100, 3)
+        assert data["target_pos"].shape == (100, 3)
+        _assert_mild_contact_packing(data["source_pos"], data["source_radius"])
+        _assert_mild_contact_packing(data["target_pos"], data["target_radius"])
 
-    def test_asymmetric_counts_supported_when_both_extents_are_provided(self):
+    def test_separate_extents_derive_separate_radii_with_same_count(self):
+        source_mesh = normalize_mesh(load_mesh(f"{MESHES_DIR}/armadillo.ply"), 8.0)
+        target_mesh = normalize_mesh(load_mesh(f"{MESHES_DIR}/bunny.ply"), 10.0)
         data = sample_mesh_pair(
             f"{MESHES_DIR}/armadillo.ply",
             f"{MESHES_DIR}/bunny.ply",
-            n_source=60,
-            n_target=100,
+            n_points=100,
             source_extent=8.0,
             target_extent=10.0,
             max_particles=140,
-            source_radius=0.15,
-            target_radius=0.25,
         )
-        assert data["n_source"] == 60
+        assert data["n_source"] == 100
         assert data["n_target"] == 100
         assert data["max_particles"] == 140
         assert data["source_extent"] == pytest.approx(8.0)
         assert data["target_extent"] == pytest.approx(10.0)
-        assert data["source_radius"] == pytest.approx(0.15)
-        assert data["target_radius"] == pytest.approx(0.25)
-        assert data["target_radii"] == pytest.approx(0.25)
-        assert data["R_init"] == pytest.approx(0.15)
+        assert data["source_radius"] <= _radius_from_mesh(source_mesh, 100)
+        assert data["target_radius"] <= _radius_from_mesh(target_mesh, 100)
+        assert data["target_radii"] == pytest.approx(data["target_radius"])
+        assert data["R_init"] == pytest.approx(data["source_radius"])
         assert isinstance(data["target_mesh"], trimesh.Trimesh)
-        assert data["source_pos"].shape[1] == 3
-        assert data["target_pos"].shape[1] == 3
-        assert len(data["source_pos"]) <= 60
-        assert len(data["target_pos"]) <= 100
+        assert data["source_pos"].shape == (100, 3)
+        assert data["target_pos"].shape == (100, 3)
+        _assert_mild_contact_packing(data["source_pos"], data["source_radius"])
+        _assert_mild_contact_packing(data["target_pos"], data["target_radius"])
 
-    def test_rejects_growing_args_without_both_extents(self):
-        with pytest.raises(ValueError, match="both source_extent and target_extent"):
+    def test_rejects_asymmetric_counts(self):
+        with pytest.raises(ValueError, match="same n_points"):
             sample_mesh_pair(
                 f"{MESHES_DIR}/armadillo.ply",
                 f"{MESHES_DIR}/bunny.ply",
                 n_source=60,
             )
 
-    def test_rejects_source_larger_than_target(self):
-        with pytest.raises(ValueError, match="n_source <= n_target"):
+    def test_rejects_manual_radius_overrides(self):
+        with pytest.raises(ValueError, match="Manual source_radius/target_radius"):
             sample_mesh_pair(
                 f"{MESHES_DIR}/armadillo.ply",
                 f"{MESHES_DIR}/bunny.ply",
-                n_source=101,
-                n_target=100,
-                source_extent=10.0,
-                target_extent=10.0,
+                source_radius=0.2,
             )
