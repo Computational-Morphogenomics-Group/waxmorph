@@ -8,8 +8,8 @@ import trimesh
 from scipy import ndimage
 from tqdm import tqdm
 
-_PACKING_FRACTION = 0.45
-_CONTACT_SPACING_RATIO = 1.65
+_PACKING_FRACTION = 1.0
+_CONTACT_SPACING_RATIO = 1.2
 _UNIT_SPHERE_VOLUME = 4.0 * np.pi / 3.0
 
 
@@ -256,34 +256,15 @@ def sample_mesh_pair(
     n_points: int = 2000,
     target_extent: float | None = 10.0,
     *,
-    n_source: int | None = None,
-    n_target: int | None = None,
     source_extent: float | None = None,
     max_particles: int | None = None,
-    radius: float | None = None,
-    source_radius: float | None = None,
-    target_radius: float | None = None,
     seed: int = 0,
 ) -> dict:
     """Load one source and one target mesh and sample matching volume point clouds.
 
-    Radii are derived from extents and ``n_points``. Deprecated radius keyword
-    arguments are accepted for older notebooks but do not override the derived
-    values.
+    Radii are derived from extents and ``n_points``.
     """
     n_points = _validate_n_points(n_points)
-    del radius
-    if source_radius is not None or target_radius is not None:
-        raise ValueError("Manual source_radius/target_radius overrides are no longer supported.")
-    if n_source is not None or n_target is not None:
-        n_source_f = n_points if n_source is None else int(n_source)
-        n_target_f = n_points if n_target is None else int(n_target)
-        if n_source_f != n_target_f:
-            raise ValueError(
-                "sample_mesh_pair now samples the same n_points for source and target."
-            )
-        if n_source_f != n_points:
-            raise ValueError("Use n_points instead of n_source/n_target for equal-count sampling.")
 
     target_extent_f = _validate_extent(
         "target_extent", 10.0 if target_extent is None else target_extent
@@ -334,16 +315,13 @@ def sample_mesh_sequence(
     *,
     target_extent: float | Sequence[float] | None = 10.0,
     source_extent: float | None = None,
-    radius: float | None = None,
     seed: int = 0,
 ) -> dict:
     """Load one source mesh and a frame-tagged sequence of target volume samples.
 
-    Radii are derived from extents and ``n_points``. The deprecated ``radius``
-    keyword is accepted for older notebooks but does not override derived values.
+    Radii are derived from extents and ``n_points``.
     """
     n_points = _validate_n_points(n_points)
-    del radius
     if len(target_specs) < 1:
         raise ValueError("sample_mesh_sequence requires at least one (frame, path) target.")
 
