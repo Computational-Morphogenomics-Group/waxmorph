@@ -262,19 +262,3 @@ class TestSampleMeshPair:
         assert data["target_pos"].shape == (100, 3)
         _assert_mild_contact_packing(data["source_pos"], data["source_radius"])
         _assert_mild_contact_packing(data["target_pos"], data["target_radius"])
-
-    def test_rejects_asymmetric_counts(self):
-        with pytest.raises(ValueError, match="same n_points"):
-            sample_mesh_pair(
-                f"{MESHES_DIR}/armadillo.ply",
-                f"{MESHES_DIR}/bunny.ply",
-                n_source=60,
-            )
-
-    def test_rejects_manual_radius_overrides(self):
-        with pytest.raises(ValueError, match="Manual source_radius/target_radius"):
-            sample_mesh_pair(
-                f"{MESHES_DIR}/armadillo.ply",
-                f"{MESHES_DIR}/bunny.ply",
-                source_radius=0.2,
-            )

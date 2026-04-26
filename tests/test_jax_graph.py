@@ -1,11 +1,13 @@
 """Tests for JAX graph construction from Warp arrays."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import warp as wp
 
 from waxmorph.jax.graph import (
+    ANGLE_EPS,
     build_edge_features,
     build_edge_index,
     build_graph,
@@ -143,8 +145,8 @@ class TestBuildEdgeFeatures:
         edge_index, _ne = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
 
-        # angle column (index 1) should be ~0
-        assert float(jnp.abs(edge_feats[:, 1]).max()) == pytest.approx(0.0, abs=1e-5)
+        expected = float(np.arccos(1.0 - ANGLE_EPS))
+        assert float(edge_feats[:, 1].max()) == pytest.approx(expected, abs=1e-5)
 
     def test_antiparallel_polarities_pi_angle(self):
         """Opposite polarity direction -> angle = pi."""
@@ -156,7 +158,37 @@ class TestBuildEdgeFeatures:
         edge_index, _ne = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
 
-        assert float(edge_feats[:, 1].max()) == pytest.approx(np.pi, abs=1e-5)
+        expected = float(np.arccos(-1.0 + ANGLE_EPS))
+        assert float(edge_feats[:, 1].max()) == pytest.approx(expected, abs=1e-5)
+
+    def test_live_jax_arrays_preserve_feature_gradients(self):
+        """Feature construction should remain connected to live JAX state arrays."""
+        positions = jnp.array(
+            [[0.0, 0.0, 0.0], [0.9, 0.0, 0.0], [0.25, 0.4, 0.0]],
+            dtype=jnp.float32,
+        )
+        polarities = jnp.array(
+            [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+            dtype=jnp.float32,
+        )
+        radii = jnp.full((3,), 0.5, dtype=jnp.float32)
+        genes = jnp.array([[0.2, 0.1], [0.05, 0.3], [0.4, 0.5]], dtype=jnp.float32)
+
+        edge_index, _num_edges = build_edge_index(positions, radii, particle_count=3)
+
+        def feature_loss(x, p, g):
+            node_feats = build_node_features(g, particle_count=3)
+            edge_feats = build_edge_features(x, p, edge_index, particle_count=3)
+            return jnp.sum(node_feats**2) + jnp.sum(edge_feats[:, 0] ** 2)
+
+        grad_x, _grad_p, grad_g = jax.grad(feature_loss, argnums=(0, 1, 2))(
+            positions,
+            polarities,
+            genes,
+        )
+
+        assert jnp.abs(grad_x).sum() > 0
+        assert jnp.abs(grad_g).sum() > 0
 
     def test_distance_symmetric(self):
         """Distance should be the same for i->j and j->i."""
@@ -274,3 +306,19 @@ class TestEdgePadding:
 
         with pytest.raises(ValueError, match="max_edges"):
             build_edge_index(X, R, particle_count=n, max_edges=1)
+
+    def test_padded_self_edges_have_finite_feature_gradients(self):
+        """Padding entries (0, 0) should not introduce zero-norm NaN gradients."""
+        X = jnp.array([[0.0, 0.0, 0.0], [0.9, 0.0, 0.0]], dtype=jnp.float32)
+        P = jnp.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=jnp.float32)
+        edge_index = jnp.array([[0, 1, 0, 0], [1, 0, 0, 0]], dtype=jnp.int32)
+
+        features = build_edge_features(X, P, edge_index, particle_count=2)
+        np.testing.assert_allclose(np.asarray(features[2:]), 0.0, atol=1e-7)
+
+        grad_x, grad_p = jax.grad(
+            lambda x, p: jnp.sum(build_edge_features(x, p, edge_index, particle_count=2)),
+            argnums=(0, 1),
+        )(X, P)
+        assert jnp.isfinite(grad_x).all()
+        assert jnp.isfinite(grad_p).all()

@@ -22,8 +22,8 @@ from waxmorph.torch.warp_autograd import WarpDiffusionStep, WarpMechStep
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
-    n_epochs: int = 1000
-    t_rollout: int = 200
+    n_epochs: int = 2000
+    t_rollout: int = 100
     mech_steps: int = 5
     diff_steps: int = 5
     dt_mech: float = 1e-2

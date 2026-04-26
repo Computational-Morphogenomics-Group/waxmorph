@@ -1,9 +1,13 @@
-"""Build JAX-style graph data from Warp simulation state.
+"""Build JAX-style graph data from Warp simulation state or live JAX arrays.
 
-Converts Warp arrays into JAX arrays and constructs the adjacency
-graph, node features, and edge features needed by the GNS.
+Topology construction is intentionally non-differentiable: positions/radii are
+snapshotted to the host to build adjacency.  Feature construction stays in JAX,
+so gradients can flow through node and edge features to live state arrays.
 """
 
+from __future__ import annotations
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 import warp as wp
@@ -11,8 +15,17 @@ import warp as wp
 from .._graph_core import build_edge_index_np
 from ..constants import EPS_DIST
 
+ANGLE_EPS = 1e-6
 
-def _wp_to_jax(arr: wp.array, particle_count: int) -> jnp.ndarray:
+
+def _slice_active(arr, particle_count: int):
+    """Slice inputs down to active particles when a count is provided."""
+    if particle_count <= 0:
+        return arr
+    return arr[:particle_count]
+
+
+def _wp_to_jax(arr: wp.array, particle_count: int) -> jax.Array:
     """Convert a Warp array to a JAX array, sliced to active particles.
 
     Uses ``wp.to_jax()`` for zero-copy dlpack transfer when available,
@@ -22,12 +35,31 @@ def _wp_to_jax(arr: wp.array, particle_count: int) -> jnp.ndarray:
         t = wp.to_jax(arr)
     except Exception:
         t = jnp.asarray(arr.numpy())
-    return t[:particle_count]
+    return _slice_active(t, particle_count)
+
+
+def _as_jax(arr, particle_count: int) -> jax.Array:
+    """Convert supported arrays to JAX without detaching live JAX inputs."""
+    if arr is None:
+        raise TypeError("Expected a Warp or JAX array, got None.")
+
+    if isinstance(arr, jax.Array):
+        return _slice_active(arr, particle_count)
+
+    if isinstance(arr, wp.array):
+        return _wp_to_jax(arr, particle_count)
+
+    return _slice_active(jnp.asarray(arr), particle_count)
+
+
+def _snapshot_numpy(arr, particle_count: int) -> np.ndarray:
+    """Materialize a detached host snapshot for non-differentiable topology."""
+    return np.asarray(jax.device_get(_as_jax(arr, particle_count)))
 
 
 def build_edge_index(
-    X: wp.array,
-    R: wp.array,
+    X,
+    R,
     particle_count: int,
     eps_dist: float = EPS_DIST,
     max_edges: int | None = None,
@@ -39,9 +71,9 @@ def build_edge_index(
 
     Parameters
     ----------
-    X : wp.array(dtype=wp.vec3f)
-        Position array (preallocated to ``max_particles``).
-    R : wp.array(dtype=wp.float32)
+    X : wp.array(dtype=wp.vec3f) or jax.Array
+        Position array.
+    R : wp.array(dtype=wp.float32) or jax.Array
         Radius array.
     particle_count : int
         Number of active particles.
@@ -67,8 +99,8 @@ def build_edge_index(
         static constant, causing recompilation every time the edge count
         changes.
     """
-    pos = np.asarray(_wp_to_jax(X, particle_count), dtype=np.float32)
-    rad = np.asarray(_wp_to_jax(R, particle_count), dtype=np.float32)
+    pos = _snapshot_numpy(X, particle_count).astype(np.float32, copy=False)
+    rad = _snapshot_numpy(R, particle_count).astype(np.float32, copy=False)
 
     senders, receivers = build_edge_index_np(pos, rad, eps_dist)
 
@@ -93,9 +125,9 @@ def build_edge_index(
 
 
 def build_node_features(
-    G: wp.array,
+    G,
     particle_count: int,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Assemble per-node feature tensor from Warp state arrays.
 
     Feature layout per node::
@@ -106,18 +138,18 @@ def build_node_features(
     -------
     node_features : jnp.ndarray, shape ``[N, G]``
     """
-    genes = _wp_to_jax(G, particle_count).astype(jnp.float32)
+    genes = _as_jax(G, particle_count).astype(jnp.float32)
     if genes.ndim == 1:
         genes = genes[..., None]
     return genes
 
 
 def build_edge_features(
-    X: wp.array,
-    P: wp.array,
-    edge_index: jnp.ndarray,
+    X,
+    P,
+    edge_index: jax.Array,
     particle_count: int,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Compute per-edge feature tensor.
 
     Feature layout per edge ``(i -> j)``::
@@ -128,32 +160,43 @@ def build_edge_features(
     -------
     edge_features : jnp.ndarray, shape ``[E, 2]``
     """
-    pos = _wp_to_jax(X, particle_count).astype(jnp.float32)
-    pol = _wp_to_jax(P, particle_count).astype(jnp.float32)
+    pos = _as_jax(X, particle_count).astype(jnp.float32)
+    pol = _as_jax(P, particle_count).astype(jnp.float32)
 
     senders = edge_index[0]
     receivers = edge_index[1]
+    self_edge = senders == receivers
 
     rel_pos = pos[senders] - pos[receivers]
+    rel_pos = jnp.where(
+        self_edge[:, None],
+        jnp.array([EPS_DIST, 0.0, 0.0], dtype=pos.dtype),
+        rel_pos,
+    )
     dist = jnp.linalg.norm(rel_pos, axis=-1, keepdims=True)
 
     p_s = pol[senders]
     p_r = pol[receivers]
-    cos_angle = jnp.clip(jnp.sum(p_s * p_r, axis=-1, keepdims=True), -1.0, 1.0)
+    cos_angle = jnp.clip(
+        jnp.sum(p_s * p_r, axis=-1, keepdims=True),
+        -1.0 + ANGLE_EPS,
+        1.0 - ANGLE_EPS,
+    )
     angle = jnp.arccos(cos_angle)
 
-    return jnp.concatenate([dist, angle], axis=-1)
+    edge_features = jnp.concatenate([dist, angle], axis=-1)
+    return jnp.where(self_edge[:, None], 0.0, edge_features)
 
 
 def build_graph(
-    X: wp.array,
-    P: wp.array,
-    R: wp.array,
+    X,
+    P,
+    R,
     particle_count: int = 0,
-    G: wp.array | None = None,
+    G=None,
     eps_dist: float = EPS_DIST,
     max_edges: int | None = None,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Build ``(node_features, edge_index, edge_features, num_edges)`` in one call.
 
     Parameters
