@@ -15,7 +15,7 @@ import numpy as np
 import optax
 from tqdm import trange
 
-from waxmorph.jax.gnn import GNS
+from waxmorph.jax.gnn import GNS as JaxGNS
 from waxmorph.jax.graph import (
     build_edge_features,
     build_edge_index,
@@ -1204,7 +1204,7 @@ def _make_train_step(
 
 
 def train(
-    model: GNS,
+    model: JaxGNS,
     optimizer: optax.GradientTransformation,
     opt_state: optax.OptState,
     loss_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
@@ -1274,7 +1274,7 @@ def train(
         R = jnp.asarray(radii, dtype=jnp.float32)
 
     if save_path is not None and os.path.exists(save_path):
-        model = GNS.load(save_path)
+        model = JaxGNS.load(save_path)
         config = dataclasses.replace(config, n_epochs=1)
 
     model = _device_put_arrays(model, jax_device)

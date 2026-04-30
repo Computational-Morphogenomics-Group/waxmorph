@@ -38,11 +38,35 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
 nitpicky = False
 suppress_warnings = ["myst.header"]
 nitpick_ignore_regex = [
+    # Third-party runtime annotation names below do not have stable Sphinx
+    # intersphinx inventories or are imported under local aliases in docstrings.
     (r"py:class", r"[Oo]ptional"),
+    (r"py:class", r"GNS"),
+    (r"py:class", r"JaxGNS"),
+    (r"py:class", r"Path"),
+    (r"py:class", r"TrainConfig"),
+    (r"py:class", r"TrainResult"),
+    (r"py:class", r"callable"),
+    (r"py:class", r"jax\.Array"),
+    (r"py:class", r"jnp\.ndarray"),
+    (r"py:class", r"np\.ndarray"),
+    (r"py:class", r"optax\..*"),
+    (r"py:class", r"equinox\..*"),
+    (r"py:class", r"eqx\..*"),
+    (r"py:class", r"trimesh\..*"),
+    (r"py:func", r"trimesh\..*"),
+    (r"py:class", r"geomloss\..*"),
+    (r"py:class", r"SamplesLoss"),
+    (r"py:class", r"pyvista\..*"),
+    (r"py:class", r"array"),
+    (r"py:class", r"ndim=.*"),
+    (r"py:class", r"dtype=.*"),
     (r"py:class", r"dtype=wp\..*"),
     (r"py:class", r"same shape as G"),
     (r"py:class", r"warp\._src\.types\.HashGrid"),
     (r"py:class", r"warp\._src\.types\.array"),
+    (r"py:class", r"warp\._src\..*"),
+    (r"py:class", r"warp\.Tape"),
     (r"py:class", r"wp\..*"),
 ]
 

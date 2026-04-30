@@ -1,5 +1,20 @@
 {{ fullname | escape | underline}}
 
+{%- block modules %}
+{%- if modules %}
+.. rubric:: Modules
+
+.. autosummary::
+   :toctree:
+   :recursive:
+{% for item in modules %}
+{%- if item != "train" %}
+   {{ fullname }}.{{ item }}
+{%- endif %}
+{%- endfor %}
+{% endif %}
+{%- endblock %}
+
 .. currentmodule:: {{ fullname }}
 
 .. automodule:: {{ fullname }}
@@ -9,6 +24,7 @@
    .. rubric:: {{ _('Module Attributes') }}
 
    .. autosummary::
+      :toctree:
    {% for item in attributes %}
       {{ item }}
    {%- endfor %}
@@ -20,6 +36,7 @@
    .. rubric:: {{ _('Functions') }}
 
    .. autosummary::
+      :toctree:
    {% for item in functions %}
       {{ item }}
    {%- endfor %}
@@ -31,6 +48,7 @@
    .. rubric:: {{ _('Classes') }}
 
    .. autosummary::
+      :toctree:
    {% for item in classes %}
       {{ item }}
    {%- endfor %}
@@ -42,21 +60,9 @@
    .. rubric:: {{ _('Exceptions') }}
 
    .. autosummary::
+      :toctree:
    {% for item in exceptions %}
       {{ item }}
    {%- endfor %}
    {% endif %}
    {%- endblock %}
-
-{%- block modules %}
-{%- if modules %}
-.. rubric:: Modules
-
-.. autosummary::
-   :toctree:
-   :recursive:
-{% for item in modules %}
-   {{ item }}
-{%- endfor %}
-{% endif %}
-{%- endblock %}
