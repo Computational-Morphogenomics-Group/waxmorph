@@ -1,4 +1,8 @@
-"""Backward-compatible re-export — actual implementation in waxmorph.torch.graph."""
+"""Backward-compatible PyTorch graph construction exports.
+
+This module re-exports the default graph builders from
+:mod:`waxmorph.torch.graph` for callers that import from ``waxmorph.graph``.
+"""
 
 from .torch.graph import (
     _wp_to_torch,

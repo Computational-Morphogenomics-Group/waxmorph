@@ -13,21 +13,19 @@ _ACTIVATIONS = {
 class MLP(nn.Module):
     """Multi-layer perceptron with configurable depth, width, activation, and normalization.
 
-    Parameters
-    ----------
-    input_dim : int
-        Dimensionality of input features.
-    output_dim : int
-        Dimensionality of output features.
-    hidden_dim : int
-        Width of each hidden layer.
-    num_layers : int
-        Total number of linear layers (including output projection).
-        ``num_layers=1`` gives a single linear map with no hidden layers.
-    activation : str
-        One of ``"relu"``, ``"silu"``, ``"gelu"``, ``"tanh"``.
-    layer_norm : bool
-        If True, apply LayerNorm after the final linear layer.
+    Args:
+        input_dim: Dimensionality of the final axis of the input tensor.
+        output_dim: Dimensionality of the final axis of the output tensor.
+        hidden_dim: Width of each hidden linear layer.
+        num_layers: Total number of linear layers, including the output
+            projection. ``num_layers=1`` creates a single linear map.
+        activation: Activation name: ``"relu"``, ``"silu"``, ``"gelu"``, or
+            ``"tanh"``.
+        layer_norm: Whether to append :class:`torch.nn.LayerNorm` over
+            ``output_dim``.
+
+    Raises:
+        ValueError: If ``activation`` is not supported.
     """
 
     def __init__(
@@ -66,5 +64,13 @@ class MLP(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
-        """``(..., input_dim) -> (..., output_dim)``."""
+        """Apply the MLP to the final axis of ``x``.
+
+        Args:
+            x: Tensor with trailing dimension ``input_dim``.
+
+        Returns:
+            Tensor with the same leading dimensions and trailing dimension
+            ``output_dim``.
+        """
         return self.net(x)

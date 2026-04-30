@@ -33,6 +33,20 @@ class WarpMechStep(torch.autograd.Function):
         gx_wp: wp.array,
         grid: wp.HashGrid | None,
     ) -> torch.Tensor:
+        """Apply a Warp mechanics step during the PyTorch forward pass.
+
+        Args:
+            ctx: PyTorch autograd context.
+            X_torch: Position tensor with shape ``[N, 3]``.
+            R_wp: Warp radius array.
+            particle_count: Number of active particles.
+            dt: Mechanics Euler step size.
+            gx_wp: Scratch Warp force buffer.
+            grid: Optional reusable Warp hash grid.
+
+        Returns:
+            Updated position tensor with shape ``[N, 3]``.
+        """
         X_wp = wp.from_torch(X_torch.detach().contiguous(), dtype=wp.vec3f)
         X_wp.requires_grad = True
 
@@ -47,6 +61,7 @@ class WarpMechStep(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
+        """Replay the Warp tape and return the gradient with respect to positions."""
         ctx.X_out.grad = wp.from_torch(grad_output.detach().contiguous(), dtype=wp.vec3f)
         ctx.tape.backward()
         grad_input = wp.to_torch(ctx.X_wp.grad).view(-1, 3).clone()
@@ -73,6 +88,22 @@ class WarpDiffusionStep(torch.autograd.Function):
         dt: float,
         grid: wp.HashGrid | None,
     ) -> torch.Tensor:
+        """Apply a Warp diffusion step during the PyTorch forward pass.
+
+        Args:
+            ctx: PyTorch autograd context.
+            G_torch: Gene concentration tensor with shape ``[N, num_genes]``.
+            X_wp: Warp position array used for neighbor topology.
+            R_wp: Warp radius array.
+            lap_G_wp: Scratch Warp Laplacian buffer.
+            particle_count: Number of active particles.
+            alpha: Diffusion coefficient.
+            dt: Diffusion Euler step size.
+            grid: Optional reusable Warp hash grid.
+
+        Returns:
+            Updated gene concentration tensor with shape ``[N, num_genes]``.
+        """
         n, num_genes = G_torch.shape
         G_wp = wp.from_torch(G_torch.detach().contiguous().view(-1), dtype=wp.float32)
         G_wp = G_wp.reshape((n, num_genes))
@@ -92,6 +123,7 @@ class WarpDiffusionStep(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
+        """Replay the Warp tape and return the gradient with respect to genes."""
         n, num_genes = ctx.shape
         ctx.G_out.grad = wp.from_torch(
             grad_output.detach().contiguous().view(-1), dtype=wp.float32

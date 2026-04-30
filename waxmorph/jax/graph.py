@@ -69,35 +69,23 @@ def build_edge_index(
     An edge ``(i, j)`` exists when ``dist(X[i], X[j]) <= R[i] + R[j] + eps_dist``
     and ``i != j``.  Returns directed edges (both ``i->j`` and ``j->i``).
 
-    Parameters
-    ----------
-    X : wp.array(dtype=wp.vec3f) or jax.Array
-        Position array.
-    R : wp.array(dtype=wp.float32) or jax.Array
-        Radius array.
-    particle_count : int
-        Number of active particles.
-    eps_dist : float
-        Contact buffer matching ``simulator.EPS_DIST``.
-    max_edges : int, optional
-        If given, pad the output to exactly ``max_edges`` columns.
-        Padding entries point sender=0, receiver=0.  This keeps array shapes
-        static across calls, which is **critical** for ``jax.jit`` — without
-        it, every new edge count triggers a full re-trace (~3-5 s each).
+    Args:
+        X: Position array with shape ``[N, 3]``.
+        R: Radius array with shape ``[N]``.
+        particle_count: Number of active particles. Non-positive values use
+            the full arrays.
+        eps_dist: Contact buffer matching ``simulator.EPS_DIST``.
+        max_edges: Optional output capacity. If provided, padding entries use
+            sender ``0`` and receiver ``0`` so shapes stay static across JIT
+            calls.
 
-        When padding is used, pass the returned ``num_edges`` to the GNS so
-        it can mask out padding before aggregation (see
-        :class:`~waxmorph.jax.gnn.GraphNetworkBlock`).
+    Returns:
+        Pair ``(edge_index, num_edges)`` where ``edge_index`` has shape
+        ``[2, E]`` or ``[2, max_edges]`` and ``num_edges`` is a JAX scalar
+        count of real, non-padding directed edges.
 
-    Returns
-    -------
-    edge_index : jnp.ndarray, shape ``[2, E]`` or ``[2, max_edges]``, dtype ``int32``
-    num_edges : jnp.int32
-        Number of real (non-padding) edges.  Returned as a JAX scalar so
-        it can be passed into ``jax.jit``-compiled functions as a traced
-        (dynamic) value — a plain Python ``int`` would be treated as a
-        static constant, causing recompilation every time the edge count
-        changes.
+    Raises:
+        ValueError: If the observed edge count exceeds ``max_edges``.
     """
     pos = _snapshot_numpy(X, particle_count).astype(np.float32, copy=False)
     rad = _snapshot_numpy(R, particle_count).astype(np.float32, copy=False)
@@ -128,15 +116,20 @@ def build_node_features(
     G,
     particle_count: int,
 ) -> jax.Array:
-    """Assemble per-node feature tensor from Warp state arrays.
+    """Assemble per-node gene features from Warp or JAX arrays.
 
     Feature layout per node::
 
         [g_0, g_1, ..., g_{G-1}]
 
-    Returns
-    -------
-    node_features : jnp.ndarray, shape ``[N, G]``
+    Args:
+        G: Gene concentration array. One-dimensional arrays are promoted to
+            shape ``[N, 1]``.
+        particle_count: Number of active particles. Non-positive values use
+            the full array.
+
+    Returns:
+        Float array with shape ``[N, G]``.
     """
     genes = _as_jax(G, particle_count).astype(jnp.float32)
     if genes.ndim == 1:
@@ -156,9 +149,15 @@ def build_edge_features(
 
         [dist, angle(P_i, P_j)]
 
-    Returns
-    -------
-    edge_features : jnp.ndarray, shape ``[E, 2]``
+    Args:
+        X: Position array with shape ``[N, 3]``.
+        P: Polarity array with shape ``[N, 3]``.
+        edge_index: Directed COO edge array with shape ``[2, E]``.
+        particle_count: Number of active particles. Non-positive values use
+            the full arrays.
+
+    Returns:
+        Float edge feature array with shape ``[E, 2]``.
     """
     pos = _as_jax(X, particle_count).astype(jnp.float32)
     pol = _as_jax(P, particle_count).astype(jnp.float32)
@@ -199,20 +198,18 @@ def build_graph(
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Build ``(node_features, edge_index, edge_features, num_edges)`` in one call.
 
-    Parameters
-    ----------
-    max_edges : int, optional
-        Passed to :func:`build_edge_index` to pad edge arrays to a fixed
-        size.  **Required** when calling the GNS inside ``jax.jit`` to
-        prevent re-tracing on every graph with a different edge count.
+    Args:
+        X: Position array with shape ``[N, 3]``.
+        P: Polarity array with shape ``[N, 3]``.
+        R: Radius array with shape ``[N]``.
+        particle_count: Number of active particles. Non-positive values use
+            the full arrays.
+        G: Gene concentration array.
+        eps_dist: Contact buffer distance.
+        max_edges: Optional capacity passed to :func:`build_edge_index`.
 
-    Returns
-    -------
-    node_features : jnp.ndarray ``[N, G]``
-    edge_index    : jnp.ndarray ``[2, E]`` or ``[2, max_edges]``
-    edge_features : jnp.ndarray ``[E, 2]`` or ``[max_edges, 2]``
-    num_edges : jnp.int32
-        Number of real (non-padding) edges (JAX scalar).
+    Returns:
+        Tuple ``(node_features, edge_index, edge_features, num_edges)``.
     """
     edge_index, num_edges = build_edge_index(X, R, particle_count, eps_dist, max_edges)
     node_features = build_node_features(G, particle_count)

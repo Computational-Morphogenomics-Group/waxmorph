@@ -22,22 +22,15 @@ class GraphNetworkBlock(eqx.Module):
 
     Both edge and node latents use residual connections.
 
-    Parameters
-    ----------
-    node_latent_dim : int
-        Width of node latent vectors.
-    edge_latent_dim : int
-        Width of edge latent vectors.
-    hidden_dim : int
-        Hidden layer width for internal MLPs.
-    num_mlp_layers : int
-        Depth of each internal MLP.
-    activation : str
-        Activation function name.
-    layer_norm : bool
-        Whether to apply LayerNorm in internal MLPs.
-    key : jax.random.PRNGKey
-        PRNG key for weight initialization.
+    Args:
+        node_latent_dim: Width of node latent vectors.
+        edge_latent_dim: Width of edge latent vectors.
+        hidden_dim: Hidden layer width for internal MLPs.
+        num_mlp_layers: Number of linear layers in each internal MLP.
+        activation: Activation function name accepted by
+            :class:`waxmorph.jax.mlp.MLP`.
+        layer_norm: Whether to apply layer normalization in internal MLPs.
+        key: JAX PRNG key used for weight initialization.
     """
 
     edge_mlp: MLP
@@ -83,23 +76,20 @@ class GraphNetworkBlock(eqx.Module):
     ) -> tuple[jax.Array, jax.Array]:
         """Run one message-passing round.
 
-        Parameters
-        ----------
-        node_latent : ``[N, node_latent_dim]``
-        edge_latent : ``[E, edge_latent_dim]``
-        edge_index  : ``[2, E]``   (senders, receivers)
-        num_edges : jax scalar (e.g. jnp.int32), optional
-            Number of real (non-padding) edges.  When edge arrays are padded
-            to a fixed ``max_edges`` for JIT stability, padding entries
-            (sender=0, receiver=0) produce non-zero latents due to MLP biases.
-            Passing ``num_edges`` masks them out before aggregation so they
-            don't contaminate node 0.  Must be a JAX scalar (not a Python
-            int) to avoid JIT recompilation when the value changes.
+        Args:
+            node_latent: Node latent array with shape
+                ``[N, node_latent_dim]``.
+            edge_latent: Edge latent array with shape
+                ``[E, edge_latent_dim]``.
+            edge_index: Directed COO edge array with shape ``[2, E]`` where
+                row ``0`` stores senders and row ``1`` stores receivers.
+            num_edges: Optional JAX scalar count of real, non-padding edges.
+                When edge arrays are padded for JIT stability, padding entries
+                are masked before aggregation.
 
-        Returns
-        -------
-        node_latent_new : ``[N, node_latent_dim]``
-        edge_latent_new : ``[E, edge_latent_dim]``
+        Returns:
+            Pair ``(node_latent_new, edge_latent_new)`` with the same shapes
+            as the corresponding inputs.
         """
         senders, receivers = edge_index[0], edge_index[1]
 
@@ -130,34 +120,24 @@ class GraphNetworkBlock(eqx.Module):
 class GNS(eqx.Module):
     """Full Encode-Process-Decode Graph Network Simulator.
 
-    Parameters
-    ----------
-    node_feature_dim : int
-        Raw node feature dimensionality.
-    edge_feature_dim : int
-        Raw edge feature dimensionality.
-    node_latent_dim : int
-        Width of node latent vectors in the processor.
-    edge_latent_dim : int
-        Width of edge latent vectors in the processor.
-    hidden_dim : int
-        Hidden layer width for all internal MLPs.
-    num_mp_steps : int
-        Number of message-passing iterations in the processor.
-    num_mlp_layers : int
-        Depth of each MLP (encoder, processor, decoder).
-    output_dims : dict
-        Named output heads mapping field name to dimensionality.
-        Example: ``{"dX": 3, "dP": 3, "dG": 2}``.
-    activation : str
-        Activation function name.
-    layer_norm : bool
-        Whether to apply LayerNorm in encoder/processor MLPs.
-    checkpoint_processor : bool
-        If ``True``, wrap each processor block with ``jax.checkpoint``
-        to trade compute for memory.
-    key : jax.random.PRNGKey
-        PRNG key for weight initialization.
+    Args:
+        node_feature_dim: Raw node feature dimensionality.
+        edge_feature_dim: Raw edge feature dimensionality.
+        node_latent_dim: Width of node latent vectors in the processor.
+        edge_latent_dim: Width of edge latent vectors in the processor.
+        hidden_dim: Hidden layer width for all internal MLPs.
+        num_mp_steps: Number of message-passing blocks in the processor.
+        num_mlp_layers: Number of linear layers in each encoder, processor,
+            and decoder MLP.
+        output_dims: Mapping from output head name to per-node output
+            dimensionality. Defaults to ``{"dX": 3, "dP": 3, "dG": 2}``.
+        activation: Activation function name accepted by
+            :class:`waxmorph.jax.mlp.MLP`.
+        layer_norm: Whether to apply layer normalization in encoder and
+            processor MLPs.
+        checkpoint_processor: If ``True``, checkpoint processor blocks to
+            trade additional compute for lower activation memory.
+        key: JAX PRNG key used for weight initialization.
     """
 
     node_encoder: MLP
@@ -263,19 +243,17 @@ class GNS(eqx.Module):
     ) -> dict[str, jax.Array]:
         """Run full encode-process-decode.
 
-        Parameters
-        ----------
-        node_features : ``[N, node_feature_dim]``
-        edge_index    : ``[2, E]``
-        edge_features : ``[E, edge_feature_dim]``
-        num_edges : jax scalar (e.g. jnp.int32), optional
-            Number of real (non-padding) edges.  Required when edge arrays
-            are padded to a fixed size for JIT stability — see
-            :func:`~waxmorph.jax.graph.build_edge_index`.
+        Args:
+            node_features: Node feature array with shape
+                ``[N, node_feature_dim]``.
+            edge_index: Directed COO edge array with shape ``[2, E]``.
+            edge_features: Edge feature array with shape
+                ``[E, edge_feature_dim]``.
+            num_edges: Optional JAX scalar count of real, non-padding edges.
 
-        Returns
-        -------
-        outputs : dict mapping field name to ``[N, output_dim]`` predicted updates.
+        Returns:
+            Dictionary mapping each output head name to an array with shape
+            ``[N, output_dim]``.
         """
         # Encode
         node_latent = self.node_encoder(node_features)
@@ -319,12 +297,13 @@ class GNS(eqx.Module):
     def load(cls, path: str | Path, **kwargs) -> GNS:
         """Load model from files saved with :meth:`save`.
 
-        Parameters
-        ----------
-        path : str or Path
-            Path to the weights file. Config is read from ``path.json``.
-        **kwargs
-            Extra keyword arguments (unused, for API compatibility).
+        Args:
+            path: Path to the weights file. Configuration is read from
+                ``path.json``.
+            **kwargs: Ignored keyword arguments kept for API compatibility.
+
+        Returns:
+            Deserialized model.
         """
         path = Path(path)
         with open(str(path) + ".json") as f:

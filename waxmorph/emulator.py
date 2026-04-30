@@ -1,3 +1,11 @@
+"""Warp mechanics and diffusion kernels for differentiable emulation.
+
+The functions in this module advance non-growing cell states using
+sticky-sphere mechanics and graph-Laplacian gene diffusion. Differentiable
+entry points record pairwise kernels on :class:`warp.Tape` objects while
+freezing neighbor topology for the current step.
+"""
+
 import warp as wp
 
 from .constants import EPS_DIST, EPS_NORM, HASH_GRID_DIM

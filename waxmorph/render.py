@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - optional dependency for rendering backen
 
 
 def _require_pyvista() -> None:
+    """Raise if the optional PyVista rendering dependency is unavailable."""
     if pv is None:
         raise ImportError(
             "waxmorph.render requires optional dependency 'pyvista'. "
@@ -32,6 +33,8 @@ def _require_pyvista() -> None:
 
 
 class RenderInterface(ABC):
+    """Abstract interface for interactive cell-state renderers."""
+
     @staticmethod
     @abstractmethod
     def draw_sphere(*args, **kwargs):
@@ -113,6 +116,13 @@ class MPLInterface(RenderInterface):
 
     @staticmethod
     def cleanup(ax, blim=-10, tlim=20):
+        """Apply axes, bounds, and background styling to a Matplotlib view.
+
+        Args:
+            ax: Matplotlib 3D axes object.
+            blim: Lower bound for each spatial axis.
+            tlim: Upper bound for each spatial axis.
+        """
         ax.grid(False)
         for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
             try:
@@ -131,6 +141,19 @@ class MPLInterface(RenderInterface):
 
     @staticmethod
     def draw_3d_view(centers, radii, morphogens, particle_count, blim=-10, tlim=20):
+        """Render a static Matplotlib 3D view of active particles.
+
+        Args:
+            centers: Particle centers with shape ``[N, 3]``.
+            radii: Particle radii with shape ``[N]``.
+            morphogens: Scalar morphogen values used for color saturation.
+            particle_count: Number of active particles to draw.
+            blim: Lower bound for each spatial axis.
+            tlim: Upper bound for each spatial axis.
+
+        Returns:
+            Matplotlib figure containing the rendered view.
+        """
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111, projection="3d")
 
@@ -204,6 +227,7 @@ class PyVistaInterface(RenderInterface):
 
     @staticmethod
     def _rgb_from_morph(morphogens: np.ndarray) -> np.ndarray:
+        """Map scalar morphogen values to clipped uint8 RGB colors."""
         m = np.asarray(morphogens).astype(float)
         m = np.clip(m, 0.0, 1.0)
         rgb_float = colors.hsv_to_rgb(
@@ -272,6 +296,7 @@ class PyVistaInterface(RenderInterface):
 
     @staticmethod
     def _glyph_spheres(points_pd: pv.PolyData, theta_res=24, phi_res=12) -> pv.PolyData:
+        """Create sphere glyph geometry from point-cloud radius data."""
         base = pv.Sphere(radius=1.0, theta_resolution=theta_res, phi_resolution=phi_res)
         glyphs = points_pd.glyph(geom=base, scale="radius", orient=False)
         return glyphs
@@ -324,6 +349,15 @@ class PyVistaInterface(RenderInterface):
         show_bounds: bool = True,
         show_axes: bool = True,
     ):
+        """Apply PyVista scene bounds, axes, background, and camera defaults.
+
+        Args:
+            plotter: PyVista plotter to mutate.
+            blim: Lower bound for each spatial axis.
+            tlim: Upper bound for each spatial axis.
+            show_bounds: Whether to draw axis bounds.
+            show_axes: Whether to add a 3D axes widget.
+        """
         plotter.set_background("white")
 
         if show_bounds:
@@ -366,6 +400,34 @@ class PyVistaInterface(RenderInterface):
         # NEW
         cell_types: np.ndarray | None = None,
     ):
+        """Render an interactive PyVista view of active particles.
+
+        Args:
+            centers: Particle centers with shape ``[N, 3]`` or frame-compatible
+                array-like input.
+            radii: Particle radii with shape ``[N]``.
+            morphogens: Scalar morphogen values used for coloring unless
+                ``cell_types`` is provided.
+            polarities: Optional polarity vectors with shape ``[N, 3]``.
+            particle_count: Number of active particles to draw.
+            blim: Lower bound for each spatial axis.
+            tlim: Upper bound for each spatial axis.
+            theta_res: Sphere glyph longitude resolution.
+            phi_res: Sphere glyph latitude resolution.
+            alpha: Sphere opacity.
+            show_polarities: Whether to render polarity arrows.
+            polarity_length: Polarity arrow length.
+            polarity_color: Polarity arrow color.
+            polarity_opacity: Polarity arrow opacity.
+            polarity_shaft_radius: Polarity arrow shaft radius.
+            polarity_tip_length: Polarity arrow tip length.
+            polarity_tip_radius: Polarity arrow tip radius.
+            cell_types: Optional integer category labels used for stable
+                categorical colors.
+
+        Returns:
+            Configured :class:`pyvista.Plotter`.
+        """
         plotter = pv.Plotter(notebook=True)
 
         sphere_kwargs = dict(
@@ -438,9 +500,11 @@ class _BaseBackend:
     needs_full_buffer: bool = False
 
     def render_points_frame(self, *, t: float, points, radius, colors, name: str) -> None:
+        """Render one frame of point primitives."""
         raise NotImplementedError
 
     def close(self) -> None:
+        """Release backend resources."""
         pass
 
 
@@ -519,6 +583,7 @@ class _OpenGLVideoBackend(_BaseBackend):
         mesh_points=None,
         mesh_indices=None,
     ) -> None:
+        """Render one OpenGL frame and append it to the video writer."""
         self.renderer.clear()
 
         # TODO: Update instancer rather than clearing shape instancers
@@ -558,6 +623,7 @@ class _OpenGLVideoBackend(_BaseBackend):
         self.writer.append_data(frame)
 
     def close(self) -> None:
+        """Close the video writer and OpenGL renderer."""
         try:
             self.writer.close()
         finally:
@@ -603,6 +669,7 @@ class _UsdStageBackend(_BaseBackend):
         mesh_points=None,
         mesh_indices=None,
     ) -> None:
+        """Render one USD frame of point primitives."""
         # Mesh overlays are currently only supported by the OpenGL backend.
         _ = (mesh_points, mesh_indices)
         self.renderer.begin_frame(float(t))
@@ -620,14 +687,42 @@ class _UsdStageBackend(_BaseBackend):
             self.renderer.save()
 
     def close(self) -> None:
+        """Save the USD stage."""
         self.renderer.save()
 
 
 class WarpMovieRenderer:
-    """
-    Unified renderer:
-      - backend="opengl": headless OpenGL -> video file
-      - backend="usd":    USD stage -> .usd/.usda/.usdc file (no pixels/video)
+    """Write Warp particle trajectories as video frames or USD stages.
+
+    Args:
+        filename: Output video or USD file path.
+        max_particles: Maximum particle capacity packed into renderer buffers.
+        backend: ``"opengl"`` for a headless video file or ``"usd"`` for a
+            USD stage.
+        width: OpenGL video width in pixels.
+        height: OpenGL video height in pixels.
+        fps: Output frames per second.
+        device: Warp device used for packed buffers.
+        camera_pos: OpenGL camera position.
+        camera_front: OpenGL camera forward vector.
+        camera_up: OpenGL camera up vector.
+        background_color: OpenGL RGB background color in ``[0, 1]``.
+        draw_grid: Whether the OpenGL backend draws a grid.
+        draw_axis: Whether the OpenGL backend draws axes.
+        draw_sky: Whether the OpenGL backend draws sky.
+        render_wireframe: Whether the OpenGL backend renders wireframes.
+        codec: ImageIO video codec for the OpenGL backend.
+        quality: ImageIO output quality for the OpenGL backend.
+        pixelformat: ImageIO pixel format for the OpenGL backend.
+        usd_up_axis: USD stage up axis.
+        usd_scaling: USD stage scaling factor.
+        usd_save_every_frame: Whether to save the USD stage after each frame.
+        opengl_reset_instancers_each_frame: Whether to clear OpenGL instancers
+            before each frame.
+        prim_name: Primitive name used for rendered particles.
+
+    Raises:
+        ValueError: If ``backend`` is not ``"opengl"`` or ``"usd"``.
     """
 
     def __init__(
@@ -896,20 +991,15 @@ class WarpMovieRenderer:
         (e.g. shape assembly with multi-gene states) rather than derived from
         separate activator/inhibitor Warp arrays.
 
-        Parameters
-        ----------
-        t : float
-            Time stamp for the frame.
-        centers : np.ndarray, shape ``[N, 3]``
-            Particle positions.
-        radii : np.ndarray, shape ``[N]``
-            Particle radii.
-        colors : np.ndarray, shape ``[N, 3]``
-            Per-particle RGB colors in ``[0, 1]``.
-        particle_count : int
-            Number of active particles.
-        mesh_points, mesh_indices : optional
-            Target mesh overlay (OpenGL backend only).
+        Args:
+            t: Time stamp for the frame.
+            centers: Particle positions with shape ``[N, 3]``.
+            radii: Particle radii with shape ``[N]``.
+            colors: Per-particle RGB colors with shape ``[N, 3]`` in
+                ``[0, 1]``.
+            particle_count: Number of active particles.
+            mesh_points: Optional target mesh vertices for the OpenGL backend.
+            mesh_indices: Optional target mesh indices for the OpenGL backend.
         """
         n = int(particle_count)
         n = max(0, min(n, self.max_particles))
@@ -949,6 +1039,24 @@ class WarpMovieRenderer:
         mesh_points=None,
         mesh_indices=None,
     ) -> None:
+        """Write a frame from Warp state arrays and derived morphogen colors.
+
+        Args:
+            t: Time stamp for the frame.
+            centers_wp: Warp position array with dtype ``wp.vec3f``.
+            radii_wp: Warp radius array with dtype ``wp.float32``.
+            A_wp: Warp activator morphogen array.
+            I_wp: Warp inhibitor morphogen array.
+            particle_count: Number of active particles.
+            morph: Color source, one of ``"A"``, ``"I"``, or ratio aliases.
+            morph_scale: Divisor applied before clipping morphogen color values
+                to ``[0, 1]``.
+            hue: HSV hue used for morphogen coloring.
+            base_color: Optional RGB color in ``[0, 1]`` overriding morphogen
+                coloring.
+            mesh_points: Optional target mesh vertices for the OpenGL backend.
+            mesh_indices: Optional target mesh indices for the OpenGL backend.
+        """
         n = self._pack_gpu_buffers(
             centers_wp,
             radii_wp,
@@ -964,11 +1072,14 @@ class WarpMovieRenderer:
         self._render(t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices)
 
     def close(self) -> None:
+        """Close the underlying renderer backend."""
         self._backend.close()
 
     def __enter__(self):
+        """Enter a context manager and return this renderer."""
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        """Close the renderer when leaving a context manager."""
         self.close()
         return False

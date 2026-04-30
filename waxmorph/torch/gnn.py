@@ -21,20 +21,14 @@ class GraphNetworkBlock(nn.Module):
 
     Both edge and node latents use residual connections.
 
-    Parameters
-    ----------
-    node_latent_dim : int
-        Width of node latent vectors.
-    edge_latent_dim : int
-        Width of edge latent vectors.
-    hidden_dim : int
-        Hidden layer width for internal MLPs.
-    num_mlp_layers : int
-        Depth of each internal MLP.
-    activation : str
-        Activation function name.
-    layer_norm : bool
-        Whether to apply LayerNorm in internal MLPs.
+    Args:
+        node_latent_dim: Width of node latent vectors.
+        edge_latent_dim: Width of edge latent vectors.
+        hidden_dim: Hidden layer width for internal MLPs.
+        num_mlp_layers: Number of linear layers in each internal MLP.
+        activation: Activation function name accepted by
+            :class:`waxmorph.torch.mlp.MLP`.
+        layer_norm: Whether to apply layer normalization in internal MLPs.
     """
 
     def __init__(
@@ -72,16 +66,17 @@ class GraphNetworkBlock(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run one message-passing round.
 
-        Parameters
-        ----------
-        node_latent : ``[N, node_latent_dim]``
-        edge_latent : ``[E, edge_latent_dim]``
-        edge_index  : ``[2, E]``   (senders, receivers)
+        Args:
+            node_latent: Node latent tensor with shape
+                ``[N, node_latent_dim]``.
+            edge_latent: Edge latent tensor with shape
+                ``[E, edge_latent_dim]``.
+            edge_index: Directed COO edge tensor with shape ``[2, E]`` where
+                row ``0`` stores senders and row ``1`` stores receivers.
 
-        Returns
-        -------
-        node_latent_new : ``[N, node_latent_dim]``
-        edge_latent_new : ``[E, edge_latent_dim]``
+        Returns:
+            Pair ``(node_latent_new, edge_latent_new)`` with the same shapes
+            as the corresponding inputs.
         """
         senders, receivers = edge_index[0], edge_index[1]
 
@@ -113,32 +108,23 @@ class GraphNetworkBlock(nn.Module):
 class GNS(nn.Module):
     """Full Encode-Process-Decode Graph Network Simulator.
 
-    Parameters
-    ----------
-    node_feature_dim : int
-        Raw node feature dimensionality (``9 + G`` for WaxMorph).
-    edge_feature_dim : int
-        Raw edge feature dimensionality (``7`` for default WaxMorph edges).
-    node_latent_dim : int
-        Width of node latent vectors in the processor.
-    edge_latent_dim : int
-        Width of edge latent vectors in the processor.
-    hidden_dim : int
-        Hidden layer width for all internal MLPs.
-    num_mp_steps : int
-        Number of message-passing iterations in the processor.
-    num_mlp_layers : int
-        Depth of each MLP (encoder, processor, decoder).
-    output_dims : dict
-        Named output heads mapping field name to dimensionality.
-        Example: ``{"dX": 3, "dP": 3, "dG": 2}``.
-    activation : str
-        Activation function name.
-    layer_norm : bool
-        Whether to apply LayerNorm in encoder/processor MLPs.
-    checkpoint_processor : bool
-        If ``True``, wrap each processor block with
-        ``torch.utils.checkpoint.checkpoint`` to trade compute for memory.
+    Args:
+        node_feature_dim: Raw node feature dimensionality.
+        edge_feature_dim: Raw edge feature dimensionality.
+        node_latent_dim: Width of node latent vectors in the processor.
+        edge_latent_dim: Width of edge latent vectors in the processor.
+        hidden_dim: Hidden layer width for all internal MLPs.
+        num_mp_steps: Number of message-passing blocks in the processor.
+        num_mlp_layers: Number of linear layers in each encoder, processor,
+            and decoder MLP.
+        output_dims: Mapping from output head name to per-node output
+            dimensionality. Defaults to ``{"dX": 3, "dP": 3, "dG": 2}``.
+        activation: Activation function name accepted by
+            :class:`waxmorph.torch.mlp.MLP`.
+        layer_norm: Whether to apply layer normalization in encoder and
+            processor MLPs.
+        checkpoint_processor: If ``True``, checkpoint processor blocks to
+            trade additional compute for lower activation memory.
     """
 
     def __init__(
@@ -269,15 +255,16 @@ class GNS(nn.Module):
     ) -> dict[str, torch.Tensor]:
         """Run full encode-process-decode.
 
-        Parameters
-        ----------
-        node_features : ``[N, node_feature_dim]``
-        edge_index    : ``[2, E]``
-        edge_features : ``[E, edge_feature_dim]``
+        Args:
+            node_features: Node feature tensor with shape
+                ``[N, node_feature_dim]``.
+            edge_index: Directed COO edge tensor with shape ``[2, E]``.
+            edge_features: Edge feature tensor with shape
+                ``[E, edge_feature_dim]``.
 
-        Returns
-        -------
-        outputs : dict mapping field name to ``[N, output_dim]`` predicted updates.
+        Returns:
+            Dictionary mapping each output head name to a tensor with shape
+            ``[N, output_dim]``.
         """
         # Encode
         node_latent = self.node_encoder(node_features)

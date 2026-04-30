@@ -22,6 +22,22 @@ from waxmorph.torch.warp_autograd import WarpDiffusionStep, WarpMechStep
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
+    """Hyperparameters for PyTorch non-growing shape assembly training.
+
+    Attributes:
+        n_epochs: Number of optimization epochs.
+        t_rollout: Number of rollout steps per epoch.
+        mech_steps: Number of sticky-sphere mechanics corrections per rollout.
+        diff_steps: Number of gene diffusion corrections per rollout.
+        dt_mech: Euler step size for mechanics corrections.
+        dt_diff: Euler step size for diffusion corrections.
+        dt_gns: Scale applied to model-predicted deltas.
+        alpha_diff: Gene diffusion coefficient.
+        l2_lambda: Weight applied to squared model displacement regularization.
+        grad_clip_norm: Optional maximum gradient norm.
+        log_every: Epoch interval used for progress logging.
+    """
+
     n_epochs: int = 2000
     t_rollout: int = 100
     mech_steps: int = 5
@@ -37,6 +53,15 @@ class TrainConfig:
 
 @dataclasses.dataclass
 class TrainResult:
+    """Result returned by :func:`waxmorph.torch.train.train`.
+
+    Attributes:
+        model: Best model found during training, or the latest model if no
+            finite improvement was recorded.
+        log: Dictionary containing loss histories, best-epoch metadata, and
+            the best trajectory.
+    """
+
     model: Any
     log: dict
 
@@ -220,42 +245,31 @@ def train(
 ) -> TrainResult:
     """Train a GNS model for non-growing shape assembly (PyTorch backend).
 
-    Parameters
-    ----------
-    model : GNS
-        Graph Network Simulator model.
-    optimizer : torch.optim.Optimizer
-        PyTorch optimizer (e.g. AdamW).
-    loss_fn : callable
-        Shape loss function mapping (predicted [N,3], target [M,3]) -> scalar.
-    source_pos : ndarray [N, 3]
-        Initial particle positions.
-    polarities : ndarray [N, 3]
-        Initial unit polarity vectors.
-    genes : ndarray [N, num_genes]
-        Initial gene concentrations.
-    radii : ndarray [N]
-        Particle radii.
-    target_pos : ndarray [M, 3], optional
-        Legacy single-target input. Equivalent to ``targets=[(t_rollout-1, target_pos)]``.
-        Mutually exclusive with ``targets``.
-    targets : list of (int, ndarray), optional
-        Multi-target trajectory supervision: each ``(frame, pos)`` pair applies
-        ``loss_fn(X_t, pos)`` at tagged post-update rollout step ``frame`` and
-        sums the results into the total shape loss. Frame ``0`` therefore
-        refers to the state after the first rollout update. Frames must lie in
-        ``[0, t_rollout)``; duplicates raise.
-    config : TrainConfig, optional
-        Training hyperparameters (defaults used if None).
-    save_path : str or Path, optional
-        If set, saves best model and log to disk.
-    device : str
-        Warp device string ("cuda" or "cpu").
+    Args:
+        model: Graph Network Simulator model.
+        optimizer: PyTorch optimizer.
+        loss_fn: Shape loss function mapping predicted positions with shape
+            ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
+        source_pos: Initial particle positions with shape ``[N, 3]``.
+        polarities: Initial polarity vectors with shape ``[N, 3]``.
+        genes: Initial gene concentrations with shape ``[N, num_genes]``.
+        radii: Particle radii with shape ``[N]``.
+        target_pos: Legacy single-target input, equivalent to
+            ``targets=[(t_rollout - 1, target_pos)]``.
+        targets: Optional ``(frame, positions)`` supervision pairs. Frame ``0``
+            supervises the state after the first rollout update. Frames must
+            lie in ``[0, t_rollout)`` and must be unique.
+        config: Training hyperparameters. Defaults to
+            :class:`waxmorph.torch.train.TrainConfig`.
+        save_path: Optional path where the best model and log are saved.
+        device: Warp device string such as ``"cuda"`` or ``"cpu"``.
 
-    Returns
-    -------
-    TrainResult
+    Returns:
         Best model and full training log.
+
+    Raises:
+        ValueError: If targets are missing, duplicated, out of range, mutually
+            exclusive with ``target_pos``, or contain non-finite values.
     """
     if config is None:
         config = TrainConfig()

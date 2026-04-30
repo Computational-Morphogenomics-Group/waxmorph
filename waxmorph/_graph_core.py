@@ -20,19 +20,14 @@ def build_edge_index_np(
     An edge ``(i, j)`` exists when ``dist(pos[i], pos[j]) <= rad[i] + rad[j] + eps_dist``
     and ``i != j``.
 
-    Parameters
-    ----------
-    pos : np.ndarray, shape ``[N, 3]``, dtype float32
-        Particle positions.
-    rad : np.ndarray, shape ``[N]``, dtype float32
-        Particle radii.
-    eps_dist : float
-        Contact buffer distance.
+    Args:
+        pos: Particle positions with shape ``[N, 3]``.
+        rad: Particle radii with shape ``[N]``.
+        eps_dist: Contact buffer distance added to each pair threshold.
 
-    Returns
-    -------
-    senders : np.ndarray, shape ``[E]``, dtype int64
-    receivers : np.ndarray, shape ``[E]``, dtype int64
+    Returns:
+        Pair ``(senders, receivers)`` of ``int64`` arrays with shape ``[E]``.
+        Edges are directed and include both directions for every contact pair.
     """
     if len(pos) == 0:
         empty = np.zeros(0, dtype=np.int64)

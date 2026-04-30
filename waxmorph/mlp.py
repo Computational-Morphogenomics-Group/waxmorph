@@ -1,4 +1,4 @@
-"""Backward-compatible re-export — actual implementation in waxmorph.torch.mlp."""
+"""Backward-compatible PyTorch MLP exports."""
 
 from .torch.mlp import _ACTIVATIONS, MLP
 

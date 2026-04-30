@@ -27,16 +27,12 @@ def squared_loss(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
     .. math::
         \\mathcal{L} = \\lVert X^f - X^T \\rVert_F^2
 
-    Parameters
-    ----------
-    X_pred : torch.Tensor ``[N, 3]``
-        Predicted positions.
-    X_target : torch.Tensor ``[N, 3]``
-        Target positions (same ordering as predicted).
+    Args:
+        X_pred: Predicted positions with shape ``[N, 3]``.
+        X_target: Target positions with shape ``[N, 3]`` in the same row order.
 
-    Returns
-    -------
-    loss : scalar tensor
+    Returns:
+        Scalar tensor containing the squared Frobenius norm.
     """
     return (X_pred - X_target).pow(2).sum()
 
@@ -50,16 +46,14 @@ def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tens
           + \\sum_j \\min_i \\lVert X^f_i - X^T_j \\rVert
         \\right]
 
-    Parameters
-    ----------
-    X_pred : torch.Tensor ``[N, 3]``
-        Predicted positions.
-    X_target : torch.Tensor ``[M, 3]``
-        Target positions (may differ in count from predicted).
+    Args:
+        X_pred: Predicted positions with shape ``[N, 3]``.
+        X_target: Target positions with shape ``[M, 3]``. ``M`` may differ
+            from ``N``.
 
-    Returns
-    -------
-    loss : scalar tensor
+    Returns:
+        Scalar tensor containing the two-sided Chamfer distance normalized by
+        ``N``.
     """
     # [N, M]
     diff = X_pred.unsqueeze(1) - X_target.unsqueeze(0)
@@ -102,17 +96,16 @@ SAMPLES_LOSS_DEFAULTS: dict[str, Any] = {
 def make_samples_loss(params: dict[str, Any] | None = None, **kwargs: Any) -> SamplesLoss:
     """Create a ``geomloss.SamplesLoss`` from a parameter dict.
 
-    Parameters
-    ----------
-    params : dict, optional
-        Dictionary of ``SamplesLoss`` keyword arguments.  Missing keys
-        fall back to the geomloss defaults (see ``SAMPLES_LOSS_DEFAULTS``).
-    **kwargs
-        Additional overrides merged on top of *params*.
+    Args:
+        params: Optional ``SamplesLoss`` keyword arguments. Missing keys fall
+            back to geomloss defaults listed in ``SAMPLES_LOSS_DEFAULTS``.
+        **kwargs: Additional overrides merged on top of ``params``.
 
-    Returns
-    -------
-    geomloss.SamplesLoss
+    Returns:
+        Configured :class:`geomloss.SamplesLoss` instance.
+
+    Raises:
+        ImportError: If ``geomloss`` is not installed.
     """
     from geomloss import SamplesLoss
 

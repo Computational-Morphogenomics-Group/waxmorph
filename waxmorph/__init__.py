@@ -1,4 +1,9 @@
-"""WaxMorph -- Differentiable morphogenesis and shape-assembly on NVIDIA Warp."""
+"""Differentiable morphogenesis and shape assembly on NVIDIA Warp.
+
+The top-level package exports the default PyTorch graph-network simulator,
+graph construction utilities, shape losses, and training entry point. JAX
+variants live under :mod:`waxmorph.jax`.
+"""
 
 from importlib.metadata import PackageNotFoundError, version
 

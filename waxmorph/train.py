@@ -1,4 +1,4 @@
-"""Backward-compatible re-export — actual implementation in waxmorph.torch.train."""
+"""Backward-compatible PyTorch training exports."""
 
 from .torch.train import TrainConfig, TrainResult, train
 

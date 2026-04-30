@@ -857,18 +857,16 @@ def count_neighbors_step(
 ) -> None:
     """Count neighbors using HashGrid acceleration.
 
-    Parameters
-    ----------
-    X, R, CT : wp.array
-        Positions, radii, cell types.
-    particle_count : int
-        Number of active particles.
-    n_tot, n_epi, n_mes : wp.array(dtype=wp.int32)
-        Output arrays (must be pre-zeroed by the caller).
-    device : str
-        Warp device.
-    grid : wp.HashGrid or None
-        Optional pre-allocated hash grid.
+    Args:
+        X: Position array with dtype ``wp.vec3f``.
+        R: Radius array with dtype ``wp.float32``.
+        CT: Cell-type array with epithelial cells encoded as ``1``.
+        particle_count: Number of active particles.
+        n_tot: Pre-zeroed output array for total neighbor counts.
+        n_epi: Pre-zeroed output array for epithelial neighbor counts.
+        n_mes: Pre-zeroed output array for mesenchymal neighbor counts.
+        device: Warp device.
+        grid: Optional reusable hash grid.
     """
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + EPS_DIST

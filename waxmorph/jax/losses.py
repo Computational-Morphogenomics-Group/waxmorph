@@ -23,16 +23,12 @@ def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
     .. math::
         \\mathcal{L} = \\lVert X^f - X^T \\rVert_F^2
 
-    Parameters
-    ----------
-    X_pred : jnp.ndarray ``[N, 3]``
-        Predicted positions.
-    X_target : jnp.ndarray ``[N, 3]``
-        Target positions (same ordering as predicted).
+    Args:
+        X_pred: Predicted positions with shape ``[N, 3]``.
+        X_target: Target positions with shape ``[N, 3]`` in the same row order.
 
-    Returns
-    -------
-    loss : scalar array
+    Returns:
+        Scalar JAX array containing the squared Frobenius norm.
     """
     return jnp.sum((X_pred - X_target) ** 2)
 
@@ -46,16 +42,14 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
           + \\sum_j \\min_i \\lVert X^f_i - X^T_j \\rVert
         \\right]
 
-    Parameters
-    ----------
-    X_pred : jnp.ndarray ``[N, 3]``
-        Predicted positions.
-    X_target : jnp.ndarray ``[M, 3]``
-        Target positions (may differ in count from predicted).
+    Args:
+        X_pred: Predicted positions with shape ``[N, 3]``.
+        X_target: Target positions with shape ``[M, 3]``. ``M`` may differ
+            from ``N``.
 
-    Returns
-    -------
-    loss : scalar array
+    Returns:
+        Scalar JAX array containing the two-sided Chamfer distance normalized
+        by ``N``.
     """
     # [N, M]
     diff = X_pred[:, None, :] - X_target[None, :, :]
@@ -91,22 +85,22 @@ def make_sinkhorn_loss(
 
     This ensures :math:`S_\\varepsilon(\\alpha, \\alpha) \\approx 0`.
 
-    Parameters
-    ----------
-    blur : float
-        Entropic regularization parameter (epsilon).
-    **kwargs
-        Additional keyword arguments forwarded to the OTT Sinkhorn solver.
+    Args:
+        blur: Entropic regularization parameter, passed to OTT as ``epsilon``.
+        **kwargs: Additional keyword arguments forwarded in ``solve_kwargs``.
 
-    Returns
-    -------
-    loss_fn : callable
-        ``(X_pred, X_target) -> scalar`` Sinkhorn divergence.
+    Returns:
+        Callable ``loss_fn(X_pred, X_target)`` returning a scalar Sinkhorn
+        divergence.
+
+    Raises:
+        ImportError: If ``ott-jax`` is not installed.
     """
     from ott.geometry import pointcloud
     from ott.tools import sinkhorn_divergence as sd
 
     def loss_fn(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
+        """Evaluate the configured Sinkhorn divergence between point clouds."""
         divergence, _ = sd.sinkhorn_divergence(
             pointcloud.PointCloud,
             X_pred,

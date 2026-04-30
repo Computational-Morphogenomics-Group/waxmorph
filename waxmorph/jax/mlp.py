@@ -25,23 +25,20 @@ class MLP(eqx.Module):
     ``LayerNorm`` and exposes the same constructor interface as the PyTorch
     ``waxmorph.torch.mlp.MLP``.
 
-    Parameters
-    ----------
-    input_dim : int
-        Dimensionality of input features.
-    output_dim : int
-        Dimensionality of output features.
-    hidden_dim : int
-        Width of each hidden layer.
-    num_layers : int
-        Total number of linear layers (including output projection).
-        ``num_layers=1`` gives a single linear map with no hidden layers.
-    activation : str
-        One of ``"relu"``, ``"silu"``, ``"gelu"``, ``"tanh"``.
-    layer_norm : bool
-        If True, apply LayerNorm after the final linear layer.
-    key : jax.random.PRNGKey
-        PRNG key for weight initialization.
+    Args:
+        input_dim: Dimensionality of the final axis of the input array.
+        output_dim: Dimensionality of the final axis of the output array.
+        hidden_dim: Width of each hidden linear layer.
+        num_layers: Total number of linear layers, including the output
+            projection. ``num_layers=1`` creates a single linear map.
+        activation: Activation name: ``"relu"``, ``"silu"``, ``"gelu"``, or
+            ``"tanh"``.
+        layer_norm: Whether to append Equinox layer normalization over
+            ``output_dim``.
+        key: JAX PRNG key used to initialize the linear layers.
+
+    Raises:
+        ValueError: If ``activation`` is not supported.
     """
 
     net: eqx.nn.MLP
@@ -81,7 +78,15 @@ class MLP(eqx.Module):
         self.norm = eqx.nn.LayerNorm(output_dim) if layer_norm else None
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        """``(..., input_dim) -> (..., output_dim)``."""
+        """Apply the MLP to a single vector or a batch of vectors.
+
+        Args:
+            x: Array with trailing dimension ``input_dim``. Arrays with more
+                than one dimension are vectorized over the leading axis.
+
+        Returns:
+            Array with trailing dimension ``output_dim``.
+        """
         if x.ndim > 1:
             out = jax.vmap(self.net)(x)
             if self.norm is not None:

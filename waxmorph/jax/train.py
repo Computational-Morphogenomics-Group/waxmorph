@@ -28,6 +28,24 @@ _CAPACITY_BUCKET = 1024
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
+    """Hyperparameters for JAX non-growing shape assembly training.
+
+    Attributes:
+        n_epochs: Number of optimization epochs.
+        t_rollout: Number of rollout steps per epoch.
+        mech_steps: Number of sticky-sphere mechanics corrections per rollout.
+        diff_steps: Number of gene diffusion corrections per rollout.
+        dt_mech: Euler step size for mechanics corrections.
+        dt_diff: Euler step size for diffusion corrections.
+        dt_gns: Scale applied to model-predicted deltas.
+        alpha_diff: Gene diffusion coefficient.
+        l2_lambda: Weight applied to squared model displacement regularization.
+        grad_clip_norm: Optional maximum gradient norm.
+        log_every: Epoch interval used for progress logging.
+        max_edges_factor: Edge and pair capacity multiplier per active
+            particle.
+    """
+
     n_epochs: int = 2000
     t_rollout: int = 100
     mech_steps: int = 5
@@ -44,6 +62,15 @@ class TrainConfig:
 
 @dataclasses.dataclass
 class TrainResult:
+    """Result returned by :func:`waxmorph.jax.train.train`.
+
+    Attributes:
+        model: Best model found during training, or the latest model if no
+            finite improvement was recorded.
+        log: Dictionary containing loss histories, best-epoch metadata, and
+            the best trajectory.
+    """
+
     model: Any
     log: dict
 
@@ -1192,7 +1219,37 @@ def train(
     save_path: str | Path | None = None,
     device: str = "cuda",
 ) -> TrainResult:
-    """Train a GNS model for non-growing shape assembly (JAX/Equinox backend)."""
+    """Train a GNS model for non-growing shape assembly.
+
+    Args:
+        model: Equinox Graph Network Simulator model.
+        optimizer: Optax gradient transformation.
+        opt_state: Optimizer state corresponding to ``model``.
+        loss_fn: Shape loss function mapping predicted positions with shape
+            ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
+        source_pos: Initial particle positions with shape ``[N, 3]``.
+        polarities: Initial polarity vectors with shape ``[N, 3]``.
+        genes: Initial gene concentrations with shape ``[N, num_genes]``.
+        radii: Particle radii with shape ``[N]``.
+        target_pos: Legacy single-target input, equivalent to
+            ``targets=[(t_rollout - 1, target_pos)]``.
+        targets: Optional ``(frame, positions)`` supervision pairs. Frame ``0``
+            supervises the state after the first rollout update. Frames must
+            lie in ``[0, t_rollout)`` and must be unique.
+        config: Training hyperparameters. Defaults to
+            :class:`waxmorph.jax.train.TrainConfig`.
+        save_path: Optional path where the best model and log are saved.
+        device: Device string such as ``"cuda"``, ``"cuda:0"``, or ``"cpu"``.
+
+    Returns:
+        Best model and full training log.
+
+    Raises:
+        RuntimeError: If Warp-backed differentiable physics is requested on a
+            device where JAX cannot provide a GPU backend.
+        ValueError: If targets are missing, duplicated, out of range, mutually
+            exclusive with ``target_pos``, or contain non-finite values.
+    """
     if config is None:
         config = TrainConfig()
 

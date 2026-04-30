@@ -1,4 +1,4 @@
-"""Backward-compatible re-export — actual implementation in waxmorph.torch.losses."""
+"""Backward-compatible PyTorch loss exports."""
 
 from .torch.losses import (
     SAMPLES_LOSS_DEFAULTS,

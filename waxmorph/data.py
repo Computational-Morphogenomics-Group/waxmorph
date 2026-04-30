@@ -14,7 +14,14 @@ _UNIT_SPHERE_VOLUME = 4.0 * np.pi / 3.0
 
 
 def load_mesh(path: str | Path) -> trimesh.Trimesh:
-    """Load a mesh and apply basic repairs."""
+    """Load a mesh file and apply basic repairs.
+
+    Args:
+        path: Filesystem path accepted by :func:`trimesh.load`.
+
+    Returns:
+        Repaired :class:`trimesh.Trimesh` loaded with ``force="mesh"``.
+    """
     mesh = trimesh.load(path, force="mesh")
     trimesh.repair.fix_normals(mesh)
     trimesh.repair.fill_holes(mesh)
@@ -22,6 +29,7 @@ def load_mesh(path: str | Path) -> trimesh.Trimesh:
 
 
 def _validate_n_points(n_points: int) -> int:
+    """Return ``n_points`` as a positive integer."""
     n_points = int(n_points)
     if n_points <= 0:
         raise ValueError(f"n_points must be positive, got {n_points}.")
@@ -29,6 +37,7 @@ def _validate_n_points(n_points: int) -> int:
 
 
 def _validate_extent(name: str, extent: float) -> float:
+    """Return ``extent`` as a positive finite float."""
     extent = float(extent)
     if not np.isfinite(extent) or extent <= 0:
         raise ValueError(f"{name} must be a positive finite value, got {extent}.")
@@ -36,6 +45,7 @@ def _validate_extent(name: str, extent: float) -> float:
 
 
 def _mesh_volume(mesh: trimesh.Trimesh) -> float:
+    """Return positive mesh volume, falling back to bounding-box volume."""
     volume = abs(float(mesh.volume))
     if np.isfinite(volume) and volume > 0:
         return volume
@@ -56,6 +66,7 @@ def _radius_from_volume(volume: float, n_points: int) -> float:
 
 
 def _radius_from_mesh(mesh: trimesh.Trimesh, n_points: int) -> float:
+    """Estimate a particle radius from mesh volume and particle count."""
     return _radius_from_volume(_mesh_volume(mesh), n_points)
 
 
@@ -66,12 +77,26 @@ def _connected_poisson_min_dist(radius: float) -> float:
 
 
 def _pitch_from_min_dist(min_dist: float) -> float:
+    """Choose voxelization pitch used to generate candidate sample points."""
     min_dist = _validate_extent("min_dist", min_dist)
     return 0.4 * min_dist
 
 
 def normalize_mesh(mesh: trimesh.Trimesh, target_extent: float = 10.0) -> trimesh.Trimesh:
-    """Center *mesh* at the origin and scale its largest bbox side to *target_extent*."""
+    """Center a mesh at the origin and scale its largest extent.
+
+    The input mesh is mutated in place.
+
+    Args:
+        mesh: Mesh whose vertex coordinates are normalized.
+        target_extent: Desired length of the largest bounding-box side.
+
+    Returns:
+        The same mesh object after centering and scaling.
+
+    Raises:
+        ValueError: If ``target_extent`` or the mesh extent is not positive.
+    """
     target_extent = _validate_extent("target_extent", target_extent)
     verts = np.asarray(mesh.vertices, dtype=np.float64)
     raw_extent = verts.max(axis=0) - verts.min(axis=0)
@@ -170,12 +195,26 @@ def sample_volume(
     min_dist: float | None = None,
     seed: int = 0,
 ) -> np.ndarray:
-    """Sample up to *n_points* volumetric mesh points with Poisson-like spacing.
+    """Sample volumetric mesh points with Poisson-like spacing.
 
     If ``min_dist`` is omitted, spacing is derived from the mesh's current
     normalized volume and ``n_points``. This function is allowed to return fewer
     points when a strict spacing cannot fit; pair/sequence helpers wrap it with
     exact-count validation.
+
+    Args:
+        mesh: Mesh whose filled interior is sampled.
+        n_points: Maximum number of points to return.
+        pitch: Optional voxel pitch. When omitted, it is derived from
+            ``min_dist``.
+        min_dist: Optional minimum accepted spacing between sampled points.
+        seed: Seed for candidate-order randomization.
+
+    Returns:
+        Float32 point array with shape ``[M, 3]`` where ``M <= n_points``.
+
+    Raises:
+        ValueError: If counts, extents, spacing, or candidate shapes are invalid.
     """
     n_points = _validate_n_points(n_points)
     if min_dist is None:
@@ -231,6 +270,7 @@ def _resolve_scalar_or_sequence_extents(
     target_extent: float | Sequence[float] | None,
     n_targets: int,
 ) -> tuple[list[float], bool]:
+    """Normalize scalar or per-target extents for sequence sampling."""
     if target_extent is None:
         return [10.0] * n_targets, False
     if isinstance(target_extent, int | float | np.integer | np.floating):
@@ -260,9 +300,28 @@ def sample_mesh_pair(
     max_particles: int | None = None,
     seed: int = 0,
 ) -> dict:
-    """Load one source and one target mesh and sample matching volume point clouds.
+    """Load a source and target mesh and sample matching volume point clouds.
 
     Radii are derived from extents and ``n_points``.
+
+    Args:
+        source_path: Path to the source mesh.
+        target_path: Path to the target mesh.
+        n_points: Exact number of source and target points to sample.
+        target_extent: Target mesh normalization extent. ``None`` uses ``10.0``.
+        source_extent: Optional source mesh normalization extent. Defaults to
+            the target extent.
+        max_particles: Optional particle capacity recorded in the returned
+            metadata. Values below ``n_points`` are clamped up to ``n_points``.
+        seed: Seed used for deterministic volume sampling.
+
+    Returns:
+        Dictionary containing source and target point clouds, radii, extents,
+        counts, capacity metadata, and the normalized target mesh.
+
+    Raises:
+        RuntimeError: If exact-count sampling cannot place all requested points.
+        ValueError: If counts, extents, or mesh volume are invalid.
     """
     n_points = _validate_n_points(n_points)
 
@@ -317,9 +376,28 @@ def sample_mesh_sequence(
     source_extent: float | None = None,
     seed: int = 0,
 ) -> dict:
-    """Load one source mesh and a frame-tagged sequence of target volume samples.
+    """Load one source mesh and frame-tagged target volume samples.
 
     Radii are derived from extents and ``n_points``.
+
+    Args:
+        source_path: Path to the source mesh.
+        target_specs: ``(frame, path)`` pairs for target meshes. Frames must be
+            non-negative and unique.
+        n_points: Exact number of points sampled from every mesh.
+        target_extent: Scalar target extent, per-target extent sequence, or
+            ``None`` for the default extent.
+        source_extent: Optional source extent. Required when ``target_extent``
+            is a per-target sequence.
+        seed: Base seed used for deterministic per-mesh sampling.
+
+    Returns:
+        Dictionary containing source points, sorted target records, radii, and
+        extent metadata.
+
+    Raises:
+        ValueError: If target specs, frames, extents, or counts are invalid.
+        RuntimeError: If exact-count sampling cannot place all requested points.
     """
     n_points = _validate_n_points(n_points)
     if len(target_specs) < 1:
