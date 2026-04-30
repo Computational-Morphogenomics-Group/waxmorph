@@ -7,7 +7,8 @@ Provides:
 2. Two-sided Chamfer distance — when no such assignment exists and
    rows need not correspond between predicted and target.
 3. ``make_sinkhorn_loss`` — factory returning a Sinkhorn divergence
-   callable using ``ott-jax``, replacing the PyTorch ``geomloss`` wrapper.
+   callable using ``ott-jax``, replacing the PyTorch
+   :class:`geomloss.SamplesLoss` wrapper.
 """
 
 from __future__ import annotations
@@ -72,7 +73,7 @@ def make_sinkhorn_loss(
     """Create a debiased Sinkhorn divergence loss function using ``ott-jax``.
 
     Uses ``ott.tools.sinkhorn_divergence`` to compute the three-term debiased
-    Sinkhorn divergence, matching the behavior of ``geomloss.SamplesLoss``
+    Sinkhorn divergence, matching the behavior of :class:`geomloss.SamplesLoss`
     with ``debias=True`` (the PyTorch default).
 
     The debiased divergence is:
@@ -90,8 +91,8 @@ def make_sinkhorn_loss(
         **kwargs: Additional keyword arguments forwarded in ``solve_kwargs``.
 
     Returns:
-        Callable ``loss_fn(X_pred, X_target)`` returning a scalar Sinkhorn
-        divergence.
+        Callable ``loss_fn(X_pred, X_target)`` returning a scalar
+        :class:`jax.Array` Sinkhorn divergence.
 
     Raises:
         ImportError: If ``ott-jax`` is not installed.

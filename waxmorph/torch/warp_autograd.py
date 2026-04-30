@@ -1,8 +1,9 @@
 """PyTorch autograd functions that bridge Warp tape differentiation.
 
-Each function wraps a Warp physics step so that PyTorch's autograd can
+Each function wraps a Warp physics step so that :mod:`torch.autograd` can
 chain backward through it.  Forward records kernel launches on a
-``wp.Tape``; backward replays the tape in reverse to propagate gradients.
+:class:`warp.Tape`; backward replays the tape in reverse to propagate
+gradients.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ class WarpMechStep(torch.autograd.Function):
     """Differentiable sticky-sphere mechanics step.
 
     Forward: apply repulsion + adhesion forces and Euler-update positions.
-    Backward: replay ``wp.Tape`` to propagate ``dL/dX_out → dL/dX_in``.
+    Backward: replay :class:`warp.Tape` to propagate ``dL/dX_out → dL/dX_in``.
     """
 
     @staticmethod
@@ -36,13 +37,13 @@ class WarpMechStep(torch.autograd.Function):
         """Apply a Warp mechanics step during the PyTorch forward pass.
 
         Args:
-            ctx: PyTorch autograd context.
+            ctx: PyTorch :class:`torch.autograd.Function` context.
             X_torch: Position tensor with shape ``[N, 3]``.
             R_wp: Warp radius array.
             particle_count: Number of active particles.
             dt: Mechanics Euler step size.
             gx_wp: Scratch Warp force buffer.
-            grid: Optional reusable Warp hash grid.
+            grid: Optional reusable :class:`warp.HashGrid`.
 
         Returns:
             Updated position tensor with shape ``[N, 3]``.
@@ -73,7 +74,7 @@ class WarpDiffusionStep(torch.autograd.Function):
     """Differentiable gene diffusion step.
 
     Forward: graph-Laplacian diffusion of gene concentrations.
-    Backward: replay ``wp.Tape`` to propagate ``dL/dG_out → dL/dG_in``.
+    Backward: replay :class:`warp.Tape` to propagate ``dL/dG_out → dL/dG_in``.
     """
 
     @staticmethod
@@ -91,7 +92,7 @@ class WarpDiffusionStep(torch.autograd.Function):
         """Apply a Warp diffusion step during the PyTorch forward pass.
 
         Args:
-            ctx: PyTorch autograd context.
+            ctx: PyTorch :class:`torch.autograd.Function` context.
             G_torch: Gene concentration tensor with shape ``[N, num_genes]``.
             X_wp: Warp position array used for neighbor topology.
             R_wp: Warp radius array.
@@ -99,7 +100,7 @@ class WarpDiffusionStep(torch.autograd.Function):
             particle_count: Number of active particles.
             alpha: Diffusion coefficient.
             dt: Diffusion Euler step size.
-            grid: Optional reusable Warp hash grid.
+            grid: Optional reusable :class:`warp.HashGrid`.
 
         Returns:
             Updated gene concentration tensor with shape ``[N, num_genes]``.

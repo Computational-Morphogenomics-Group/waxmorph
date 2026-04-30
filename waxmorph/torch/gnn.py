@@ -19,7 +19,8 @@ from .mlp import MLP
 class GraphNetworkBlock(nn.Module):
     """Single message-passing step: edge update -> aggregation -> node update.
 
-    Both edge and node latents use residual connections.
+    Both edge and node latents use residual connections. The module subclasses
+    :class:`torch.nn.Module`.
 
     Args:
         node_latent_dim: Width of node latent vectors.
@@ -28,7 +29,8 @@ class GraphNetworkBlock(nn.Module):
         num_mlp_layers: Number of linear layers in each internal MLP.
         activation: Activation function name accepted by
             :class:`waxmorph.torch.mlp.MLP`.
-        layer_norm: Whether to apply layer normalization in internal MLPs.
+        layer_norm: Whether to apply :class:`torch.nn.LayerNorm` in internal
+            MLPs.
     """
 
     def __init__(
@@ -121,8 +123,8 @@ class GNS(nn.Module):
             dimensionality. Defaults to ``{"dX": 3, "dP": 3, "dG": 2}``.
         activation: Activation function name accepted by
             :class:`waxmorph.torch.mlp.MLP`.
-        layer_norm: Whether to apply layer normalization in encoder and
-            processor MLPs.
+        layer_norm: Whether to apply :class:`torch.nn.LayerNorm` in encoder
+            and processor MLPs.
         checkpoint_processor: If ``True``, checkpoint processor blocks to
             trade additional compute for lower activation memory.
     """
@@ -197,7 +199,7 @@ class GNS(nn.Module):
         )
 
     def save(self, path: str | Path) -> None:
-        """Save model config and weights to a single file."""
+        """Save model config and weights to a single file with :func:`torch.save`."""
         torch.save(
             {
                 "config": {
@@ -256,10 +258,10 @@ class GNS(nn.Module):
         """Run full encode-process-decode.
 
         Args:
-            node_features: Node feature tensor with shape
+            node_features: :class:`torch.Tensor` node features with shape
                 ``[N, node_feature_dim]``.
             edge_index: Directed COO edge tensor with shape ``[2, E]``.
-            edge_features: Edge feature tensor with shape
+            edge_features: :class:`torch.Tensor` edge features with shape
                 ``[E, edge_feature_dim]``.
 
         Returns:

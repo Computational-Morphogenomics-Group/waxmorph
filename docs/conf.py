@@ -38,8 +38,10 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
 nitpicky = False
 suppress_warnings = ["myst.header"]
 nitpick_ignore_regex = [
-    # Third-party runtime annotation names below do not have stable Sphinx
-    # intersphinx inventories or are imported under local aliases in docstrings.
+    # Local aliases and runtime-only annotation strings below are emitted by
+    # autodoc from import-time objects rather than from explicit docstring
+    # references. Keep package API docstrings linked through intersphinx
+    # mappings instead of adding package-wide ignores here.
     (r"py:class", r"[Oo]ptional"),
     (r"py:class", r"GNS"),
     (r"py:class", r"JaxGNS"),
@@ -47,17 +49,11 @@ nitpick_ignore_regex = [
     (r"py:class", r"TrainConfig"),
     (r"py:class", r"TrainResult"),
     (r"py:class", r"callable"),
-    (r"py:class", r"jax\.Array"),
+    (r"py:class", r"SamplesLoss"),
+    (r"py:class", r"optax\.OptState"),
     (r"py:class", r"jnp\.ndarray"),
     (r"py:class", r"np\.ndarray"),
-    (r"py:class", r"optax\..*"),
-    (r"py:class", r"equinox\..*"),
     (r"py:class", r"eqx\..*"),
-    (r"py:class", r"trimesh\..*"),
-    (r"py:func", r"trimesh\..*"),
-    (r"py:class", r"geomloss\..*"),
-    (r"py:class", r"SamplesLoss"),
-    (r"py:class", r"pyvista\..*"),
     (r"py:class", r"array"),
     (r"py:class", r"ndim=.*"),
     (r"py:class", r"dtype=.*"),
@@ -83,7 +79,17 @@ nb_execution_mode = "off"
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
     "torch": ("https://docs.pytorch.org/docs/stable/", None),
+    "jax": ("https://docs.jax.dev/en/latest/", None),
+    "equinox": ("https://docs.kidger.site/equinox/", None),
+    "optax": ("https://optax.readthedocs.io/en/latest/", None),
+    "trimesh": ("https://trimesh.org/", None),
+    "pyvista": ("https://docs.pyvista.org/", None),
+    "matplotlib": ("https://matplotlib.org/stable/", None),
+    "imageio": ("https://imageio.readthedocs.io/en/stable/", None),
+    "warp": ("https://nvidia.github.io/warp/", None),
+    "geomloss": ("https://www.kernel-operations.io/geomloss/", None),
 }
 
 # -- Bibliography -------------------------------------------------------------

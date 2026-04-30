@@ -6,7 +6,7 @@ Provides two losses as described in the WaxMorph writeup:
    one-to-one assignment between predicted and target positions.
 2. Two-sided Chamfer distance — when no such assignment exists and
    rows need not correspond between predicted and target.
-3. ``make_samples_loss`` — thin wrapper around ``geomloss.SamplesLoss``
+3. ``make_samples_loss`` — thin wrapper around :class:`geomloss.SamplesLoss`
    supporting all loss types (sinkhorn, hausdorff, energy, gaussian,
    laplacian) via a parameter dict.
 """
@@ -32,7 +32,7 @@ def squared_loss(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
         X_target: Target positions with shape ``[N, 3]`` in the same row order.
 
     Returns:
-        Scalar tensor containing the squared Frobenius norm.
+        Scalar :class:`torch.Tensor` containing the squared Frobenius norm.
     """
     return (X_pred - X_target).pow(2).sum()
 
@@ -52,8 +52,8 @@ def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tens
             from ``N``.
 
     Returns:
-        Scalar tensor containing the two-sided Chamfer distance normalized by
-        ``N``.
+        Scalar :class:`torch.Tensor` containing the two-sided Chamfer distance
+        normalized by ``N``.
     """
     # [N, M]
     diff = X_pred.unsqueeze(1) - X_target.unsqueeze(0)
@@ -94,11 +94,12 @@ SAMPLES_LOSS_DEFAULTS: dict[str, Any] = {
 
 
 def make_samples_loss(params: dict[str, Any] | None = None, **kwargs: Any) -> SamplesLoss:
-    """Create a ``geomloss.SamplesLoss`` from a parameter dict.
+    """Create a :class:`geomloss.SamplesLoss` from a parameter dict.
 
     Args:
-        params: Optional ``SamplesLoss`` keyword arguments. Missing keys fall
-            back to geomloss defaults listed in ``SAMPLES_LOSS_DEFAULTS``.
+        params: Optional :class:`geomloss.SamplesLoss` keyword arguments.
+            Missing keys fall back to geomloss defaults listed in
+            ``SAMPLES_LOSS_DEFAULTS``.
         **kwargs: Additional overrides merged on top of ``params``.
 
     Returns:

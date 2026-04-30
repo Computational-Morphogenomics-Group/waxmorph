@@ -711,7 +711,7 @@ class WarpMovieRenderer:
         draw_axis: Whether the OpenGL backend draws axes.
         draw_sky: Whether the OpenGL backend draws sky.
         render_wireframe: Whether the OpenGL backend renders wireframes.
-        codec: ImageIO video codec for the OpenGL backend.
+        codec: :mod:`imageio` video codec for the OpenGL backend.
         quality: ImageIO output quality for the OpenGL backend.
         pixelformat: ImageIO pixel format for the OpenGL backend.
         usd_up_axis: USD stage up axis.
@@ -985,7 +985,7 @@ class WarpMovieRenderer:
         mesh_points=None,
         mesh_indices=None,
     ) -> None:
-        """Write a video frame from numpy arrays with explicit RGB colors.
+        """Write a video frame from :mod:`numpy` arrays with explicit RGB colors.
 
         This is a convenience method for cases where colors are precomputed
         (e.g. shape assembly with multi-gene states) rather than derived from

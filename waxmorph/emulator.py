@@ -256,7 +256,16 @@ def mech_step_sticky(
     gx: wp.array,
     grid: "wp.HashGrid | None" = None,
 ):
-    """Run one sticky-sphere mechanics step and return position gradients."""
+    """Run one sticky-sphere mechanics step and return position gradients.
+
+    Args:
+        X: Warp position array.
+        R: Warp radius array.
+        particle_count: Number of active particles.
+        dt: Mechanics Euler step size.
+        gx: Scratch Warp force buffer.
+        grid: Optional reusable :class:`warp.HashGrid`.
+    """
 
     gx.zero_()
 
@@ -293,6 +302,15 @@ def mech_step_sticky_differentiable(
     Force computation from precomputed pairs and position update are
     recorded on the tape so that ``tape.backward()`` propagates
     ``dL/dX_out → dL/dX_in``.
+
+    Args:
+        tape: :class:`warp.Tape` used to record differentiable kernel launches.
+        X: Warp position array.
+        R: Warp radius array.
+        particle_count: Number of active particles.
+        dt: Mechanics Euler step size.
+        gx: Scratch Warp force buffer.
+        grid: Optional reusable :class:`warp.HashGrid`.
     """
     gx.zero_()
     gx.requires_grad = True
@@ -354,6 +372,17 @@ def diffusion_step_differentiable(
     Laplacian computation from precomputed pairs and the Euler update
     are recorded on the tape so that ``tape.backward()`` propagates
     ``dL/dG_out → dL/dG_in`` through the full diffusion operator.
+
+    Args:
+        tape: :class:`warp.Tape` used to record differentiable kernel launches.
+        X: Warp position array used for neighbor topology.
+        R: Warp radius array.
+        G: Warp gene concentration array.
+        lap_G: Scratch Warp Laplacian buffer.
+        particle_count: Number of active particles.
+        alpha: Diffusion coefficient.
+        dt: Diffusion Euler step size.
+        grid: Optional reusable :class:`warp.HashGrid`.
     """
     lap_G.zero_()
     lap_G.requires_grad = True

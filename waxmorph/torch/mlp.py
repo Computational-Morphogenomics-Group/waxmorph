@@ -1,4 +1,4 @@
-"""Configurable MLP building block for GNS encoder/processor/decoder."""
+"""Configurable :mod:`torch.nn` MLP building block for GNS modules."""
 
 import torch.nn as nn
 
@@ -13,6 +13,8 @@ _ACTIVATIONS = {
 class MLP(nn.Module):
     """Multi-layer perceptron with configurable depth, width, activation, and normalization.
 
+    The layer stack is implemented as :class:`torch.nn.Sequential`.
+
     Args:
         input_dim: Dimensionality of the final axis of the input tensor.
         output_dim: Dimensionality of the final axis of the output tensor.
@@ -20,7 +22,7 @@ class MLP(nn.Module):
         num_layers: Total number of linear layers, including the output
             projection. ``num_layers=1`` creates a single linear map.
         activation: Activation name: ``"relu"``, ``"silu"``, ``"gelu"``, or
-            ``"tanh"``.
+            ``"tanh"``. These names map to :mod:`torch.nn` activation modules.
         layer_norm: Whether to append :class:`torch.nn.LayerNorm` over
             ``output_dim``.
 
@@ -67,10 +69,10 @@ class MLP(nn.Module):
         """Apply the MLP to the final axis of ``x``.
 
         Args:
-            x: Tensor with trailing dimension ``input_dim``.
+            x: :class:`torch.Tensor` with trailing dimension ``input_dim``.
 
         Returns:
-            Tensor with the same leading dimensions and trailing dimension
-            ``output_dim``.
+            :class:`torch.Tensor` with the same leading dimensions and
+            trailing dimension ``output_dim``.
         """
         return self.net(x)

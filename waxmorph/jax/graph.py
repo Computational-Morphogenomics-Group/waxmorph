@@ -26,10 +26,10 @@ def _slice_active(arr, particle_count: int):
 
 
 def _wp_to_jax(arr: wp.array, particle_count: int) -> jax.Array:
-    """Convert a Warp array to a JAX array, sliced to active particles.
+    """Convert a Warp array to a :class:`jax.Array`, sliced to active particles.
 
-    Uses ``wp.to_jax()`` for zero-copy dlpack transfer when available,
-    with a numpy round-trip fallback.
+    Uses Warp's JAX conversion for zero-copy DLPack transfer when available,
+    with a :mod:`numpy` round-trip fallback.
     """
     try:
         t = wp.to_jax(arr)
@@ -39,7 +39,7 @@ def _wp_to_jax(arr: wp.array, particle_count: int) -> jax.Array:
 
 
 def _as_jax(arr, particle_count: int) -> jax.Array:
-    """Convert supported arrays to JAX without detaching live JAX inputs."""
+    """Convert supported arrays to JAX without detaching live :class:`jax.Array` inputs."""
     if arr is None:
         raise TypeError("Expected a Warp or JAX array, got None.")
 
@@ -53,7 +53,7 @@ def _as_jax(arr, particle_count: int) -> jax.Array:
 
 
 def _snapshot_numpy(arr, particle_count: int) -> np.ndarray:
-    """Materialize a detached host snapshot for non-differentiable topology."""
+    """Materialize a detached NumPy host snapshot for non-differentiable topology."""
     return np.asarray(jax.device_get(_as_jax(arr, particle_count)))
 
 
@@ -81,8 +81,8 @@ def build_edge_index(
 
     Returns:
         Pair ``(edge_index, num_edges)`` where ``edge_index`` has shape
-        ``[2, E]`` or ``[2, max_edges]`` and ``num_edges`` is a JAX scalar
-        count of real, non-padding directed edges.
+        ``[2, E]`` or ``[2, max_edges]`` and ``num_edges`` is a
+        :class:`jax.Array` scalar count of real, non-padding directed edges.
 
     Raises:
         ValueError: If the observed edge count exceeds ``max_edges``.
@@ -129,7 +129,7 @@ def build_node_features(
             the full array.
 
     Returns:
-        Float array with shape ``[N, G]``.
+        Float :class:`jax.Array` with shape ``[N, G]``.
     """
     genes = _as_jax(G, particle_count).astype(jnp.float32)
     if genes.ndim == 1:
@@ -157,7 +157,7 @@ def build_edge_features(
             the full arrays.
 
     Returns:
-        Float edge feature array with shape ``[E, 2]``.
+        Float :class:`jax.Array` edge feature array with shape ``[E, 2]``.
     """
     pos = _as_jax(X, particle_count).astype(jnp.float32)
     pol = _as_jax(P, particle_count).astype(jnp.float32)

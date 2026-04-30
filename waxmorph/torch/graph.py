@@ -2,7 +2,7 @@
 
 Supports both Warp arrays and Torch tensors as inputs. When Torch
 tensors are provided, node and edge feature construction remains on the
-PyTorch autograd graph; only adjacency construction uses a detached
+:mod:`torch.autograd` graph; only adjacency construction uses a detached
 snapshot of positions and radii.
 """
 
@@ -46,10 +46,10 @@ def _slice_active(
 
 
 def _wp_to_torch(arr: wp.array, particle_count: int) -> torch.Tensor:
-    """Convert a Warp array to a PyTorch tensor, sliced to active particles.
+    """Convert a Warp array to a :class:`torch.Tensor`, sliced to active particles.
 
     Handles both scalar (float32, uint32) and vector (vec3f) dtypes by
-    going through numpy when ``wp.to_torch`` is unavailable or when the
+    going through :mod:`numpy` when :func:`warp.to_torch` is unavailable or when the
     dtype is not directly supported (e.g. uint32).
     """
     try:
@@ -112,7 +112,7 @@ def build_edge_index(
     An edge ``(i, j)`` exists when ``dist(X[i], X[j]) <= R[i] + R[j] + eps_dist``
     and ``i != j``. Returns directed edges (both ``i->j`` and ``j->i``).
 
-    Uses ``scipy.spatial.cKDTree`` for O(N log N) neighbor queries instead
+    Uses :class:`scipy.spatial.cKDTree` for O(N log N) neighbor queries instead
     of an O(N^2) pairwise distance matrix. For Torch inputs this function
     intentionally snapshots detached CPU copies of positions and radii, so
     edge construction is frozen for the current rollout step.

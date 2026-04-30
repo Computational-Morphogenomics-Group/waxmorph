@@ -1,7 +1,8 @@
-"""Framework-agnostic graph topology from numpy arrays.
+"""Framework-agnostic graph topology from :mod:`numpy` arrays.
 
-Extracts the cKDTree-based contact adjacency computation so that both
-the PyTorch and (future) JAX graph builders can share the same logic.
+Extracts the :class:`scipy.spatial.cKDTree`-based contact adjacency
+computation so that both the PyTorch and JAX graph builders can share the
+same logic.
 """
 
 import numpy as np

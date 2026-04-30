@@ -20,7 +20,8 @@ from .mlp import MLP
 class GraphNetworkBlock(eqx.Module):
     """Single message-passing step: edge update -> aggregation -> node update.
 
-    Both edge and node latents use residual connections.
+    Both edge and node latents use residual connections. The module subclasses
+    :class:`equinox.Module`.
 
     Args:
         node_latent_dim: Width of node latent vectors.
@@ -29,8 +30,9 @@ class GraphNetworkBlock(eqx.Module):
         num_mlp_layers: Number of linear layers in each internal MLP.
         activation: Activation function name accepted by
             :class:`waxmorph.jax.mlp.MLP`.
-        layer_norm: Whether to apply layer normalization in internal MLPs.
-        key: JAX PRNG key used for weight initialization.
+        layer_norm: Whether to apply :class:`equinox.nn.LayerNorm` in internal
+            MLPs.
+        key: :class:`jax.Array` PRNG key used for weight initialization.
     """
 
     edge_mlp: MLP
@@ -133,11 +135,11 @@ class GNS(eqx.Module):
             dimensionality. Defaults to ``{"dX": 3, "dP": 3, "dG": 2}``.
         activation: Activation function name accepted by
             :class:`waxmorph.jax.mlp.MLP`.
-        layer_norm: Whether to apply layer normalization in encoder and
-            processor MLPs.
+        layer_norm: Whether to apply :class:`equinox.nn.LayerNorm` in encoder
+            and processor MLPs.
         checkpoint_processor: If ``True``, checkpoint processor blocks to
             trade additional compute for lower activation memory.
-        key: JAX PRNG key used for weight initialization.
+        key: :class:`jax.Array` PRNG key used for weight initialization.
     """
 
     node_encoder: MLP
@@ -244,10 +246,10 @@ class GNS(eqx.Module):
         """Run full encode-process-decode.
 
         Args:
-            node_features: Node feature array with shape
+            node_features: :class:`jax.Array` node features with shape
                 ``[N, node_feature_dim]``.
             edge_index: Directed COO edge array with shape ``[2, E]``.
-            edge_features: Edge feature array with shape
+            edge_features: :class:`jax.Array` edge features with shape
                 ``[E, edge_feature_dim]``.
             num_edges: Optional JAX scalar count of real, non-padding edges.
 
@@ -286,7 +288,8 @@ class GNS(eqx.Module):
     def save(self, path: str | Path) -> None:
         """Save model config and weights.
 
-        Creates two files: ``path`` (weights) and ``path.json`` (config).
+        Creates two files: ``path`` (weights serialized with
+        :func:`equinox.tree_serialise_leaves`) and ``path.json`` (config).
         """
         path = Path(path)
         eqx.tree_serialise_leaves(path, self)
@@ -303,7 +306,7 @@ class GNS(eqx.Module):
             **kwargs: Ignored keyword arguments kept for API compatibility.
 
         Returns:
-            Deserialized model.
+            Deserialized :class:`waxmorph.jax.gnn.GNS` model.
         """
         path = Path(path)
         with open(str(path) + ".json") as f:

@@ -65,8 +65,8 @@ class TrainResult:
     """Result returned by :func:`waxmorph.jax.train.train`.
 
     Attributes:
-        model: Best model found during training, or the latest model if no
-            finite improvement was recorded.
+        model: Best :class:`equinox.Module` found during training, or the
+            latest model if no finite improvement was recorded.
         log: Dictionary containing loss histories, best-epoch metadata, and
             the best trajectory.
     """
@@ -1223,7 +1223,7 @@ def train(
 
     Args:
         model: Equinox Graph Network Simulator model.
-        optimizer: Optax gradient transformation.
+        optimizer: :class:`optax.GradientTransformation`.
         opt_state: Optimizer state corresponding to ``model``.
         loss_fn: Shape loss function mapping predicted positions with shape
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.

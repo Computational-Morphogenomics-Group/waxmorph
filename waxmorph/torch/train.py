@@ -56,8 +56,8 @@ class TrainResult:
     """Result returned by :func:`waxmorph.torch.train.train`.
 
     Attributes:
-        model: Best model found during training, or the latest model if no
-            finite improvement was recorded.
+        model: Best :class:`torch.nn.Module` found during training, or the
+            latest model if no finite improvement was recorded.
         log: Dictionary containing loss histories, best-epoch metadata, and
             the best trajectory.
     """
@@ -147,7 +147,7 @@ def _run_epoch(
 ):
     """Run one training epoch with differentiable physics.
 
-    Positions and genes stay on the PyTorch computation graph throughout.
+    Positions and genes stay on the :mod:`torch.autograd` computation graph throughout.
     Physics corrections are applied via WarpMechStep / WarpDiffusionStep
     autograd functions, so gradients flow through the full trajectory.
 
@@ -247,7 +247,7 @@ def train(
 
     Args:
         model: Graph Network Simulator model.
-        optimizer: PyTorch optimizer.
+        optimizer: :class:`torch.optim.Optimizer`.
         loss_fn: Shape loss function mapping predicted positions with shape
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.
@@ -262,7 +262,8 @@ def train(
         config: Training hyperparameters. Defaults to
             :class:`waxmorph.torch.train.TrainConfig`.
         save_path: Optional path where the best model and log are saved.
-        device: Warp device string such as ``"cuda"`` or ``"cpu"``.
+        device: Warp and :class:`torch.device` string such as ``"cuda"`` or
+            ``"cpu"``.
 
     Returns:
         Best model and full training log.

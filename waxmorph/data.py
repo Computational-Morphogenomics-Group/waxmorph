@@ -85,7 +85,7 @@ def _pitch_from_min_dist(min_dist: float) -> float:
 def normalize_mesh(mesh: trimesh.Trimesh, target_extent: float = 10.0) -> trimesh.Trimesh:
     """Center a mesh at the origin and scale its largest extent.
 
-    The input mesh is mutated in place.
+    The input :class:`trimesh.Trimesh` is mutated in place.
 
     Args:
         mesh: Mesh whose vertex coordinates are normalized.
@@ -165,7 +165,7 @@ def _poisson_disk_subsample(
 def _voxel_fill_candidates(
     mesh: trimesh.Trimesh, pitch: float, dilate_iters: int = 5
 ) -> np.ndarray:
-    """Find volume candidate points via voxelization plus flood fill."""
+    """Find volume candidate points via trimesh voxelization plus SciPy flood fill."""
     pitch = _validate_extent("pitch", pitch)
     vox = mesh.voxelized(pitch)
     n_surface = int(vox.points.shape[0])
@@ -195,7 +195,7 @@ def sample_volume(
     min_dist: float | None = None,
     seed: int = 0,
 ) -> np.ndarray:
-    """Sample volumetric mesh points with Poisson-like spacing.
+    """Sample volumetric :class:`trimesh.Trimesh` points with Poisson-like spacing.
 
     If ``min_dist`` is omitted, spacing is derived from the mesh's current
     normalized volume and ``n_points``. This function is allowed to return fewer

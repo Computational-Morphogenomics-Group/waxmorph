@@ -4,9 +4,8 @@ API Reference
 .. toctree::
    :maxdepth: 2
 
-   api/waxmorph.train
-   api/waxmorph.torch.train
-   api/waxmorph.jax.train
+   api/training
+   external_references
 
 .. autosummary::
    :toctree: generated

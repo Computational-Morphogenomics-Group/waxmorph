@@ -1,7 +1,8 @@
 """Configurable MLP building block for GNS encoder/processor/decoder (Equinox).
 
-Wraps ``eqx.nn.MLP`` with an optional trailing ``LayerNorm`` and a
-constructor signature matching the PyTorch ``waxmorph.torch.mlp.MLP``.
+Wraps :class:`equinox.nn.MLP` with an optional trailing
+:class:`equinox.nn.LayerNorm` and a constructor signature matching the PyTorch
+:class:`waxmorph.torch.mlp.MLP`.
 """
 
 from __future__ import annotations
@@ -21,9 +22,9 @@ _ACTIVATIONS = {
 class MLP(eqx.Module):
     """Multi-layer perceptron with configurable depth, width, activation, and normalization.
 
-    Thin wrapper around :class:`eqx.nn.MLP` that adds an optional trailing
-    ``LayerNorm`` and exposes the same constructor interface as the PyTorch
-    ``waxmorph.torch.mlp.MLP``.
+    Thin wrapper around :class:`equinox.nn.MLP` that adds an optional trailing
+    :class:`equinox.nn.LayerNorm` and exposes the same constructor interface as
+    :class:`waxmorph.torch.mlp.MLP`.
 
     Args:
         input_dim: Dimensionality of the final axis of the input array.
@@ -33,9 +34,9 @@ class MLP(eqx.Module):
             projection. ``num_layers=1`` creates a single linear map.
         activation: Activation name: ``"relu"``, ``"silu"``, ``"gelu"``, or
             ``"tanh"``.
-        layer_norm: Whether to append Equinox layer normalization over
+        layer_norm: Whether to append :class:`equinox.nn.LayerNorm` over
             ``output_dim``.
-        key: JAX PRNG key used to initialize the linear layers.
+        key: :class:`jax.Array` PRNG key used to initialize the linear layers.
 
     Raises:
         ValueError: If ``activation`` is not supported.
@@ -81,11 +82,12 @@ class MLP(eqx.Module):
         """Apply the MLP to a single vector or a batch of vectors.
 
         Args:
-            x: Array with trailing dimension ``input_dim``. Arrays with more
-                than one dimension are vectorized over the leading axis.
+            x: :class:`jax.Array` with trailing dimension ``input_dim``.
+                Arrays with more than one dimension are vectorized over the
+                leading axis with :func:`jax.vmap`.
 
         Returns:
-            Array with trailing dimension ``output_dim``.
+            :class:`jax.Array` with trailing dimension ``output_dim``.
         """
         if x.ndim > 1:
             out = jax.vmap(self.net)(x)

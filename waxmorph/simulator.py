@@ -511,7 +511,7 @@ def sticky_sphere_grads_implicit(
     gx: wp.array(dtype=wp.vec3f),
     gp: wp.array(dtype=wp.vec3f),
 ):
-    """Autodiff-based counterpart of ``sticky_sphere_grads`` using ``wp.grad``."""
+    """Autodiff-based counterpart of ``sticky_sphere_grads`` using :func:`warp.grad`."""
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
 
@@ -582,7 +582,7 @@ def mech_step_sticky_implicit(
     device: str = "cuda",
     grid: "wp.HashGrid | None" = None,
 ):
-    """Mechanics step matching ``mech_step_sticky`` but using ``wp.grad`` locally."""
+    """Mechanics step matching ``mech_step_sticky`` but using :func:`warp.grad` locally."""
 
     gx = wp.zeros_like(X, device=device)
     gp = wp.zeros_like(P, device=device)
@@ -855,7 +855,7 @@ def count_neighbors_step(
     device: str = "cuda",
     grid: "wp.HashGrid | None" = None,
 ) -> None:
-    """Count neighbors using HashGrid acceleration.
+    """Count neighbors using :class:`warp.HashGrid` acceleration.
 
     Args:
         X: Position array with dtype ``wp.vec3f``.
@@ -866,7 +866,7 @@ def count_neighbors_step(
         n_epi: Pre-zeroed output array for epithelial neighbor counts.
         n_mes: Pre-zeroed output array for mesenchymal neighbor counts.
         device: Warp device.
-        grid: Optional reusable hash grid.
+        grid: Optional reusable :class:`warp.HashGrid`.
     """
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + EPS_DIST
