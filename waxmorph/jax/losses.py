@@ -30,6 +30,12 @@ def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
 
     Returns:
         Scalar JAX array containing the squared Frobenius norm.
+
+    Examples:
+        >>> x = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        >>> y = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        >>> print(float(squared_loss(x, y)))
+        1.0
     """
     return jnp.sum((X_pred - X_target) ** 2)
 
@@ -51,6 +57,12 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
     Returns:
         Scalar JAX array containing the two-sided Chamfer distance normalized
         by ``N``.
+
+    Examples:
+        >>> x = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        >>> y = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        >>> print(float(chamfer_distance(x, y)))
+        1.0
     """
     # [N, M]
     diff = X_pred[:, None, :] - X_target[None, :, :]

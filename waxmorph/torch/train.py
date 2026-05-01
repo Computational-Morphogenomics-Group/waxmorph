@@ -36,6 +36,11 @@ class TrainConfig:
         l2_lambda: Weight applied to squared model displacement regularization.
         grad_clip_norm: Optional maximum gradient norm.
         log_every: Epoch interval used for progress logging.
+
+    Examples:
+        >>> cfg = TrainConfig(n_epochs=3, t_rollout=2)
+        >>> print(cfg.n_epochs, cfg.t_rollout, cfg.grad_clip_norm)
+        3 2 1.0
     """
 
     n_epochs: int = 2000

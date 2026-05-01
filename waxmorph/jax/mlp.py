@@ -40,6 +40,11 @@ class MLP(eqx.Module):
 
     Raises:
         ValueError: If ``activation`` is not supported.
+
+    Examples:
+        >>> mlp = MLP(3, 2, hidden_dim=4, num_layers=1, layer_norm=False, key=jax.random.PRNGKey(0))
+        >>> print(tuple(mlp(jnp.ones((5, 3))).shape))
+        (5, 2)
     """
 
     net: eqx.nn.MLP

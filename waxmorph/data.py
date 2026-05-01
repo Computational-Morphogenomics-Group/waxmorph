@@ -96,6 +96,12 @@ def normalize_mesh(mesh: trimesh.Trimesh, target_extent: float = 10.0) -> trimes
 
     Raises:
         ValueError: If ``target_extent`` or the mesh extent is not positive.
+
+    Examples:
+        >>> mesh = trimesh.creation.box(extents=(2, 4, 6))
+        >>> _ = normalize_mesh(mesh, target_extent=3.0)
+        >>> print(mesh.bounds.round(1).tolist(), mesh.extents.round(1).tolist())
+        [[-0.5, -1.0, -1.5], [0.5, 1.0, 1.5]] [1.0, 2.0, 3.0]
     """
     target_extent = _validate_extent("target_extent", target_extent)
     verts = np.asarray(mesh.vertices, dtype=np.float64)
@@ -215,6 +221,14 @@ def sample_volume(
 
     Raises:
         ValueError: If counts, extents, spacing, or candidate shapes are invalid.
+
+    Examples:
+        >>> mesh = trimesh.creation.box(extents=(1, 1, 1))
+        >>> pts = sample_volume(mesh, n_points=3, min_dist=0.4, pitch=0.2, seed=0)
+        >>> print(pts.shape)
+        (3, 3)
+        >>> print(pts.astype(float).round(1).tolist())
+        [[0.0, 0.2, 0.2], [0.4, 0.4, 0.0], [-0.2, 0.0, -0.2]]
     """
     n_points = _validate_n_points(n_points)
     if min_dist is None:

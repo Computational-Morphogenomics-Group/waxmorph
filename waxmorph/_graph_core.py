@@ -29,6 +29,13 @@ def build_edge_index_np(
     Returns:
         Pair ``(senders, receivers)`` of ``int64`` arrays with shape ``[E]``.
         Edges are directed and include both directions for every contact pair.
+
+    Examples:
+        >>> pos = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        >>> rad = np.array([0.6, 0.6, 0.6])
+        >>> senders, receivers = build_edge_index_np(pos, rad, eps_dist=0.0)
+        >>> print(senders.tolist(), receivers.tolist())
+        [0, 1] [1, 0]
     """
     if len(pos) == 0:
         empty = np.zeros(0, dtype=np.int64)

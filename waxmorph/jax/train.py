@@ -44,6 +44,11 @@ class TrainConfig:
         log_every: Epoch interval used for progress logging.
         max_edges_factor: Edge and pair capacity multiplier per active
             particle.
+
+    Examples:
+        >>> cfg = TrainConfig(n_epochs=3, t_rollout=2)
+        >>> print(cfg.n_epochs, cfg.t_rollout, cfg.grad_clip_norm)
+        3 2 1.0
     """
 
     n_epochs: int = 2000

@@ -33,6 +33,12 @@ def squared_loss(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
 
     Returns:
         Scalar :class:`torch.Tensor` containing the squared Frobenius norm.
+
+    Examples:
+        >>> x = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        >>> y = torch.tensor([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        >>> print(squared_loss(x, y))
+        tensor(1.)
     """
     return (X_pred - X_target).pow(2).sum()
 
@@ -54,6 +60,12 @@ def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tens
     Returns:
         Scalar :class:`torch.Tensor` containing the two-sided Chamfer distance
         normalized by ``N``.
+
+    Examples:
+        >>> x = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        >>> y = torch.tensor([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        >>> print(chamfer_distance(x, y))
+        tensor(1.)
     """
     # [N, M]
     diff = X_pred.unsqueeze(1) - X_target.unsqueeze(0)

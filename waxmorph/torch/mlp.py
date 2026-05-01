@@ -28,6 +28,12 @@ class MLP(nn.Module):
 
     Raises:
         ValueError: If ``activation`` is not supported.
+
+    Examples:
+        >>> import torch
+        >>> mlp = MLP(3, 2, hidden_dim=4, num_layers=1, layer_norm=False)
+        >>> print(tuple(mlp(torch.ones(5, 3)).shape))
+        (5, 2)
     """
 
     def __init__(

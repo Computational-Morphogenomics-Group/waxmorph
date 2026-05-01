@@ -86,6 +86,13 @@ def build_edge_index(
 
     Raises:
         ValueError: If the observed edge count exceeds ``max_edges``.
+
+    Examples:
+        >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        >>> R = jnp.array([0.6, 0.6, 0.6])
+        >>> edge_index, num_edges = build_edge_index(X, R, 3, eps_dist=0.0)
+        >>> print(edge_index.tolist(), int(num_edges))
+        [[0, 1], [1, 0]] 2
     """
     pos = _snapshot_numpy(X, particle_count).astype(np.float32, copy=False)
     rad = _snapshot_numpy(R, particle_count).astype(np.float32, copy=False)
@@ -130,6 +137,11 @@ def build_node_features(
 
     Returns:
         Float :class:`jax.Array` with shape ``[N, G]``.
+
+    Examples:
+        >>> G = jnp.array([0.2, 0.4, 0.8])
+        >>> print(build_node_features(G, 3).tolist())
+        [[0.20000000298023224], [0.4000000059604645], [0.800000011920929]]
     """
     genes = _as_jax(G, particle_count).astype(jnp.float32)
     if genes.ndim == 1:
@@ -158,6 +170,13 @@ def build_edge_features(
 
     Returns:
         Float :class:`jax.Array` edge feature array with shape ``[E, 2]``.
+
+    Examples:
+        >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        >>> P = jnp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        >>> edge_index = jnp.array([[0, 1], [1, 0]])
+        >>> print(jnp.round(build_edge_features(X, P, edge_index, 2), 4).tolist())
+        [[1.0, 0.00139999995008111], [1.0, 0.00139999995008111]]
     """
     pos = _as_jax(X, particle_count).astype(jnp.float32)
     pol = _as_jax(P, particle_count).astype(jnp.float32)
@@ -210,6 +229,13 @@ def build_graph(
 
     Returns:
         Tuple ``(node_features, edge_index, edge_features, num_edges)``.
+
+    Examples:
+        >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        >>> P, R, G = jnp.ones((3, 3)), jnp.array([0.6, 0.6, 0.6]), jnp.ones(3)
+        >>> out = build_graph(X, P, R, 3, G, eps_dist=0.0)
+        >>> print([tuple(a.shape) for a in out[:3]], int(out[3]))
+        [(3, 1), (2, 2), (2, 2)] 2
     """
     edge_index, num_edges = build_edge_index(X, R, particle_count, eps_dist, max_edges)
     node_features = build_node_features(G, particle_count)

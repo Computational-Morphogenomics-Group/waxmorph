@@ -140,6 +140,12 @@ class GNS(eqx.Module):
         checkpoint_processor: If ``True``, checkpoint processor blocks to
             trade additional compute for lower activation memory.
         key: :class:`jax.Array` PRNG key used for weight initialization.
+
+    Examples:
+        >>> model = GNS(1, 2, hidden_dim=4, num_mp_steps=1, output_dims={"dX": 3}, key=jax.random.PRNGKey(0))
+        >>> out = model(jnp.ones((2, 1)), jnp.array([[0, 1], [1, 0]]), jnp.ones((2, 2)))
+        >>> print(sorted(out), tuple(out["dX"].shape))
+        ['dX'] (2, 3)
     """
 
     node_encoder: MLP

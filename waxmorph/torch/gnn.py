@@ -127,6 +127,12 @@ class GNS(nn.Module):
             and processor MLPs.
         checkpoint_processor: If ``True``, checkpoint processor blocks to
             trade additional compute for lower activation memory.
+
+    Examples:
+        >>> model = GNS(1, 2, hidden_dim=4, num_mp_steps=1, output_dims={"dX": 3})
+        >>> out = model(torch.ones(2, 1), torch.tensor([[0, 1], [1, 0]]), torch.ones(2, 2))
+        >>> print(sorted(out), tuple(out["dX"].shape))
+        ['dX'] (2, 3)
     """
 
     def __init__(

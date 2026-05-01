@@ -116,6 +116,12 @@ def build_edge_index(
     of an O(N^2) pairwise distance matrix. For Torch inputs this function
     intentionally snapshots detached CPU copies of positions and radii, so
     edge construction is frozen for the current rollout step.
+
+    Examples:
+        >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        >>> R = torch.tensor([0.6, 0.6, 0.6])
+        >>> print(build_edge_index(X, R, 3, eps_dist=0.0).tolist())
+        [[0, 1], [1, 0]]
     """
     pos = _snapshot_numpy(X, particle_count).astype(np.float32, copy=False)
     rad = _snapshot_numpy(R, particle_count).astype(np.float32, copy=False)
@@ -144,6 +150,11 @@ def build_node_features(
         [g_0, g_1, ..., g_{G-1}]
 
     Dimensions: ``G`` (number of genes).
+
+    Examples:
+        >>> G = torch.tensor([0.2, 0.4, 0.8])
+        >>> print(build_node_features(G, 3).tolist())
+        [[0.20000000298023224], [0.4000000059604645], [0.800000011920929]]
     """
     genes = _as_torch(G, particle_count, device).float()
     if genes.ndim == 1:
@@ -165,6 +176,13 @@ def build_edge_features(
         [dist, angle(P_i, P_j)]
 
     Dimensions: ``1 + 1 = 2``.
+
+    Examples:
+        >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        >>> P = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        >>> edge_index = torch.tensor([[0, 1], [1, 0]])
+        >>> print(build_edge_features(X, P, edge_index, 2).round(decimals=4).tolist())
+        [[1.0, 0.00139999995008111], [1.0, 0.00139999995008111]]
     """
     target = _resolve_device(device, X, P)
     pos = _as_torch(X, particle_count, target).float()
@@ -201,6 +219,12 @@ def build_graph(
     ``edge_features`` back to the live state tensors. ``edge_index`` is
     intentionally built from a detached snapshot of ``X`` and ``R`` and
     should be treated as frozen for that rollout step.
+
+    Examples:
+        >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        >>> P, R, G = torch.ones(3, 3), torch.tensor([0.6, 0.6, 0.6]), torch.ones(3)
+        >>> print([tuple(t.shape) for t in build_graph(X, P, R, 3, G, eps_dist=0.0)])
+        [(3, 1), (2, 2), (2, 2)]
     """
     edge_index = build_edge_index(X, R, particle_count, eps_dist, device)
     node_features = build_node_features(G, particle_count, device)
