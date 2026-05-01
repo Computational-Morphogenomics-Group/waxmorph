@@ -17,10 +17,6 @@ try:
     import pyvista as pv
 except Exception:  # pragma: no cover - optional dependency for rendering backends.
     pv = None
-try:
-    import vtk
-except Exception:  # pragma: no cover - optional dependency for rendering backends.
-    vtk = None
 
 
 def _require_pyvista() -> None:
@@ -243,7 +239,7 @@ class PyVistaInterface(RenderInterface):
         polarities=None,
         n=None,
         *,
-        cell_types: np.ndarray | None = None,  # NEW
+        cell_types: np.ndarray | None = None,
     ) -> pv.PolyData:
         """
         Build a point-cloud PolyData with per-point arrays:
@@ -263,10 +259,11 @@ class PyVistaInterface(RenderInterface):
         pts = c[:n]
         rad = r[:n]
 
-        # --- NEW: override morphogen coloring if cell_types is provided
+        _require_pyvista()
+
         if cell_types is not None:
             ct = np.asarray(cell_types).reshape(-1)
-            n = min(n, len(ct))  # also clamp to available categories
+            n = min(n, len(ct))
             pts = pts[:n]
             rad = rad[:n]
             rgb = PyVistaInterface._rgb_from_categories(ct[:n])
@@ -297,6 +294,7 @@ class PyVistaInterface(RenderInterface):
     @staticmethod
     def _glyph_spheres(points_pd: pv.PolyData, theta_res=24, phi_res=12) -> pv.PolyData:
         """Create sphere glyph geometry from point-cloud radius data."""
+        _require_pyvista()
         base = pv.Sphere(radius=1.0, theta_resolution=theta_res, phi_resolution=phi_res)
         glyphs = points_pd.glyph(geom=base, scale="radius", orient=False)
         return glyphs
@@ -317,6 +315,7 @@ class PyVistaInterface(RenderInterface):
         The base arrow is built along +X from 0->1, then translated by -0.5 in X
         so its midpoint is at the origin. Glyphing then centers each arrow at the point.
         """
+        _require_pyvista()
         if vector_name not in points_pd.array_names:
             raise ValueError(f"points_pd missing '{vector_name}' array for polarity vectors.")
 
@@ -428,6 +427,7 @@ class PyVistaInterface(RenderInterface):
         Returns:
             Configured :class:`pyvista.Plotter`.
         """
+        _require_pyvista()
         plotter = pv.Plotter(notebook=True)
 
         sphere_kwargs = dict(

@@ -1028,7 +1028,7 @@ def division_decision(
         p = probs(R[parent], R_div_ref)
 
     # Sample division (Gumbel-ST)
-    key, s_hard, s_soft = st_gumbel_softmax_bernoulli(p, key, t, tmax, tau)
+    key, s_hard, _s_soft = st_gumbel_softmax_bernoulli(p, key, t, tmax, tau)
     keys[parent] = key
 
     if s_hard == wp.int32(0):

@@ -54,28 +54,6 @@ def _sticky_sphere_forces(
 
 
 @wp.kernel
-def _sticky_sphere_grads(
-    grid: wp.uint64,
-    X: wp.array(dtype=wp.vec3f),
-    R: wp.array(dtype=wp.float32),
-    query_radius: wp.float32,
-    gx: wp.array(dtype=wp.vec3f),
-):
-    """Accumulate net mechanics gradient per cell from all unordered pairs."""
-    tid = wp.tid()
-    i = wp.hash_grid_point_id(grid, tid)
-    x_i = X[i]
-    r_i = R[i]
-
-    for j in wp.hash_grid_query(grid, x_i, query_radius):
-        if j <= i:
-            continue
-        force_i, force_j = _sticky_sphere_forces(x_i, X[j], r_i, R[j])
-        wp.atomic_add(gx, i, force_i)
-        wp.atomic_add(gx, j, force_j)
-
-
-@wp.kernel
 def _build_neighbor_pairs(
     grid: wp.uint64,
     X: wp.array(dtype=wp.vec3f),
@@ -246,45 +224,6 @@ def _gene_diffusion_step_out(
 ############################################################
 ############################################################
 ############################################################
-
-
-def mech_step_sticky(
-    X: wp.array,
-    R: wp.array,
-    particle_count: int,
-    dt: float,
-    gx: wp.array,
-    grid: "wp.HashGrid | None" = None,
-):
-    """Run one sticky-sphere mechanics step and return position gradients.
-
-    Args:
-        X: Warp position array.
-        R: Warp radius array.
-        particle_count: Number of active particles.
-        dt: Mechanics Euler step size.
-        gx: Scratch Warp force buffer.
-        grid: Optional reusable :class:`warp.HashGrid`.
-    """
-
-    gx.zero_()
-
-    device = X.device
-    r_max = float(R.numpy()[:particle_count].max())
-    query_radius = 2.0 * r_max + EPS_DIST
-    if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
-    grid.build(X[:particle_count], query_radius)
-
-    wp.launch(
-        _sticky_sphere_grads,
-        dim=particle_count,
-        inputs=[wp.uint64(grid.id), X, R, query_radius],
-        outputs=[gx],
-        device=device,
-    )
-
-    wp.launch(_gd_update, dim=particle_count, inputs=[X, gx, dt], outputs=[X], device=device)
 
 
 def mech_step_sticky_differentiable(

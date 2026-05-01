@@ -197,23 +197,6 @@ def _device_put_arrays(tree, device: jax.Device):
     )
 
 
-def _raise_on_nonfinite_pytree(kind: str, tree, *, epoch: int, phase: str) -> None:
-    for idx, leaf in enumerate(_array_leaves(tree)):
-        arr = np.asarray(jax.device_get(leaf))
-        finite_mask = np.isfinite(arr)
-        if finite_mask.all():
-            continue
-
-        bad_indices = np.argwhere(~finite_mask)
-        first_bad = tuple(int(i) for i in bad_indices[0])
-        bad_value = arr[first_bad]
-        raise ValueError(
-            f"Non-finite values detected in model {kind} during {phase} at epoch {epoch}: "
-            f"leaf={idx}, total_bad={(~finite_mask).sum()}, first_bad_index={first_bad}, "
-            f"first_bad_value={bad_value!r}"
-        )
-
-
 def _tree_all_finite(tree) -> jax.Array:
     leaves = _array_leaves(tree)
     if not leaves:
@@ -265,54 +248,6 @@ def _bucketed_capacity(observed_max: int, max_capacity: int, *, name: str) -> in
 
     bucketed = int(np.ceil((observed_max * _CAPACITY_HEADROOM) / _CAPACITY_BUCKET))
     return min(max(bucketed * _CAPACITY_BUCKET, 1), max_capacity)
-
-
-def _pad_index_vector(
-    values: jax.Array,
-    max_size: int,
-    *,
-    name: str,
-    count: int | None = None,
-) -> tuple[jax.Array, jax.Array]:
-    values = jnp.asarray(values, dtype=jnp.int32)
-    actual_count = int(values.shape[0]) if count is None else int(count)
-    if actual_count > max_size:
-        raise ValueError(
-            f"{name} has {actual_count} entries but max_edges_factor allows only {max_size}. "
-            "Increase TrainConfig.max_edges_factor."
-        )
-    if values.shape[0] < actual_count:
-        raise ValueError(
-            f"{name} count is {actual_count}, but only {values.shape[0]} entries were provided."
-        )
-    padded = jnp.zeros((max_size,), dtype=jnp.int32)
-    if actual_count > 0:
-        padded = padded.at[:actual_count].set(values[:actual_count])
-    return padded, jnp.asarray(actual_count, dtype=jnp.int32)
-
-
-def _pad_pair_topology(
-    pair_i: jax.Array,
-    pair_j: jax.Array,
-    max_pairs: int,
-    *,
-    count: int | None = None,
-) -> _PairTopology:
-    pair_i_padded, num_pairs = _pad_index_vector(
-        pair_i,
-        max_pairs,
-        name="Neighbor pair list",
-        count=count,
-    )
-    pair_j_padded, num_pairs_j = _pad_index_vector(
-        pair_j,
-        max_pairs,
-        name="Neighbor pair list",
-        count=count,
-    )
-    if int(num_pairs) != int(num_pairs_j):
-        raise ValueError("Internal error: pair_i and pair_j have different lengths.")
-    return _PairTopology(pair_i=pair_i_padded, pair_j=pair_j_padded, num_pairs=num_pairs)
 
 
 def _build_pair_topology_warp(
@@ -817,23 +752,6 @@ def _collect_topologies_and_trajectory(
 
 def _empty_pair_stack(t_rollout: int, num_steps: int, max_pairs: int) -> jax.Array:
     return jnp.zeros((t_rollout, num_steps, max_pairs), dtype=jnp.int32)
-
-
-def _pad_edge_index(edge_index: jax.Array, num_edges: jax.Array, max_edges: int) -> jax.Array:
-    count = _scalar_int(num_edges)
-    if count > max_edges:
-        raise ValueError(
-            f"Graph has {count} edges but max_edges_factor allows only {max_edges}. "
-            "Increase TrainConfig.max_edges_factor."
-        )
-    if edge_index.shape[1] < count:
-        raise ValueError(
-            f"Graph edge count is {count}, but only {edge_index.shape[1]} entries were provided."
-        )
-    padded = jnp.zeros((2, max_edges), dtype=jnp.int32)
-    if count > 0:
-        padded = padded.at[:, :count].set(jnp.asarray(edge_index, dtype=jnp.int32)[:, :count])
-    return padded
 
 
 def _max_edge_count(topologies: tuple[_StepTopology, ...]) -> int:
