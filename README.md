@@ -4,11 +4,16 @@
 [![Documentation](https://readthedocs.org/projects/waxmorph/badge/?version=latest)](https://waxmorph.readthedocs.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Differentiable morphogenesis and shape-assembly on NVIDIA Warp.
+Joint forward simulation and inverse learning of biophysical shape assembly
+with spheroidal agents.
 
 ## Overview
 
-WaxMorph integrates three approaches to generating biological shapes under biophysical constraints:
+WaxMorph represents tissues as interacting spheroidal agents with positions,
+radii, polarities, gene or morphogen states, and optional cell-type labels. It
+connects explicit mechanochemical simulation with graph-network emulation, so
+users can both simulate rule-based tissue dynamics and train local update rules
+against target morphologies.
 
 | Approach | Description |
 |---|---|
@@ -21,6 +26,8 @@ Key features:
 - GPU-accelerated simulation via [NVIDIA Warp](https://nvidia.github.io/warp/)
 - GNS (Graph Network-based Simulator) architecture for learned emulation via PyTorch
 - Two cell types (epithelium / mesenchyme) with type-dependent mechanics
+- Mesh-to-point-cloud sampling for source and target morphologies
+- PyTorch and JAX graph/training implementations
 - Rendering through PyVista / VTK and Warp OpenGL
 
 ## Installation
@@ -47,25 +54,33 @@ pre-commit install
 ## Quick start
 
 ```python
+import torch
+
 from waxmorph.graph import build_graph
 from waxmorph.gnn import GNS
 
-# Build graph from Warp simulation state
+# Build a contact graph from a spheroidal tissue state.
+N = 32
+num_genes = 2
+X = torch.randn(N, 3)
+P = torch.nn.functional.normalize(X, dim=1)
+R = torch.full((N,), 0.45)
+G = torch.rand(N, num_genes)
+
 node_features, edge_index, edge_features = build_graph(
-    X, P, R, CT, particle_count=N, G=G,
+    X, P, R, particle_count=N, G=G,
 )
 
-# Create GNS model
+# Predict per-cell updates with a graph-network emulator.
 model = GNS(
     node_feature_dim=node_features.shape[1],
     edge_feature_dim=edge_features.shape[1],
     num_mp_steps=10,
-    output_dims={"dX": 3, "dP": 3, "dG": 2},
+    output_dims={"dX": 3, "dP": 3, "dG": num_genes},
 )
 
-# Predict updates
 outputs = model(node_features, edge_index, edge_features)
-# outputs["dX"]: predicted position updates [N, 3]
+X_next = X + 1e-2 * outputs["dX"]
 ```
 
 ## Citation

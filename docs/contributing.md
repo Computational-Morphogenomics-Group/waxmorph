@@ -1,5 +1,11 @@
 # Contributing
 
+WaxMorph is a scientific package, so contributions should make both the code
+and the modelling assumptions easier to inspect. A useful pull request should
+answer three questions clearly: what biological or computational behavior is
+being changed, where that behavior lives in the package, and how a user can
+verify it.
+
 ## Development setup
 
 ```bash
@@ -31,3 +37,18 @@ pre-commit run --all-files
 2. Make your changes and add tests
 3. Run `pytest`, `ruff check`, and `black --check` locally
 4. Open a PR against `main`
+
+## Documentation expectations
+
+Public functions should explain the biological object being represented, the
+array shapes expected by the implementation, and whether gradients are meant to
+flow through the operation. Avoid vague phrases such as "processes data" or
+"handles simulation"; name the concrete state variables, for example positions
+`X`, polarities `P`, radii `R`, gene state `G`, cell types `CT`, or contact
+edges.
+
+When a modelling choice is an approximation, say so directly. For example,
+graph topology is rebuilt from state snapshots and treated as fixed within a
+rollout step, while continuous node and edge features can remain
+differentiable. That distinction is important for users interpreting learned
+biophysical rules.
