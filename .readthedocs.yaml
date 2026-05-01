@@ -14,3 +14,6 @@ python:
       path: .
       extra_requirements:
         - docs
+        - learning
+        - simulation
+        - jax

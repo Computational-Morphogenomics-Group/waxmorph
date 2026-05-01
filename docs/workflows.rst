@@ -25,7 +25,9 @@ Training against multiple target frames
 ---------------------------------------
 
 Single-target training supervises the final state of a rollout. Multi-target
-training supervises intermediate states as well:
+training supervises intermediate states as well. Both use the explicit
+``targets`` argument; for a final-only run, pass a single
+``(t_rollout - 1, target_pos)`` pair.
 
 .. code-block:: python
 

@@ -21,6 +21,11 @@ pre-commit install
 pytest tests/
 ```
 
+The default pytest configuration writes terminal and XML coverage reports for
+the `waxmorph` package. The full test suite includes both PyTorch and JAX
+coverage, so development environments should install `.[all]` or at least
+`.[learning,simulation,jax]` before running it.
+
 ## Code style
 
 This project uses [ruff](https://docs.astral.sh/ruff/) for linting and
@@ -35,7 +40,7 @@ pre-commit run --all-files
 
 1. Create a feature branch from `main`
 2. Make your changes and add tests
-3. Run `pytest`, `ruff check`, and `black --check` locally
+3. Run `pytest`, `ruff check waxmorph tests`, and `black --check waxmorph tests` locally
 4. Open a PR against `main`
 
 ## Documentation expectations

@@ -19,7 +19,7 @@ against target morphologies.
 |---|---|
 | **Forward simulation** | Mechanochemical dynamics with sticky-sphere forces, reaction-diffusion, and cell division |
 | **Emulation (non-growing)** | Learn local update rules that assemble a fixed number of cells into a target shape |
-| **Emulation (growing)** | Learn rules that grow seed cells into a target configuration with division |
+| **Multi-frame supervision** | Train against intermediate and final target morphologies during a fixed-cell rollout |
 
 Key features:
 
@@ -40,6 +40,18 @@ With simulation and learning dependencies:
 
 ```bash
 pip install "waxmorph[simulation,learning]"
+```
+
+For the JAX/Equinox backend on CPU:
+
+```bash
+pip install "waxmorph[jax]"
+```
+
+For JAX with CUDA 12 support:
+
+```bash
+pip install "waxmorph[jax-cuda]"
 ```
 
 For development:

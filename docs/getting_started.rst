@@ -22,11 +22,17 @@ For the usual simulation and PyTorch learning workflow:
 
    pip install "waxmorph[simulation,learning]"
 
-Use the JAX extra only when you plan to run the JAX/Equinox backend:
+Use the JAX extra when you plan to run the JAX/Equinox backend on CPU:
 
 .. code-block:: bash
 
    pip install "waxmorph[jax]"
+
+For JAX with CUDA 12 support:
+
+.. code-block:: bash
+
+   pip install "waxmorph[jax-cuda]"
 
 A first graph-network pass
 --------------------------
