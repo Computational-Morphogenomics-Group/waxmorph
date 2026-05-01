@@ -303,13 +303,12 @@ class GNS(eqx.Module):
             json.dump(self._config, f)
 
     @classmethod
-    def load(cls, path: str | Path, **kwargs) -> GNS:
+    def load(cls, path: str | Path) -> GNS:
         """Load model from files saved with :meth:`save`.
 
         Args:
             path: Path to the weights file. Configuration is read from
                 ``path.json``.
-            **kwargs: Ignored keyword arguments kept for API compatibility.
 
         Returns:
             Deserialized :class:`waxmorph.jax.gnn.GNS` model.

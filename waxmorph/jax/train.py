@@ -1136,7 +1136,6 @@ def train(
     polarities: np.ndarray,
     genes: np.ndarray,
     radii: np.ndarray,
-    target_pos: np.ndarray | None = None,
     targets: list[tuple[int, np.ndarray]] | None = None,
     config: TrainConfig | None = None,
     save_path: str | Path | None = None,
@@ -1154,11 +1153,9 @@ def train(
         polarities: Initial polarity vectors with shape ``[N, 3]``.
         genes: Initial gene concentrations with shape ``[N, num_genes]``.
         radii: Particle radii with shape ``[N]``.
-        target_pos: Legacy single-target input, equivalent to
-            ``targets=[(t_rollout - 1, target_pos)]``.
-        targets: Optional ``(frame, positions)`` supervision pairs. Frame ``0``
-            supervises the state after the first rollout update. Frames must
-            lie in ``[0, t_rollout)`` and must be unique.
+        targets: ``(frame, positions)`` supervision pairs. Frame ``0`` supervises
+            the state after the first rollout update. Frames must lie in
+            ``[0, t_rollout)`` and must be unique.
         config: Training hyperparameters. Defaults to
             :class:`waxmorph.jax.train.TrainConfig`.
         save_path: Optional path where the best model and log are saved.
@@ -1170,18 +1167,14 @@ def train(
     Raises:
         RuntimeError: If Warp-backed differentiable physics is requested on a
             device where JAX cannot provide a GPU backend.
-        ValueError: If targets are missing, duplicated, out of range, mutually
-            exclusive with ``target_pos``, or contain non-finite values.
+        ValueError: If targets are missing, duplicated, out of range, or contain
+            non-finite values.
     """
     if config is None:
         config = TrainConfig()
 
-    if targets is None and target_pos is None:
-        raise ValueError("train() requires either `targets` or `target_pos`.")
-    if targets is not None and target_pos is not None:
-        raise ValueError("Pass `targets` OR `target_pos`, not both.")
     if targets is None:
-        targets = [(config.t_rollout - 1, target_pos)]
+        raise ValueError("train() requires `targets`.")
 
     _validate_finite_numpy("source_pos", source_pos)
     _validate_finite_numpy("polarities", polarities)

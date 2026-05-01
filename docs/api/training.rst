@@ -17,7 +17,7 @@ The training loop expects:
 * a :class:`waxmorph.gnn.GNS` model or backend-specific equivalent;
 * an optimizer;
 * a shape loss such as :func:`waxmorph.losses.chamfer_distance`;
-* either a single ``target_pos`` or a list of ``(frame, positions)`` targets.
+* a list of ``(frame, positions)`` targets.
 
 Target frames are zero-based rollout indices after updates. A target at frame
 ``0`` supervises the state after the first model update, not the unmodified

@@ -127,64 +127,6 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
     np.testing.assert_allclose(trajectory[1]["pos"], np.asarray(target_frame0), atol=1e-6)
 
 
-def test_train_back_compat_wraps_target_pos_into_final_frame():
-    source_pos, polarities, genes, radii = _minimal_inputs()
-    target_pos = source_pos + 0.1
-    config = jax_train_module.TrainConfig(
-        n_epochs=2,
-        t_rollout=2,
-        mech_steps=0,
-        diff_steps=0,
-        dt_gns=0.0,
-        grad_clip_norm=None,
-        log_every=1,
-    )
-
-    optimizer = optax.sgd(learning_rate=0.0)
-    model_a = _make_model(genes.shape[1])
-    opt_state_a = optimizer.init(eqx.filter(model_a, eqx.is_array))
-    result_legacy = jax_train_module.train(
-        model_a,
-        optimizer,
-        opt_state_a,
-        squared_loss,
-        source_pos=source_pos,
-        target_pos=target_pos,
-        polarities=polarities,
-        genes=genes,
-        radii=radii,
-        config=config,
-        device="cpu",
-    )
-
-    model_b = _make_model(genes.shape[1])
-    opt_state_b = optimizer.init(eqx.filter(model_b, eqx.is_array))
-    result_new = jax_train_module.train(
-        model_b,
-        optimizer,
-        opt_state_b,
-        squared_loss,
-        source_pos=source_pos,
-        targets=[(config.t_rollout - 1, target_pos)],
-        polarities=polarities,
-        genes=genes,
-        radii=radii,
-        config=config,
-        device="cpu",
-    )
-
-    np.testing.assert_allclose(
-        result_legacy.log["losses_shape"],
-        result_new.log["losses_shape"],
-        atol=1e-6,
-    )
-    np.testing.assert_array_equal(
-        result_legacy.log["target_frames"],
-        np.array([config.t_rollout - 1]),
-    )
-    np.testing.assert_array_equal(result_new.log["target_frames"], np.array([config.t_rollout - 1]))
-
-
 def test_train_uses_max_edges_factor_for_padded_topology_capacity():
     source_pos, polarities, genes, radii = _minimal_inputs()
     config = jax_train_module.TrainConfig(
@@ -208,7 +150,7 @@ def test_train_uses_max_edges_factor_for_padded_topology_capacity():
             opt_state,
             squared_loss,
             source_pos=source_pos,
-            target_pos=source_pos,
+            targets=[(0, source_pos)],
             polarities=polarities,
             genes=genes,
             radii=radii,
@@ -281,30 +223,6 @@ def test_stack_topologies_rejects_counts_over_capacity():
 
     with pytest.raises(ValueError, match="Neighbor pair list"):
         jax_train_module._stack_topologies(topologies, config=config, max_pairs=3)
-
-
-def test_train_rejects_both_targets_and_target_pos():
-    source_pos, polarities, genes, radii = _minimal_inputs()
-    model = _make_model(genes.shape[1])
-    optimizer = optax.sgd(learning_rate=0.0)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
-    config = jax_train_module.TrainConfig(n_epochs=1, t_rollout=1, mech_steps=0, diff_steps=0)
-
-    with pytest.raises(ValueError, match="Pass `targets` OR `target_pos`"):
-        jax_train_module.train(
-            model,
-            optimizer,
-            opt_state,
-            squared_loss,
-            source_pos=source_pos,
-            target_pos=source_pos,
-            targets=[(0, source_pos)],
-            polarities=polarities,
-            genes=genes,
-            radii=radii,
-            config=config,
-            device="cpu",
-        )
 
 
 def _has_jax_warp_cuda() -> bool:
@@ -463,7 +381,7 @@ def test_train_rejects_missing_targets():
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     config = jax_train_module.TrainConfig(n_epochs=1, t_rollout=1, mech_steps=0, diff_steps=0)
 
-    with pytest.raises(ValueError, match="requires either"):
+    with pytest.raises(ValueError, match="requires `targets`"):
         jax_train_module.train(
             model,
             optimizer,

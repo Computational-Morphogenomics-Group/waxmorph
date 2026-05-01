@@ -181,84 +181,6 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
     np.testing.assert_allclose(trajectory[0]["pos"], target_frame0.numpy(), atol=1e-6)
 
 
-def test_train_back_compat_wraps_target_pos_into_final_frame():
-    """train(..., target_pos=...) should behave like train(..., targets=[(t_rollout-1, ...)])."""
-    source_pos, polarities, genes, radii = _minimal_inputs()
-    target_pos = source_pos + 0.1
-
-    config = torch_train_module.TrainConfig(
-        n_epochs=2,
-        t_rollout=2,
-        mech_steps=0,
-        diff_steps=0,
-        dt_gns=0.0,
-        log_every=1,
-        grad_clip_norm=None,
-    )
-
-    torch.manual_seed(0)
-    model_a = _make_model(genes.shape[1])
-    opt_a = torch.optim.SGD(model_a.parameters(), lr=0.0)
-    result_legacy = torch_train_module.train(
-        model_a,
-        opt_a,
-        squared_loss,
-        source_pos=source_pos,
-        target_pos=target_pos,
-        polarities=polarities,
-        genes=genes,
-        radii=radii,
-        config=config,
-        device="cpu",
-    )
-
-    torch.manual_seed(0)
-    model_b = _make_model(genes.shape[1])
-    opt_b = torch.optim.SGD(model_b.parameters(), lr=0.0)
-    result_new = torch_train_module.train(
-        model_b,
-        opt_b,
-        squared_loss,
-        source_pos=source_pos,
-        targets=[(config.t_rollout - 1, target_pos)],
-        polarities=polarities,
-        genes=genes,
-        radii=radii,
-        config=config,
-        device="cpu",
-    )
-
-    np.testing.assert_allclose(
-        result_legacy.log["losses_shape"], result_new.log["losses_shape"], atol=1e-6
-    )
-    np.testing.assert_array_equal(
-        result_legacy.log["target_frames"], np.array([config.t_rollout - 1])
-    )
-    np.testing.assert_array_equal(result_new.log["target_frames"], np.array([config.t_rollout - 1]))
-
-
-def test_train_rejects_both_targets_and_target_pos():
-    source_pos, polarities, genes, radii = _minimal_inputs()
-    model = _make_model(genes.shape[1])
-    opt = torch.optim.SGD(model.parameters(), lr=0.0)
-    config = torch_train_module.TrainConfig(n_epochs=1, t_rollout=1, log_every=1)
-
-    with pytest.raises(ValueError, match="Pass `targets` OR `target_pos`"):
-        torch_train_module.train(
-            model,
-            opt,
-            squared_loss,
-            source_pos=source_pos,
-            target_pos=source_pos,
-            targets=[(0, source_pos)],
-            polarities=polarities,
-            genes=genes,
-            radii=radii,
-            config=config,
-            device="cpu",
-        )
-
-
 def test_train_rejects_frame_out_of_range():
     source_pos, polarities, genes, radii = _minimal_inputs()
     model = _make_model(genes.shape[1])
@@ -286,7 +208,7 @@ def test_train_rejects_missing_targets():
     opt = torch.optim.SGD(model.parameters(), lr=0.0)
     config = torch_train_module.TrainConfig(n_epochs=1, t_rollout=1, log_every=1)
 
-    with pytest.raises(ValueError, match="requires either"):
+    with pytest.raises(ValueError, match="requires `targets`"):
         torch_train_module.train(
             model,
             opt,

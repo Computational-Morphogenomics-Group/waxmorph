@@ -327,7 +327,7 @@ def test_train_raises_before_optimizer_step_on_nonfinite_gradients():
             optimizer,
             squared_loss,
             source_pos=source_pos,
-            target_pos=source_pos + 0.1,
+            targets=[(0, source_pos + 0.1)],
             polarities=polarities,
             genes=genes,
             radii=radii,
