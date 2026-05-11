@@ -11,6 +11,7 @@ from waxmorph.graph import (
     build_graph,
     build_node_features,
 )
+from waxmorph.torch.graph import _resolve_device
 
 wp.init()
 
@@ -195,6 +196,25 @@ class TestBuildGraph:
         assert edge_index.shape[0] == 2
         assert edge_feats.shape[1] == 2  # dist, angle
         assert edge_feats.shape[0] == edge_index.shape[1]
+
+
+class TestDeviceResolution:
+    def test_implicit_warp_cuda_device_falls_back_to_cpu_when_torch_cuda_unavailable(
+        self,
+        monkeypatch,
+    ):
+        class FakeWarpArray:
+            device = "cuda:0"
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+        assert _resolve_device(None, FakeWarpArray()) == torch.device("cpu")
+
+    def test_explicit_device_request_is_respected(self):
+        class FakeWarpArray:
+            device = "cpu"
+
+        assert _resolve_device("cuda:0", FakeWarpArray()) == torch.device("cuda:0")
 
 
 class TestTorchGraphGradients:

@@ -30,7 +30,10 @@ def _resolve_device(
         if isinstance(arr, torch.Tensor):
             return arr.device
         if arr is not None:
-            return torch.device(str(arr.device))
+            inferred = torch.device(str(arr.device))
+            if inferred.type == "cuda" and not torch.cuda.is_available():
+                return torch.device("cpu")
+            return inferred
 
     return torch.device("cpu")
 

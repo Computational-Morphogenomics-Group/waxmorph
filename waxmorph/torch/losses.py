@@ -132,7 +132,10 @@ def make_samples_loss(params: dict[str, Any] | None = None, **kwargs: Any) -> Sa
 
     # hausdorff requires an explicit kernel function; default to energy_kernel
     if filtered.get("loss") == "hausdorff" and filtered.get("kernel") is None:
-        from geomloss.kernel_samples import energy_kernel
+        try:
+            from geomloss.kernel_samples import energy_kernel
+        except ImportError:
+            from geomloss._legacy.kernel_samples import energy_kernel
 
         filtered["kernel"] = energy_kernel
 
