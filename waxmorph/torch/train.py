@@ -131,6 +131,82 @@ def _raise_on_nonfinite_named_tensors(
         )
 
 
+def _format_gradient_stats(stats, *, limit: int = 5) -> str:
+    """Format the largest gradient tensors for clipping diagnostics."""
+    if not stats:
+        return "none"
+
+    ordered = sorted(stats, key=lambda item: item["norm"], reverse=True)
+    entries = []
+    for item in ordered[:limit]:
+        entries.append(
+            "{name}: norm={norm:.6g}, max_abs={max_abs:.6g}, "
+            "shape={shape}, dtype={dtype}, device={device}".format(**item)
+        )
+    return "; ".join(entries)
+
+
+def _clip_grad_norm_stable(named_parameters, max_norm: float, *, epoch: int) -> torch.Tensor:
+    """Clip gradients using float64 norm accumulation to avoid fp32 overflow."""
+    grad_entries = [
+        (name, param.grad) for name, param in list(named_parameters) if param.grad is not None
+    ]
+    if not grad_entries:
+        return torch.tensor(0.0, dtype=torch.float64)
+
+    norm_sq_total = torch.zeros((), dtype=torch.float64)
+    stats = []
+    for name, grad in grad_entries:
+        finite_mask = torch.isfinite(grad)
+        if not bool(finite_mask.all()):
+            bad_indices = (~finite_mask).nonzero(as_tuple=False)
+            first_bad = tuple(int(i) for i in bad_indices[0].tolist())
+            bad_value = grad[first_bad].detach().cpu().item()
+            raise ValueError(
+                "Non-finite gradient detected during clipping at epoch "
+                f"{epoch}: parameter={name!r}, total_bad={int((~finite_mask).sum().item())}, "
+                f"first_bad_index={first_bad}, first_bad_value={bad_value!r}"
+            )
+
+        grad_detached = grad.detach()
+        if grad_detached.numel() == 0:
+            norm_sq = torch.zeros((), dtype=torch.float64)
+            grad_norm = 0.0
+            max_abs = 0.0
+        else:
+            grad64 = grad_detached.to(dtype=torch.float64)
+            norm_sq = grad64.square().sum().cpu()
+            grad_norm = torch.sqrt(norm_sq).item()
+            max_abs = grad_detached.abs().max().detach().cpu().item()
+        norm_sq_total = norm_sq_total + norm_sq
+        stats.append(
+            {
+                "name": name,
+                "norm": grad_norm,
+                "max_abs": max_abs,
+                "shape": tuple(grad.shape),
+                "dtype": str(grad.dtype),
+                "device": str(grad.device),
+            }
+        )
+
+    total_norm = torch.sqrt(norm_sq_total)
+    if not torch.isfinite(total_norm):
+        raise ValueError(
+            "Non-finite stable gradient norm during clipping at epoch "
+            f"{epoch}: grad_norm={total_norm.item()!r}; "
+            f"top_gradients={_format_gradient_stats(stats)}"
+        )
+
+    clip_coef = float(max_norm) / (total_norm.item() + 1e-6)
+    if clip_coef < 1.0:
+        with torch.no_grad():
+            for _name, grad in grad_entries:
+                grad.mul_(clip_coef)
+
+    return total_norm
+
+
 def _run_epoch(
     *,
     model,
@@ -368,7 +444,9 @@ def train(
             phase="post-backward",
         )
         if config.grad_clip_norm is not None:
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)
+            grad_norm = _clip_grad_norm_stable(
+                model.named_parameters(), config.grad_clip_norm, epoch=epoch
+            )
             if not torch.isfinite(grad_norm):
                 optimizer.zero_grad(set_to_none=True)
                 raise ValueError(
