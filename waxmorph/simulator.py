@@ -730,6 +730,70 @@ def reaction_step(
     I_next[i] = wp.clamp(Ii_next, 0.0, 1e4)
 
 
+@wp.kernel
+def reaction_step_masked(
+    A: wp.array(dtype=wp.float32),  # (N,)
+    I: wp.array(dtype=wp.float32),  # (N,)
+    R: wp.array(dtype=wp.float32),
+    lapA: wp.array(dtype=wp.float32),  # (N,)
+    lapI: wp.array(dtype=wp.float32),  # (N,)
+    S: wp.array(dtype=wp.float32),
+    T: wp.array(dtype=wp.float32),
+    phi: wp.float32,
+    dt: wp.float32,
+    CT: wp.array(dtype=wp.uint32),
+    reaction_cell_type: wp.uint32,
+    A_next: wp.array(dtype=wp.float32),  # (N,)
+    I_next: wp.array(dtype=wp.float32),  # (N,)
+):
+    """Apply a reaction update only on one cell type, with diffusion everywhere."""
+
+    i = wp.tid()
+
+    # Diffusion with graph laplacian. The temporal scale T is intentionally kept
+    # consistent with reaction_step so masked and unmasked calls use the same
+    # effective diffusion coefficient.
+    diffA = (S[0] * phi) * lapA[i]
+    diffI = phi * lapI[i]
+
+    if CT[i] != reaction_cell_type:
+        Ai_next = A[i] + dt * T[0] * diffA
+        Ii_next = I[i] + dt * T[0] * diffI
+        A_next[i] = wp.clamp(Ai_next, 0.0, 1e4)
+        I_next[i] = wp.clamp(Ii_next, 0.0, 1e4)
+        return
+
+    V = volume_from_radius(R[i])
+
+    # Reaction terms (on concentrations)
+    cA = safe_div(A[i], V)
+    cI = safe_div(I[i], V)
+
+    cA2 = cA * cA
+    ciI = cI
+
+    prodA_lin = safe_div(cA2, ciI)
+    prodA_quad = safe_div(cA2, ciI * ciI)
+
+    prodA = prodA_lin
+    if wp.float32(prodA_quad) < wp.float32(prodA_lin):
+        prodA = prodA_quad
+
+    prodI = cA2
+
+    # Explicit Euler step with temporal scaling
+    zAi = A[i] + dt * T[0] * (diffA + prodA)
+    zIi = I[i] + dt * T[0] * (diffI + prodI)
+
+    # Linear damping on reacting cells only.
+    inv = 1.0 / (1.0 + dt * T[0])
+    Ai_next = zAi * inv
+    Ii_next = zIi * inv
+
+    A_next[i] = wp.clamp(Ai_next, 0.0, 1e4)
+    I_next[i] = wp.clamp(Ii_next, 0.0, 1e4)
+
+
 def chem_step(
     A: wp.array,
     I: wp.array,
@@ -747,8 +811,14 @@ def chem_step(
     device: str = "cuda",
     grad_consist: bool = True,
     grid: "wp.HashGrid | None" = None,
+    *,
+    CT: "wp.array | None" = None,
+    reaction_cell_type: int | None = None,
 ):
     """Run chemistry stage: diffusion laplacian then reaction update."""
+
+    if reaction_cell_type is not None and CT is None:
+        raise ValueError("CT must be provided when reaction_cell_type is set")
 
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + EPS_DIST
@@ -769,14 +839,25 @@ def chem_step(
         lapA.mark_write()
         lapI.mark_write()
 
-    # Update molecules
-    wp.launch(
-        reaction_step,
-        dim=particle_count,
-        inputs=[A, I, R, lapA, lapI, S, T, phi, dt],
-        outputs=[A_next, I_next],
-        device=device,
-    )
+    # Update molecules. By default this is the unmasked chemistry
+    # path. The masked path is opt-in for surface-patterning experiments where
+    # only one cell type should run the local reaction-diffusion updates
+    if reaction_cell_type is None:
+        wp.launch(
+            reaction_step,
+            dim=particle_count,
+            inputs=[A, I, R, lapA, lapI, S, T, phi, dt],
+            outputs=[A_next, I_next],
+            device=device,
+        )
+    else:
+        wp.launch(
+            reaction_step_masked,
+            dim=particle_count,
+            inputs=[A, I, R, lapA, lapI, S, T, phi, dt, CT, wp.uint32(reaction_cell_type)],
+            outputs=[A_next, I_next],
+            device=device,
+        )
 
     # Gradient consistency checks
     if grad_consist:
