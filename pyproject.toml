@@ -51,6 +51,7 @@ optional-dependencies.jax = [
   "jax>=0.4.30",
   "optax>=0.2",
   "ott-jax>=0.4",
+  "waxmorph[simulation]",
 ]
 optional-dependencies.jax-cuda = [
   "jax[cuda12]>=0.4.30",
@@ -60,6 +61,7 @@ optional-dependencies.learning = [
   "geomloss>=0.2.6",
   "pykeops>=2.1",
   "torch>=2",
+  "waxmorph[simulation]",
 ]
 # ---------------------------------------------------------------------------
 # Simulation
