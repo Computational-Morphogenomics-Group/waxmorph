@@ -164,19 +164,16 @@ def sticky_sphere_forces(
         invL2 = wp.float32(1.0) / (atr * atr + EPS_NORM)
         f_att = k_att * (ext + ext * ext * ext * invL2)
 
-        # optional cutoff so distant pairs don't pull across holes
         if dist > d0 + ATR_EE_CUTOFF:
             return wp.vec3f(0.0), wp.vec3f(0.0)
 
     else:
-        # MM/EM: keep your old cohesive band that weakens with distance
         if dist > d0 + atr:
             return wp.vec3f(0.0), wp.vec3f(0.0)
 
         gamma = wp.max((d0 + atr) - dist, wp.float32(0.0)) * wp.float32(dist > d0)
         f_att = k_att * gamma
 
-    # net gradient magnitude (remember you use -u for energy-gradient)
     fmag = f_rep - f_att
     F_ij = fmag * -u
     return F_ij, -F_ij
@@ -262,6 +259,13 @@ def mes_polarity_grads(p_i: wp.vec3f, p_j: wp.vec3f):
     return grad_p_i, grad_p_j
 
 
+@wp.func
+def mes_wnt_polarity_grads(p_i: wp.vec3f, u_to_higher_wnt: wp.vec3f, w_higher: wp.float32):
+    """Gradient of the mesenchymal WNT polarity potential with respect to p_i."""
+    c = wp.dot(p_i, u_to_higher_wnt)
+    return -w_higher * c * u_to_higher_wnt
+
+
 @wp.kernel(enable_backward=False)
 def sticky_sphere_grads(
     grid: wp.uint64,
@@ -330,6 +334,53 @@ def sticky_sphere_grads(
             wp.atomic_add(gp, j, grad_p_j)
 
 
+@wp.kernel(enable_backward=False)
+def sticky_sphere_wnt_grads(
+    grid: wp.uint64,
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
+    P: wp.array(dtype=wp.vec3f),
+    CT: wp.array(dtype=wp.uint32),
+    WNT: wp.array(dtype=wp.float32),
+    query_radius: wp.float32,
+    gp: wp.array(dtype=wp.vec3f),
+):
+    """Accumulate optional WNT-driven mesenchymal polarity gradients only."""
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid, tid)
+
+    x_i = X[i]
+    r_i = R[i]
+    c_i = CT[i]
+    p_i = P[i]
+    w_i = safe_div(WNT[i], volume_from_radius(r_i))
+
+    for j in wp.hash_grid_query(grid, x_i, query_radius):
+        if j <= i:
+            continue
+
+        x_j = X[j]
+        r_j = R[j]
+        dist = wp.norm_l2(x_i - x_j)
+        w = adj_weight(dist, r_i, r_j)
+
+        if not wp.bool(w):
+            continue
+
+        c_j = CT[j]
+        p_j = P[j]
+        w_j = safe_div(WNT[j], volume_from_radius(r_j))
+        dist_safe = dist + EPS_NORM
+
+        if (c_i == wp.uint32(0)) and (w_j > w_i):
+            u_i_to_j = (x_j - x_i) / dist_safe
+            wp.atomic_add(gp, i, mes_wnt_polarity_grads(p_i, u_i_to_j, w_j))
+
+        if (c_j == wp.uint32(0)) and (w_i > w_j):
+            u_j_to_i = (x_i - x_j) / dist_safe
+            wp.atomic_add(gp, j, mes_wnt_polarity_grads(p_j, u_j_to_i, w_i))
+
+
 @wp.kernel
 def gd_update(
     X: wp.array(dtype=wp.vec3f),  # (N, 3)
@@ -370,6 +421,8 @@ def mech_step_sticky(
     device: str = "cuda",
     grad_consist: bool = False,
     grid: "wp.HashGrid | None" = None,
+    *,
+    wnt: "wp.array | None" = None,
 ):
     """Execute one mechanics step for positions and polarities.
 
@@ -396,6 +449,15 @@ def mech_step_sticky(
         outputs=[gx, gp],
         device=device,
     )
+
+    if wnt is not None:
+        wp.launch(
+            sticky_sphere_wnt_grads,
+            dim=particle_count,
+            inputs=[wp.uint64(grid.id), X, R, P, CT, wnt, query_radius],
+            outputs=[gp],
+            device=device,
+        )
 
     if grad_consist:
         gx.mark_write()
@@ -500,6 +562,17 @@ def mes_polarity_potential(p_i: wp.vec3f, p_j: wp.vec3f) -> wp.float32:
     return wp.float32(-0.5) * c * c
 
 
+@wp.func
+def mes_wnt_polarity_potential(
+    p_i: wp.vec3f,
+    u_to_higher_wnt: wp.vec3f,
+    w_higher: wp.float32,
+) -> wp.float32:
+    """Scalar WNT potential for mesenchymal polarity torque only."""
+    c = wp.dot(p_i, u_to_higher_wnt)
+    return wp.float32(-0.5) * w_higher * c * c
+
+
 @wp.kernel(enable_backward=False)
 def sticky_sphere_grads_implicit(
     grid: wp.uint64,
@@ -570,6 +643,55 @@ def sticky_sphere_grads_implicit(
             wp.atomic_add(gp, j, grad_p_j)
 
 
+@wp.kernel(enable_backward=False)
+def sticky_sphere_wnt_grads_implicit(
+    grid: wp.uint64,
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
+    P: wp.array(dtype=wp.vec3f),
+    CT: wp.array(dtype=wp.uint32),
+    WNT: wp.array(dtype=wp.float32),
+    query_radius: wp.float32,
+    gp: wp.array(dtype=wp.vec3f),
+):
+    """Autodiff counterpart of ``sticky_sphere_wnt_grads``."""
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid, tid)
+
+    x_i = X[i]
+    r_i = R[i]
+    c_i = CT[i]
+    p_i = P[i]
+    w_i = safe_div(WNT[i], volume_from_radius(r_i))
+
+    for j in wp.hash_grid_query(grid, x_i, query_radius):
+        if j <= i:
+            continue
+
+        x_j = X[j]
+        r_j = R[j]
+        dist = wp.norm_l2(x_i - x_j)
+        w = adj_weight(dist, r_i, r_j)
+
+        if not wp.bool(w):
+            continue
+
+        c_j = CT[j]
+        p_j = P[j]
+        w_j = safe_div(WNT[j], volume_from_radius(r_j))
+        dist_safe = dist + EPS_NORM
+
+        if (c_i == wp.uint32(0)) and (w_j > w_i):
+            u_i_to_j = (x_j - x_i) / dist_safe
+            grad_p_i, _grad_u_i, _grad_w_i = wp.grad(mes_wnt_polarity_potential)(p_i, u_i_to_j, w_j)
+            wp.atomic_add(gp, i, grad_p_i)
+
+        if (c_j == wp.uint32(0)) and (w_i > w_j):
+            u_j_to_i = (x_i - x_j) / dist_safe
+            grad_p_j, _grad_u_j, _grad_w_j = wp.grad(mes_wnt_polarity_potential)(p_j, u_j_to_i, w_i)
+            wp.atomic_add(gp, j, grad_p_j)
+
+
 def mech_step_sticky_implicit(
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
@@ -581,6 +703,8 @@ def mech_step_sticky_implicit(
     P_next: wp.array(dtype=wp.vec3f),
     device: str = "cuda",
     grid: "wp.HashGrid | None" = None,
+    *,
+    wnt: "wp.array | None" = None,
 ):
     """Mechanics step matching ``mech_step_sticky`` but using :func:`warp.grad` locally."""
 
@@ -600,6 +724,15 @@ def mech_step_sticky_implicit(
         outputs=[gx, gp],
         device=device,
     )
+
+    if wnt is not None:
+        wp.launch(
+            sticky_sphere_wnt_grads_implicit,
+            dim=particle_count,
+            inputs=[wp.uint64(grid.id), X, R, P, CT, wnt, query_radius],
+            outputs=[gp],
+            device=device,
+        )
 
     wp.launch(
         gd_update,
@@ -1178,6 +1311,68 @@ def division_logic(
         a = wp.vec3f(0.0, 1.0, 0.0)
 
     u = wp.normalize(wp.cross(v, a))
+
+    x = X[parent]
+    sep = 1.02 * r
+    X[parent] = x + u * sep
+    X[child] = x - u * sep
+
+
+@wp.kernel
+def division_logic_mes_polarity(
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
+    R_eq: wp.array(dtype=wp.float32),
+    A: wp.array(dtype=wp.float32),
+    I: wp.array(dtype=wp.float32),
+    P: wp.array(dtype=wp.vec3f),
+    CT: wp.array(dtype=wp.uint32),
+    div_slots: wp.array(dtype=wp.int32),
+):
+    """Apply divisions with mesenchymal daughters separated along polarity."""
+
+    parent = wp.tid()
+
+    child = div_slots[parent]
+
+    if child == -1:
+        return
+
+    # Split chemical states evenly
+    a_p, i_p = A[parent], I[parent]
+    A[parent] = 0.5 * a_p
+    A[child] = 0.5 * a_p
+    I[parent] = 0.5 * i_p
+    I[child] = 0.5 * i_p
+
+    # Randomly generate new cell
+    ct = CT[parent]
+    CT[child] = ct
+
+    # Half volume, cuberoot 2 r
+    r = R[parent]
+
+    # Epithelium extends, mesenchyme splits in half volume
+    if ct == wp.uint32(0):
+        r = r / wp.cbrt(2.0)
+
+    R[child] = r
+    R_eq[child] = r
+    R[parent] = r
+    R_eq[parent] = r
+
+    # Pass parent polarity
+    v = P[parent]
+    P[child] = v
+
+    u = wp.normalize(v)
+    if ct == wp.uint32(1):
+        # Polarized epithelial division remains on the perpendicular surface.
+        a = wp.vec3f(1.0, 0.0, 0.0)
+        if wp.abs(v[0]) > wp.float32(0.9):
+            a = wp.vec3f(0.0, 1.0, 0.0)
+
+        u = wp.normalize(wp.cross(v, a))
 
     x = X[parent]
     sep = 1.02 * r

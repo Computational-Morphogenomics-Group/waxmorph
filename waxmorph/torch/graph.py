@@ -176,7 +176,7 @@ def build_edge_features(
 
     Feature layout per edge ``(i -> j)``::
 
-        [dist, angle(P_i, P_j)]
+        [dist(X_i, X_j), angle(P_i, P_j)]
 
     Dimensions: ``1 + 1 = 2``.
 
