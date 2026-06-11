@@ -227,7 +227,7 @@ class PyVistaInterface(RenderInterface):
         m = np.asarray(morphogens).astype(float)
         m = np.clip(m, 0.0, 1.0)
         rgb_float = colors.hsv_to_rgb(
-            np.stack([np.full(shape=m.shape, fill_value=0.5), m, np.ones_like(m)], axis=-1)
+            np.stack([np.full(shape=m.shape, fill_value=0.08), m, np.ones_like(m)], axis=-1)
         )  # (N,3) in [0,1]
         return (rgb_float * 255).astype(np.uint8)
 
