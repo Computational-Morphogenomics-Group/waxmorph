@@ -22,8 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Variable and notation alignment with the waxMorph manuscript: per-cell signaling-molecule concentrations are now `c` (was `genes`/`G`) with count `num_molecules` (was `num_genes`); the predicted molecular increment is `dc` (was `dG`); `TrainConfig.D_emu` replaces `alpha_diff` and `TrainConfig.lambda_reg` replaces `l2_lambda`; training-log keys use `best_traj_c` (was `best_traj_genes`); simulator reaction-diffusion parameters are `chi`, `gamma`, and `D_inhib`, and growth parameters are `alpha_grow` and `ell_sw`.
 - Plain JAX installs now use the CPU-compatible JAX extra; CUDA JAX support is exposed through `waxmorph[jax-cuda]`.
-- Documentation now describes non-growing emulator training as the implemented training mode.
 
 ### Removed
 

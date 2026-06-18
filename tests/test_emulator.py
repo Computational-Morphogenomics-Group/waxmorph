@@ -19,7 +19,7 @@ except RuntimeError:
     DEVICE = "cpu"
 
 
-def _make_cluster(positions, radii, num_genes=2):
+def _make_cluster(positions, radii, num_molecules=2):
     """Build Warp arrays for a small particle cluster."""
     n = len(positions)
     max_p = n
@@ -34,13 +34,13 @@ def _make_cluster(positions, radii, num_genes=2):
     pol[:, 2] = 1.0
     P = wp.from_numpy(pol, dtype=wp.vec3f, device=DEVICE)
 
-    genes = np.ones((max_p, num_genes), dtype=np.float32) * 0.5
-    G = wp.from_numpy(genes, dtype=wp.float32, device=DEVICE)
+    c_init = np.ones((max_p, num_molecules), dtype=np.float32) * 0.5
+    c = wp.from_numpy(c_init, dtype=wp.float32, device=DEVICE)
 
-    gx = wp.zeros(max_p, dtype=wp.vec3f, device=DEVICE)
-    lap_G = wp.zeros_like(G)
+    f_net = wp.zeros(max_p, dtype=wp.vec3f, device=DEVICE)
+    lap_c = wp.zeros_like(c)
 
-    return X, R, P, G, gx, lap_G, n
+    return X, R, P, c, f_net, lap_c, n
 
 
 class TestDifferentiableNeighborPairOverflow:
@@ -48,10 +48,10 @@ class TestDifferentiableNeighborPairOverflow:
         """Dense contact graphs should resize pair buffers instead of indexing past them."""
         positions = np.zeros((50, 3), dtype=np.float32)
         radii = np.full(50, 0.5, dtype=np.float32)
-        X, R, _P, _G, gx, _lap_G, n = _make_cluster(positions, radii)
+        X, R, _P, _c, f_net, _lap_c, n = _make_cluster(positions, radii)
 
         tape = wp.Tape()
-        X_out = mech_step_sticky_differentiable(tape, X, R, n, dt=0.01, gx=gx)
+        X_out = mech_step_sticky_differentiable(tape, X, R, n, dt=0.01, f_net=f_net)
 
         x_after = X_out.numpy()
         assert x_after.shape == (n, 3)
@@ -61,20 +61,20 @@ class TestDifferentiableNeighborPairOverflow:
         """Dense contact graphs should resize diffusion pair buffers instead of overflowing."""
         positions = np.zeros((50, 3), dtype=np.float32)
         radii = np.full(50, 0.5, dtype=np.float32)
-        X, R, _P, G, _gx, lap_G, n = _make_cluster(positions, radii, num_genes=2)
+        X, R, _P, c, _f_net, lap_c, n = _make_cluster(positions, radii, num_molecules=2)
 
         tape = wp.Tape()
-        G_out = diffusion_step_differentiable(
+        c_out = diffusion_step_differentiable(
             tape,
             X,
             R,
-            G,
-            lap_G,
+            c,
+            lap_c,
             n,
-            alpha=0.1,
+            D_emu=0.1,
             dt=0.01,
         )
 
-        g_after = G_out.numpy()
+        g_after = c_out.numpy()
         assert g_after.shape == (n, 2)
         assert np.isfinite(g_after).all()

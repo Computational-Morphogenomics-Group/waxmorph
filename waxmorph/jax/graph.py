@@ -120,33 +120,33 @@ def build_edge_index(
 
 
 def build_node_features(
-    G,
+    c,
     particle_count: int,
 ) -> jax.Array:
-    """Assemble per-node gene features from Warp or JAX arrays.
+    """Assemble per-node signaling-molecule features from Warp or JAX arrays.
 
     Feature layout per node::
 
-        [g_0, g_1, ..., g_{G-1}]
+        [c_0, c_1, ..., c_{C-1}]
 
     Args:
-        G: Gene concentration array. One-dimensional arrays are promoted to
-            shape ``[N, 1]``.
+        c: Signaling-molecule concentration array. One-dimensional arrays are
+            promoted to shape ``[N, 1]``.
         particle_count: Number of active particles. Non-positive values use
             the full array.
 
     Returns:
-        Float :class:`jax.Array` with shape ``[N, G]``.
+        Float :class:`jax.Array` with shape ``[N, C]``.
 
     Examples:
-        >>> G = jnp.array([0.2, 0.4, 0.8])
-        >>> print(build_node_features(G, 3).tolist())
+        >>> c = jnp.array([0.2, 0.4, 0.8])
+        >>> print(build_node_features(c, 3).tolist())
         [[0.20000000298023224], [0.4000000059604645], [0.800000011920929]]
     """
-    genes = _as_jax(G, particle_count).astype(jnp.float32)
-    if genes.ndim == 1:
-        genes = genes[..., None]
-    return genes
+    c = _as_jax(c, particle_count).astype(jnp.float32)
+    if c.ndim == 1:
+        c = c[..., None]
+    return c
 
 
 def build_edge_features(
@@ -211,7 +211,7 @@ def build_graph(
     P,
     R,
     particle_count: int = 0,
-    G=None,
+    c=None,
     eps_dist: float = EPS_DIST,
     max_edges: int | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
@@ -223,7 +223,7 @@ def build_graph(
         R: Radius array with shape ``[N]``.
         particle_count: Number of active particles. Non-positive values use
             the full arrays.
-        G: Gene concentration array.
+        c: Signaling-molecule concentration array.
         eps_dist: Contact buffer distance.
         max_edges: Optional capacity passed to :func:`build_edge_index`.
 
@@ -232,12 +232,12 @@ def build_graph(
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
-        >>> P, R, G = jnp.ones((3, 3)), jnp.array([0.6, 0.6, 0.6]), jnp.ones(3)
-        >>> out = build_graph(X, P, R, 3, G, eps_dist=0.0)
+        >>> P, R, c = jnp.ones((3, 3)), jnp.array([0.6, 0.6, 0.6]), jnp.ones(3)
+        >>> out = build_graph(X, P, R, 3, c, eps_dist=0.0)
         >>> print([tuple(a.shape) for a in out[:3]], int(out[3]))
         [(3, 1), (2, 2), (2, 2)] 2
     """
     edge_index, num_edges = build_edge_index(X, R, particle_count, eps_dist, max_edges)
-    node_features = build_node_features(G, particle_count)
+    node_features = build_node_features(c, particle_count)
     edge_features = build_edge_features(X, P, edge_index, particle_count)
     return node_features, edge_index, edge_features, num_edges

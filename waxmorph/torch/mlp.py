@@ -57,16 +57,19 @@ class MLP(nn.Module):
         layers: list[nn.Module] = []
 
         if num_layers == 1:
+            # single linear map, no activation
             layers.append(nn.Linear(input_dim, output_dim))
         else:
             layers.append(nn.Linear(input_dim, hidden_dim))
             layers.append(act_cls())
+            # num_layers - 2 hidden blocks (input + output projections account for the other 2)
             for _ in range(num_layers - 2):
                 layers.append(nn.Linear(hidden_dim, hidden_dim))
                 layers.append(act_cls())
             layers.append(nn.Linear(hidden_dim, output_dim))
 
         if layer_norm:
+            # normalize over output_dim, after final projection
             layers.append(nn.LayerNorm(output_dim))
 
         self.net = nn.Sequential(*layers)

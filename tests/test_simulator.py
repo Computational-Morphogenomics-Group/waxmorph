@@ -201,7 +201,7 @@ class TestMechStepSticky:
     def test_returns_gradients(self):
         """mech_step_sticky should return the position gradient array."""
         s = _sphere_state(20, 40)
-        gx = simulator.mech_step_sticky(
+        f_net = simulator.mech_step_sticky(
             s["X"],
             s["R"],
             s["P"],
@@ -213,8 +213,8 @@ class TestMechStepSticky:
             device=DEVICE,
             grad_consist=False,
         )
-        assert gx is not None
-        assert gx.shape[0] == s["max_particles"]
+        assert f_net is not None
+        assert f_net.shape[0] == s["max_particles"]
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +237,8 @@ class TestChemStep:
 
         lapA = wp.zeros_like(A, device=DEVICE)
         lapI = wp.zeros_like(Inh, device=DEVICE)
-        S = wp.full(1, value=2e-2, dtype=wp.float32, device=DEVICE)
-        T = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
+        chi = wp.full(1, value=2e-2, dtype=wp.float32, device=DEVICE)
+        gamma = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
 
         a_before = A.numpy().copy()
 
@@ -252,8 +252,8 @@ class TestChemStep:
                 s["R"],
                 lapA,
                 lapI,
-                S,
-                T,
+                chi,
+                gamma,
                 10.0,
                 0.01,
                 s["particle_count"],
@@ -277,8 +277,8 @@ class TestChemStep:
         A, Inh = s["A"], s["I"]
         lapA = wp.zeros_like(A, device=DEVICE)
         lapI = wp.zeros_like(Inh, device=DEVICE)
-        S = wp.full(1, value=5e-3, dtype=wp.float32, device=DEVICE)
-        T = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
+        chi = wp.full(1, value=5e-3, dtype=wp.float32, device=DEVICE)
+        gamma = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
 
         for _ in range(100):
             lapA.zero_()
@@ -290,8 +290,8 @@ class TestChemStep:
                 s["R"],
                 lapA,
                 lapI,
-                S,
-                T,
+                chi,
+                gamma,
                 10.0,
                 0.1,
                 s["particle_count"],
@@ -310,8 +310,8 @@ class TestChemStep:
         A, Inh = s["A"], s["I"]
         lapA = wp.zeros_like(A, device=DEVICE)
         lapI = wp.zeros_like(Inh, device=DEVICE)
-        S = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
-        T = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
+        chi = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
+        gamma = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
 
         lapA.zero_()
         lapI.zero_()
@@ -322,8 +322,8 @@ class TestChemStep:
             s["R"],
             lapA,
             lapI,
-            S,
-            T,
+            chi,
+            gamma,
             10.0,
             0.01,
             s["particle_count"],
@@ -344,8 +344,8 @@ class TestGrowthStep:
         """Mesenchymal cells with activator should grow."""
         s = _sphere_state(30, 60)
         keys = simulator.gen_key_array(s["max_particles"], device=DEVICE)
-        AP = wp.full(1, value=10.0, dtype=wp.float32, device=DEVICE)
-        SC = wp.full(1, value=1e-1, dtype=wp.float32, device=DEVICE)
+        alpha_grow = wp.full(1, value=10.0, dtype=wp.float32, device=DEVICE)
+        ell_sw = wp.full(1, value=1e-1, dtype=wp.float32, device=DEVICE)
 
         r_before = s["R"].numpy()[:30].copy()
 
@@ -356,8 +356,8 @@ class TestGrowthStep:
                 s["A"],
                 s["CT"],
                 keys,
-                AP,
-                SC,
+                alpha_grow,
+                ell_sw,
                 1e-2,
                 0.6,
                 0.85,
@@ -377,8 +377,8 @@ class TestGrowthStep:
         """Epithelial radii should trend toward R_ref."""
         s = _sphere_state(30, 60, radius=0.4)
         keys = simulator.gen_key_array(s["max_particles"], device=DEVICE)
-        AP = wp.full(1, value=10.0, dtype=wp.float32, device=DEVICE)
-        SC = wp.full(1, value=1e-1, dtype=wp.float32, device=DEVICE)
+        alpha_grow = wp.full(1, value=10.0, dtype=wp.float32, device=DEVICE)
+        ell_sw = wp.full(1, value=1e-1, dtype=wp.float32, device=DEVICE)
         R_ref = 0.6
 
         for _ in range(1000):
@@ -388,8 +388,8 @@ class TestGrowthStep:
                 s["A"],
                 s["CT"],
                 keys,
-                AP,
-                SC,
+                alpha_grow,
+                ell_sw,
                 1e-2,
                 R_ref,
                 0.85,
@@ -472,8 +472,8 @@ class TestDivision:
         keys = simulator.gen_key_array(s["max_particles"], device=DEVICE)
 
         # Grow mesenchyme so they become eligible for division
-        AP = wp.full(1, value=10.0, dtype=wp.float32, device=DEVICE)
-        SC = wp.full(1, value=1e-1, dtype=wp.float32, device=DEVICE)
+        alpha_grow = wp.full(1, value=10.0, dtype=wp.float32, device=DEVICE)
+        ell_sw = wp.full(1, value=1e-1, dtype=wp.float32, device=DEVICE)
         for _ in range(2000):
             simulator.growth_step(
                 s["R"],
@@ -481,8 +481,8 @@ class TestDivision:
                 s["A"],
                 s["CT"],
                 keys,
-                AP,
-                SC,
+                alpha_grow,
+                ell_sw,
                 1e-2,
                 0.6,
                 1.4,
@@ -562,8 +562,8 @@ class TestDivision:
         keys = simulator.gen_key_array(s["max_particles"], device=DEVICE)
 
         # Grow to make division likely
-        AP = wp.full(1, value=10.0, dtype=wp.float32, device=DEVICE)
-        SC = wp.full(1, value=1e-1, dtype=wp.float32, device=DEVICE)
+        alpha_grow = wp.full(1, value=10.0, dtype=wp.float32, device=DEVICE)
+        ell_sw = wp.full(1, value=1e-1, dtype=wp.float32, device=DEVICE)
         for _ in range(3000):
             simulator.growth_step(
                 s["R"],
@@ -571,8 +571,8 @@ class TestDivision:
                 s["A"],
                 s["CT"],
                 keys,
-                AP,
-                SC,
+                alpha_grow,
+                ell_sw,
                 1e-2,
                 0.6,
                 1.4,
@@ -715,8 +715,8 @@ class TestFullPipeline:
         dt_chem = 5e-2
         lapA = wp.zeros_like(s["A"], device=DEVICE)
         lapI = wp.zeros_like(s["I"], device=DEVICE)
-        S = wp.full(1, value=5e-3, dtype=wp.float32, device=DEVICE)
-        T = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
+        chi = wp.full(1, value=5e-3, dtype=wp.float32, device=DEVICE)
+        gamma = wp.full(1, value=1e-2, dtype=wp.float32, device=DEVICE)
 
         # Relax mechanics
         for _ in range(100):
@@ -744,8 +744,8 @@ class TestFullPipeline:
                 s["R"],
                 lapA,
                 lapI,
-                S,
-                T,
+                chi,
+                gamma,
                 10.0,
                 dt_chem,
                 s["particle_count"],

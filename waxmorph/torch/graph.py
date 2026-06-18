@@ -142,7 +142,7 @@ def build_edge_index(
 
 
 def build_node_features(
-    G: torch.Tensor | wp.array,
+    c: torch.Tensor | wp.array,
     particle_count: int,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
@@ -150,19 +150,19 @@ def build_node_features(
 
     Feature layout per node::
 
-        [g_0, g_1, ..., g_{G-1}]
+        [c_0, c_1, ..., c_{num_molecules-1}]
 
-    Dimensions: ``G`` (number of genes).
+    Dimensions: ``num_molecules`` (number of signaling molecules).
 
     Examples:
-        >>> G = torch.tensor([0.2, 0.4, 0.8])
-        >>> print(build_node_features(G, 3).tolist())
+        >>> c = torch.tensor([0.2, 0.4, 0.8])
+        >>> print(build_node_features(c, 3).tolist())
         [[0.20000000298023224], [0.4000000059604645], [0.800000011920929]]
     """
-    genes = _as_torch(G, particle_count, device).float()
-    if genes.ndim == 1:
-        genes = genes.unsqueeze(-1)
-    return genes
+    c = _as_torch(c, particle_count, device).float()
+    if c.ndim == 1:
+        c = c.unsqueeze(-1)
+    return c
 
 
 def build_edge_features(
@@ -212,7 +212,7 @@ def build_graph(
     P: torch.Tensor | wp.array,
     R: torch.Tensor | wp.array,
     particle_count: int = 0,
-    G: torch.Tensor | wp.array | None = None,
+    c: torch.Tensor | wp.array | None = None,
     eps_dist: float = EPS_DIST,
     device: torch.device | str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -225,11 +225,11 @@ def build_graph(
 
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
-        >>> P, R, G = torch.ones(3, 3), torch.tensor([0.6, 0.6, 0.6]), torch.ones(3)
-        >>> print([tuple(t.shape) for t in build_graph(X, P, R, 3, G, eps_dist=0.0)])
+        >>> P, R, c = torch.ones(3, 3), torch.tensor([0.6, 0.6, 0.6]), torch.ones(3)
+        >>> print([tuple(t.shape) for t in build_graph(X, P, R, 3, c, eps_dist=0.0)])
         [(3, 1), (2, 2), (2, 2)]
     """
     edge_index = build_edge_index(X, R, particle_count, eps_dist, device)
-    node_features = build_node_features(G, particle_count, device)
+    node_features = build_node_features(c, particle_count, device)
     edge_features = build_edge_features(X, P, edge_index, particle_count, device)
     return node_features, edge_index, edge_features

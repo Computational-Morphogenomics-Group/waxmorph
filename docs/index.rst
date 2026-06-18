@@ -1,34 +1,39 @@
 waxmorph
 ========
 
-WaxMorph is a joint framework for forward simulation and inverse learning of
-biophysical shape assembly. It represents tissues as interacting spheroidal
-agents, uses local contact graphs to describe who can mechanically or
-biochemically influence whom, and provides graph-network emulators that can be
-trained to reproduce target shapes or target shape sequences.
+waxMorph is a joint framework for forward simulation and inverse design of
+biophysical shape assembly. Tissues are represented as populations of
+interacting three-dimensional spheroidal agents, spatial adjacency graphs
+encode which agents may exert mechanical or biochemical influence on one
+another, and graph-network-based emulators are trained to reproduce target
+morphologies or target morphology sequences.
 
-The package is intended for two connected modes of use:
+The framework supports two connected modes of use:
 
-* **Forward simulation**: generate mechanochemical trajectories from explicit
-  rules for adhesion, repulsion, polarity, reaction-diffusion, and division.
-* **Inverse learning / emulation**: train graph neural networks to learn local
-  update rules that transform an initial spheroidal cell population into one or
-  more target morphologies while retaining differentiable physics corrections.
+* **Forward simulation**: mechanochemical trajectories are generated from
+  explicit rules for adhesion, volume exclusion, polarity, reaction-diffusion,
+  and division.
+* **Inverse design / learned emulation**: a graph-network-based simulator
+  (GNS) learns local, neighbor-dependent update rules that transform an initial
+  spheroidal cell population into one or more target morphologies, while
+  differentiable physical constraints guide tissue-scale assembly.
 
-The central modelling assumption is local: each cell-like agent carries a
-position, radius, polarity vector, gene or morphogen state, and optional cell
-type; interactions are evaluated on contact neighborhoods rather than on a
-global image grid. This makes the same representation natural for biologists
-who start from segmented shapes or meshes, and for biophysicists who want to
-write down or learn local rules of tissue organization.
+The central modelling assumption is locality. Each cellular agent carries a
+position, volume, polarity vector, signaling molecule concentrations, and an
+optional cell type; interactions are evaluated over contact neighborhoods
+rather than over a global image grid. Local neighborhoods are induced by
+spatial proximity and rebuilt as tissues deform. The same representation
+therefore applies both to morphologies obtained from segmented shapes or meshes
+and to mechanistic models in which local rules of tissue organization are
+specified or learned.
 
 Where to start
 --------------
 
-New users should begin with :doc:`getting_started`, then read
-:doc:`concepts` for the vocabulary used across the package. Users adapting the
-package to a new biological system will usually need :doc:`workflows` and then
-the :doc:`api` reference.
+A first introduction is provided in :doc:`getting_started`, followed by
+:doc:`concepts` for the vocabulary used throughout the framework. Adapting the
+framework to a new biological system typically requires :doc:`workflows`
+together with the :doc:`api` reference.
 
 .. toctree::
    :maxdepth: 2

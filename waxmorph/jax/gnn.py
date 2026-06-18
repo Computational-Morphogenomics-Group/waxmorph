@@ -23,6 +23,10 @@ class GraphNetworkBlock(eqx.Module):
     Both edge and node latents use residual connections. The module subclasses
     :class:`equinox.Module`.
 
+    Paper correspondence:
+        edge_mlp=f_psi (message fn), node_mlp=f_pi (node-update fn);
+        node_latent=u, edge_latent=w, message=eta, node-update=zeta.
+
     Args:
         node_latent_dim: Width of node latent vectors.
         edge_latent_dim: Width of edge latent vectors.
@@ -95,24 +99,24 @@ class GraphNetworkBlock(eqx.Module):
         """
         senders, receivers = edge_index[0], edge_index[1]
 
-        # --- Edge update ---
+        # Edge update (f_psi): message eta from [sender u, receiver u, edge w], residual
         edge_input = jnp.concatenate(
             [node_latent[senders], node_latent[receivers], edge_latent],
             axis=-1,
         )
         edge_latent_new = edge_latent + self.edge_mlp(edge_input)
 
-        # --- Mask out padding edges before aggregation ---
+        # Zero padding messages so they contribute 0 to the aggregation (static-shape JIT)
         if num_edges is not None:
             mask = jnp.arange(edge_latent_new.shape[0]) < num_edges
             edge_latent_new = jnp.where(mask[:, None], edge_latent_new, 0.0)
 
-        # --- Aggregate incoming messages per receiver (sum) ---
+        # Aggregate messages: sum eta over incoming edges per receiver via scatter-add
         num_nodes = node_latent.shape[0]
         agg = jnp.zeros((num_nodes, edge_latent_new.shape[-1]), dtype=node_latent.dtype)
         agg = agg.at[receivers].add(edge_latent_new)
 
-        # --- Node update ---
+        # Node update (f_pi): zeta from [node u, aggregated msgs], residual
         node_input = jnp.concatenate([node_latent, agg], axis=-1)
         node_latent_new = node_latent + self.node_mlp(node_input)
 
@@ -121,6 +125,10 @@ class GraphNetworkBlock(eqx.Module):
 
 class GNS(eqx.Module):
     """Full Encode-Process-Decode Graph Network Simulator.
+
+    Paper correspondence:
+        node_encoder=f_phi, edge_encoder=f_rho; processor runs M=num_mp_steps
+        GraphNetworkBlock steps; decoders {dX:f_omega, dP:f_mu, dc:f_nu}.
 
     Args:
         node_feature_dim: Raw node feature dimensionality.
@@ -132,7 +140,7 @@ class GNS(eqx.Module):
         num_mlp_layers: Number of linear layers in each encoder, processor,
             and decoder MLP.
         output_dims: Mapping from output head name to per-node output
-            dimensionality. Defaults to ``{"dX": 3, "dP": 3, "dG": 2}``.
+            dimensionality. Defaults to ``{"dX": 3, "dP": 3, "dc": 2}``.
         activation: Activation function name accepted by
             :class:`waxmorph.jax.mlp.MLP`.
         layer_norm: Whether to apply :class:`equinox.nn.LayerNorm` in encoder
@@ -176,7 +184,7 @@ class GNS(eqx.Module):
         self.checkpoint_processor = checkpoint_processor
 
         if output_dims is None:
-            output_dims = {"dX": 3, "dP": 3, "dG": 2}
+            output_dims = {"dX": 3, "dP": 3, "dc": 2}
 
         self._config = {
             "node_feature_dim": node_feature_dim,
@@ -263,11 +271,11 @@ class GNS(eqx.Module):
             Dictionary mapping each output head name to an array with shape
             ``[N, output_dim]``.
         """
-        # Encode
+        # Encode: raw features -> latents (f_phi nodes, f_rho edges)
         node_latent = self.node_encoder(node_features)
         edge_latent = self.edge_encoder(edge_features)
 
-        # Process
+        # Process: M message-passing rounds, optionally rematerialized in backward to save memory
         for block in self.processor:
             if self.checkpoint_processor:
                 node_latent, edge_latent = eqx.filter_checkpoint(block)(
@@ -284,7 +292,7 @@ class GNS(eqx.Module):
                     num_edges,
                 )
 
-        # Decode
+        # Decode: per-head MLP maps final node latent -> output field (f_omega/f_mu/f_nu)
         if self.checkpoint_processor:
             return {
                 name: eqx.filter_checkpoint(dec)(node_latent) for name, dec in self.decoders.items()

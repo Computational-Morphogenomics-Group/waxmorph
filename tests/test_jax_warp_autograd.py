@@ -44,15 +44,15 @@ def test_mechanics_bridge_has_jax_gradients():
 @pytest.mark.skipif(not _has_jax_warp_cuda(), reason="JAX/Warp bridge requires CUDA")
 def test_diffusion_bridge_has_jax_gradients():
     with jax.default_device(jax.devices("gpu")[0]):
-        genes = jnp.array([[1.0, 0.0], [0.0, 2.0]], dtype=jnp.float32)
+        c = jnp.array([[1.0, 0.0], [0.0, 2.0]], dtype=jnp.float32)
         pair_i = jnp.array([0], dtype=jnp.int32)
         pair_j = jnp.array([1], dtype=jnp.int32)
 
-    def loss_fn(g_in):
-        g_out = warp_diffusion_step(g_in, pair_i, pair_j, 0.1, 1e-2, device="cuda")
-        return jnp.sum(g_out**2)
+    def loss_fn(c_in):
+        c_out = warp_diffusion_step(c_in, pair_i, pair_j, 0.1, 1e-2, device="cuda")
+        return jnp.sum(c_out**2)
 
-    grad = jax.grad(loss_fn)(genes)
+    grad = jax.grad(loss_fn)(c)
     assert jnp.isfinite(grad).all()
     assert jnp.abs(grad).sum() > 0
 
@@ -86,15 +86,15 @@ def test_padded_mechanics_pairs_match_unpadded():
 @pytest.mark.skipif(not _has_jax_warp_cuda(), reason="JAX/Warp bridge requires CUDA")
 def test_padded_diffusion_pairs_match_unpadded_and_zero_pairs_noop():
     with jax.default_device(jax.devices("gpu")[0]):
-        genes = jnp.array([[1.0, 0.0], [0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+        c = jnp.array([[1.0, 0.0], [0.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
         pair_i = jnp.array([0], dtype=jnp.int32)
         pair_j = jnp.array([1], dtype=jnp.int32)
         pair_i_padded = jnp.array([0, 0, 0], dtype=jnp.int32)
         pair_j_padded = jnp.array([1, 0, 0], dtype=jnp.int32)
 
-    expected = warp_diffusion_step(genes, pair_i, pair_j, 0.1, 1e-2, device="cuda")
+    expected = warp_diffusion_step(c, pair_i, pair_j, 0.1, 1e-2, device="cuda")
     actual = warp_diffusion_step(
-        genes,
+        c,
         pair_i_padded,
         pair_j_padded,
         0.1,
@@ -103,7 +103,7 @@ def test_padded_diffusion_pairs_match_unpadded_and_zero_pairs_noop():
         device="cuda",
     )
     noop = warp_diffusion_step(
-        genes,
+        c,
         pair_i_padded,
         pair_j_padded,
         0.1,
@@ -113,4 +113,4 @@ def test_padded_diffusion_pairs_match_unpadded_and_zero_pairs_noop():
     )
 
     assert jnp.allclose(actual, expected, atol=1e-6)
-    assert jnp.allclose(noop, genes, atol=1e-6)
+    assert jnp.allclose(noop, c, atol=1e-6)

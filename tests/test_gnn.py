@@ -48,16 +48,16 @@ class TestGraphNetworkBlock:
 
 class TestGNS:
     def test_forward_shapes(self):
-        N, G = 50, 2
+        N, num_molecules = 50, 2
         E = 200
-        F_node = 9 + G
+        F_node = 9 + num_molecules
         F_edge = 7
 
         gns = GNS(
             node_feature_dim=F_node,
             edge_feature_dim=F_edge,
             num_mp_steps=3,
-            output_dims={"dX": 3, "dP": 3, "dG": G},
+            output_dims={"dX": 3, "dP": 3, "dc": num_molecules},
         )
 
         node_feat = torch.randn(N, F_node)
@@ -66,10 +66,10 @@ class TestGNS:
 
         out = gns(node_feat, edge_idx, edge_feat)
 
-        assert set(out.keys()) == {"dX", "dP", "dG"}
+        assert set(out.keys()) == {"dX", "dP", "dc"}
         assert out["dX"].shape == (N, 3)
         assert out["dP"].shape == (N, 3)
-        assert out["dG"].shape == (N, G)
+        assert out["dc"].shape == (N, num_molecules)
 
     def test_default_output_dims(self):
         gns = GNS(node_feature_dim=9, edge_feature_dim=7, num_mp_steps=1)
@@ -79,7 +79,7 @@ class TestGNS:
 
         out = gns(node_feat, edge_idx, edge_feat)
 
-        assert set(out.keys()) == {"dX", "dP", "dG"}
+        assert set(out.keys()) == {"dX", "dP", "dc"}
 
     def test_gradient_flow(self):
         gns = GNS(
@@ -202,7 +202,7 @@ class TestGNSSaveLoad:
             edge_latent_dim=32,
             hidden_dim=32,
             num_mp_steps=3,
-            output_dims={"dX": 3, "dP": 3, "dG": 2},
+            output_dims={"dX": 3, "dP": 3, "dc": 2},
             activation="silu",
         )
         node_feat = torch.randn(10, 9)

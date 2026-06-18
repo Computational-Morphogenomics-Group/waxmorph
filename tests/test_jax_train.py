@@ -24,37 +24,37 @@ def _minimal_inputs():
         [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
         dtype=np.float32,
     )
-    genes = np.array(
+    c = np.array(
         [[0.2, 0.1], [0.05, 0.3], [0.4, 0.5]],
         dtype=np.float32,
     )
     radii = np.full((3,), 0.5, dtype=np.float32)
-    return source_pos, polarities, genes, radii
+    return source_pos, polarities, c, radii
 
 
 class ZeroStepModel:
     def __call__(self, node_feats, edge_index, edge_feats, num_edges=None):
         del edge_index, edge_feats, num_edges
-        num_nodes, num_genes = node_feats.shape
+        num_nodes, num_molecules = node_feats.shape
         return {
             "dX": jnp.zeros((num_nodes, 3), dtype=node_feats.dtype),
             "dP": jnp.zeros((num_nodes, 3), dtype=node_feats.dtype),
-            "dG": jnp.zeros((num_nodes, num_genes), dtype=node_feats.dtype),
+            "dc": jnp.zeros((num_nodes, num_molecules), dtype=node_feats.dtype),
         }
 
 
-def _make_model(num_genes):
+def _make_model(num_molecules):
     return GNS(
-        node_feature_dim=num_genes,
+        node_feature_dim=num_molecules,
         edge_feature_dim=2,
         num_mp_steps=1,
-        output_dims={"dX": 3, "dP": 3, "dG": num_genes},
+        output_dims={"dX": 3, "dP": 3, "dc": num_molecules},
         key=jax.random.PRNGKey(0),
     )
 
 
 def test_run_epoch_accumulates_loss_across_tagged_frames():
-    source_pos, polarities, genes, radii = _minimal_inputs()
+    source_pos, polarities, c, radii = _minimal_inputs()
     config = jax_train_module.TrainConfig(
         n_epochs=1,
         t_rollout=3,
@@ -71,7 +71,7 @@ def test_run_epoch_accumulates_loss_across_tagged_frames():
         config=config,
         source_pos=source_pos,
         polarities=polarities,
-        genes=genes,
+        c=c,
         R=jnp.asarray(radii),
         particle_count=source_pos.shape[0],
         targets_by_frame={0: target_a, 2: target_b},
@@ -88,16 +88,16 @@ def test_run_epoch_accumulates_loss_across_tagged_frames():
 
 
 def test_run_epoch_frame_zero_supervises_post_step_state():
-    source_pos, polarities, genes, radii = _minimal_inputs()
+    source_pos, polarities, c, radii = _minimal_inputs()
 
     class FixedStepModel:
         def __call__(self, node_feats, edge_index, edge_feats, num_edges=None):
             del edge_index, edge_feats, num_edges
-            num_nodes, num_genes = node_feats.shape
+            num_nodes, num_molecules = node_feats.shape
             return {
                 "dX": jnp.full((num_nodes, 3), 0.25, dtype=node_feats.dtype),
                 "dP": jnp.zeros((num_nodes, 3), dtype=node_feats.dtype),
-                "dG": jnp.zeros((num_nodes, num_genes), dtype=node_feats.dtype),
+                "dc": jnp.zeros((num_nodes, num_molecules), dtype=node_feats.dtype),
             }
 
     config = jax_train_module.TrainConfig(
@@ -115,7 +115,7 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
         config=config,
         source_pos=source_pos,
         polarities=polarities,
-        genes=genes,
+        c=c,
         R=jnp.asarray(radii),
         particle_count=source_pos.shape[0],
         targets_by_frame={0: target_frame0},
@@ -128,7 +128,7 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
 
 
 def test_train_uses_max_edges_factor_for_padded_topology_capacity():
-    source_pos, polarities, genes, radii = _minimal_inputs()
+    source_pos, polarities, c, radii = _minimal_inputs()
     config = jax_train_module.TrainConfig(
         n_epochs=1,
         t_rollout=1,
@@ -140,7 +140,7 @@ def test_train_uses_max_edges_factor_for_padded_topology_capacity():
         max_edges_factor=1,
     )
     optimizer = optax.sgd(learning_rate=0.0)
-    model = _make_model(genes.shape[1])
+    model = _make_model(c.shape[1])
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     with pytest.raises(ValueError, match="max_edges"):
@@ -152,7 +152,7 @@ def test_train_uses_max_edges_factor_for_padded_topology_capacity():
             source_pos=source_pos,
             targets=[(0, source_pos)],
             polarities=polarities,
-            genes=genes,
+            c=c,
             radii=radii,
             config=config,
             device="cpu",
@@ -241,11 +241,11 @@ def test_native_warp_collection_physics_matches_jax_bridge():
     with jax.default_device(jax.devices("gpu")[0]):
         x = jnp.array([[0.0, 0.0, 0.0], [0.9, 0.0, 0.0]], dtype=jnp.float32)
         r = jnp.array([0.5, 0.5], dtype=jnp.float32)
-        genes = jnp.array([[1.0, 0.0], [0.0, 2.0]], dtype=jnp.float32)
+        c = jnp.array([[1.0, 0.0], [0.0, 2.0]], dtype=jnp.float32)
 
     ctx = jax_train_module._make_warp_collection_context(
         r,
-        genes,
+        c,
         particle_count=2,
         max_pairs=8,
         device="cuda",
@@ -277,11 +277,11 @@ def test_native_warp_collection_physics_matches_jax_bridge():
         device="cuda",
     )
 
-    genes_wp = jax_train_module._jax_genes_to_warp(genes)
-    native_genes = jax_train_module._warp_genes_to_jax(
+    c_wp = jax_train_module._jax_c_to_warp(c)
+    native_c = jax_train_module._warp_c_to_jax(
         jax_train_module._native_warp_diffusion_step(
             x_wp,
-            genes_wp,
+            c_wp,
             pair_i_wp,
             pair_j_wp,
             num_pairs,
@@ -289,10 +289,10 @@ def test_native_warp_collection_physics_matches_jax_bridge():
             1e-2,
             ctx,
         ),
-        genes.dtype,
+        c.dtype,
     )
-    bridge_genes = warp_diffusion_step(
-        genes,
+    bridge_c = warp_diffusion_step(
+        c,
         pairs.pair_i,
         pairs.pair_j,
         0.1,
@@ -303,12 +303,12 @@ def test_native_warp_collection_physics_matches_jax_bridge():
 
     assert num_pairs == 1
     np.testing.assert_allclose(np.asarray(native_x), np.asarray(bridge_x), atol=1e-6)
-    np.testing.assert_allclose(np.asarray(native_genes), np.asarray(bridge_genes), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(native_c), np.asarray(bridge_c), atol=1e-6)
 
 
 @pytest.mark.skipif(not _has_jax_warp_cuda(), reason="JAX/Warp bridge requires CUDA")
 def test_native_collection_reuses_diffusion_pairs_and_returns_finite_trajectory():
-    source_pos, polarities, genes, radii = _minimal_inputs()
+    source_pos, polarities, c, radii = _minimal_inputs()
     config = jax_train_module.TrainConfig(
         n_epochs=1,
         t_rollout=2,
@@ -320,7 +320,7 @@ def test_native_collection_reuses_diffusion_pairs_and_returns_finite_trajectory(
     with jax.default_device(jax.devices("gpu")[0]):
         X = jnp.asarray(source_pos)
         P = jnp.asarray(polarities)
-        G = jnp.asarray(genes)
+        C = jnp.asarray(c)
         R = jnp.asarray(radii)
 
     topologies, trajectory = jax_train_module._collect_topologies_and_trajectory(
@@ -328,7 +328,7 @@ def test_native_collection_reuses_diffusion_pairs_and_returns_finite_trajectory(
         config=config,
         X=X,
         P=P,
-        G=G,
+        c=C,
         R=R,
         particle_count=source_pos.shape[0],
         device="cuda",
@@ -338,7 +338,7 @@ def test_native_collection_reuses_diffusion_pairs_and_returns_finite_trajectory(
     assert len(trajectory) == config.t_rollout + 1
     for frame in trajectory:
         assert np.isfinite(frame["pos"]).all()
-        assert np.isfinite(frame["genes"]).all()
+        assert np.isfinite(frame["c"]).all()
     for topology in topologies:
         assert len(topology.diff_pairs) == config.diff_steps
         np.testing.assert_array_equal(
@@ -352,8 +352,8 @@ def test_native_collection_reuses_diffusion_pairs_and_returns_finite_trajectory(
 
 
 def test_train_rejects_frame_out_of_range():
-    source_pos, polarities, genes, radii = _minimal_inputs()
-    model = _make_model(genes.shape[1])
+    source_pos, polarities, c, radii = _minimal_inputs()
+    model = _make_model(c.shape[1])
     optimizer = optax.sgd(learning_rate=0.0)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     config = jax_train_module.TrainConfig(n_epochs=1, t_rollout=2, mech_steps=0, diff_steps=0)
@@ -367,7 +367,7 @@ def test_train_rejects_frame_out_of_range():
             source_pos=source_pos,
             targets=[(5, source_pos)],
             polarities=polarities,
-            genes=genes,
+            c=c,
             radii=radii,
             config=config,
             device="cpu",
@@ -375,8 +375,8 @@ def test_train_rejects_frame_out_of_range():
 
 
 def test_train_rejects_missing_targets():
-    source_pos, polarities, genes, radii = _minimal_inputs()
-    model = _make_model(genes.shape[1])
+    source_pos, polarities, c, radii = _minimal_inputs()
+    model = _make_model(c.shape[1])
     optimizer = optax.sgd(learning_rate=0.0)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     config = jax_train_module.TrainConfig(n_epochs=1, t_rollout=1, mech_steps=0, diff_steps=0)
@@ -389,7 +389,7 @@ def test_train_rejects_missing_targets():
             squared_loss,
             source_pos=source_pos,
             polarities=polarities,
-            genes=genes,
+            c=c,
             radii=radii,
             config=config,
             device="cpu",

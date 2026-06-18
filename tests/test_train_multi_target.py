@@ -31,26 +31,26 @@ def _minimal_inputs():
         [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
         dtype=np.float32,
     )
-    genes = np.array(
+    c = np.array(
         [[0.2, 0.1], [0.05, 0.3], [0.4, 0.5]],
         dtype=np.float32,
     )
     radii = np.full((3,), 0.5, dtype=np.float32)
-    return source_pos, polarities, genes, radii
+    return source_pos, polarities, c, radii
 
 
-def _make_model(num_genes):
+def _make_model(num_molecules):
     return GNS(
-        node_feature_dim=num_genes,
+        node_feature_dim=num_molecules,
         edge_feature_dim=2,
         num_mp_steps=1,
-        output_dims={"dX": 3, "dP": 3, "dG": num_genes},
+        output_dims={"dX": 3, "dP": 3, "dc": num_molecules},
     )
 
 
 def test_run_epoch_accumulates_loss_across_tagged_frames():
     """Loss from multiple tagged frames should sum into loss_shape."""
-    source_pos, polarities, genes, radii = _minimal_inputs()
+    source_pos, polarities, c, radii = _minimal_inputs()
 
     config = torch_train_module.TrainConfig(
         n_epochs=1,
@@ -65,18 +65,18 @@ def test_run_epoch_accumulates_loss_across_tagged_frames():
     target_b = torch.from_numpy(source_pos + 0.3)
 
     torch.manual_seed(0)
-    model = _make_model(genes.shape[1])
+    model = _make_model(c.shape[1])
 
     loss_shape, _loss_l2, trajectory = torch_train_module._run_epoch(
         model=model,
         config=config,
         source_pos=source_pos,
         polarities=polarities,
-        genes=genes,
+        c=c,
         R_t=torch.from_numpy(radii),
         R_wp=None,
-        gx=None,
-        lap_G=None,
+        f_net=None,
+        lap_c=None,
         grid=None,
         N=source_pos.shape[0],
         targets_by_frame={0: target_a, 2: target_b},
@@ -97,7 +97,7 @@ def test_run_epoch_accumulates_loss_across_tagged_frames():
 
 def test_run_epoch_skips_untagged_frames():
     """Steps whose index is not in targets_by_frame should contribute no shape loss."""
-    source_pos, polarities, genes, radii = _minimal_inputs()
+    source_pos, polarities, c, radii = _minimal_inputs()
 
     config = torch_train_module.TrainConfig(
         n_epochs=1,
@@ -109,18 +109,18 @@ def test_run_epoch_skips_untagged_frames():
     )
 
     torch.manual_seed(0)
-    model = _make_model(genes.shape[1])
+    model = _make_model(c.shape[1])
 
     loss_shape, *_ = torch_train_module._run_epoch(
         model=model,
         config=config,
         source_pos=source_pos,
         polarities=polarities,
-        genes=genes,
+        c=c,
         R_t=torch.from_numpy(radii),
         R_wp=None,
-        gx=None,
-        lap_G=None,
+        f_net=None,
+        lap_c=None,
         grid=None,
         N=source_pos.shape[0],
         targets_by_frame={},
@@ -134,7 +134,7 @@ def test_run_epoch_skips_untagged_frames():
 
 def test_run_epoch_frame_zero_supervises_post_step_state():
     """Frame 0 should match the first evolved state, not the initial source snapshot."""
-    source_pos, polarities, genes, radii = _minimal_inputs()
+    source_pos, polarities, c, radii = _minimal_inputs()
 
     class FixedStepModel(torch.nn.Module):
         def forward(self, node_feats, edge_index, edge_feats):
@@ -142,10 +142,10 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
             num_nodes = node_feats.shape[0]
             dX = torch.full((num_nodes, 3), 0.25, dtype=node_feats.dtype, device=node_feats.device)
             dP = torch.zeros((num_nodes, 3), dtype=node_feats.dtype, device=node_feats.device)
-            dG = torch.zeros(
-                (num_nodes, genes.shape[1]), dtype=node_feats.dtype, device=node_feats.device
+            dc = torch.zeros(
+                (num_nodes, c.shape[1]), dtype=node_feats.dtype, device=node_feats.device
             )
-            return {"dX": dX, "dP": dP, "dG": dG}
+            return {"dX": dX, "dP": dP, "dc": dc}
 
     config = torch_train_module.TrainConfig(
         n_epochs=1,
@@ -162,11 +162,11 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
         config=config,
         source_pos=source_pos,
         polarities=polarities,
-        genes=genes,
+        c=c,
         R_t=torch.from_numpy(radii),
         R_wp=None,
-        gx=None,
-        lap_G=None,
+        f_net=None,
+        lap_c=None,
         grid=None,
         N=source_pos.shape[0],
         targets_by_frame={0: target_frame0},
@@ -182,8 +182,8 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
 
 
 def test_train_rejects_frame_out_of_range():
-    source_pos, polarities, genes, radii = _minimal_inputs()
-    model = _make_model(genes.shape[1])
+    source_pos, polarities, c, radii = _minimal_inputs()
+    model = _make_model(c.shape[1])
     opt = torch.optim.SGD(model.parameters(), lr=0.0)
     config = torch_train_module.TrainConfig(n_epochs=1, t_rollout=2, log_every=1)
 
@@ -195,7 +195,7 @@ def test_train_rejects_frame_out_of_range():
             source_pos=source_pos,
             targets=[(5, source_pos)],
             polarities=polarities,
-            genes=genes,
+            c=c,
             radii=radii,
             config=config,
             device="cpu",
@@ -203,8 +203,8 @@ def test_train_rejects_frame_out_of_range():
 
 
 def test_train_rejects_missing_targets():
-    source_pos, polarities, genes, radii = _minimal_inputs()
-    model = _make_model(genes.shape[1])
+    source_pos, polarities, c, radii = _minimal_inputs()
+    model = _make_model(c.shape[1])
     opt = torch.optim.SGD(model.parameters(), lr=0.0)
     config = torch_train_module.TrainConfig(n_epochs=1, t_rollout=1, log_every=1)
 
@@ -215,7 +215,7 @@ def test_train_rejects_missing_targets():
             squared_loss,
             source_pos=source_pos,
             polarities=polarities,
-            genes=genes,
+            c=c,
             radii=radii,
             config=config,
             device="cpu",

@@ -69,8 +69,7 @@ class MLP(eqx.Module):
 
         self.activation_name = activation
 
-        # eqx.nn.MLP `depth` = number of hidden layers.
-        # Our `num_layers` = total linear layers = depth + 1.
+        # eqx depth = hidden layers; our num_layers = total linear layers = depth + 1
         depth = max(num_layers - 1, 0)
         self.net = eqx.nn.MLP(
             in_size=input_dim,
@@ -94,6 +93,7 @@ class MLP(eqx.Module):
         Returns:
             :class:`jax.Array` with trailing dimension ``output_dim``.
         """
+        # eqx.nn.MLP is single-vector; vmap over the leading axis for batched input
         if x.ndim > 1:
             out = jax.vmap(self.net)(x)
             if self.norm is not None:

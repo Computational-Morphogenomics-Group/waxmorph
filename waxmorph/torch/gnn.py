@@ -22,6 +22,10 @@ class GraphNetworkBlock(nn.Module):
     Both edge and node latents use residual connections. The module subclasses
     :class:`torch.nn.Module`.
 
+    Paper correspondence:
+        edge_mlp=f_psi (message fn), node_mlp=f_pi (node-update fn);
+        node_latent=u, edge_latent=w, message=eta, node-update=zeta.
+
     Args:
         node_latent_dim: Width of node latent vectors.
         edge_latent_dim: Width of edge latent vectors.
@@ -82,14 +86,14 @@ class GraphNetworkBlock(nn.Module):
         """
         senders, receivers = edge_index[0], edge_index[1]
 
-        # --- Edge update ---
+        # Edge update (f_psi): message eta from [sender u, receiver u, edge w], residual
         edge_input = torch.cat(
             [node_latent[senders], node_latent[receivers], edge_latent],
             dim=-1,
         )
         edge_latent_new = edge_latent + self.edge_mlp(edge_input)
 
-        # --- Aggregate incoming messages per receiver (sum) ---
+        # Aggregate messages: sum eta over incoming edges per receiver via scatter-add
         num_nodes = node_latent.size(0)
         agg = torch.zeros(
             num_nodes,
@@ -97,10 +101,11 @@ class GraphNetworkBlock(nn.Module):
             device=node_latent.device,
             dtype=node_latent.dtype,
         )
+        # broadcast receiver index across latent dim so each edge writes its full vector
         idx = receivers.unsqueeze(-1).expand_as(edge_latent_new)
         agg.scatter_add_(0, idx, edge_latent_new)
 
-        # --- Node update ---
+        # Node update (f_pi): zeta from [node u, aggregated msgs], residual
         node_input = torch.cat([node_latent, agg], dim=-1)
         node_latent_new = node_latent + self.node_mlp(node_input)
 
@@ -109,6 +114,10 @@ class GraphNetworkBlock(nn.Module):
 
 class GNS(nn.Module):
     """Full Encode-Process-Decode Graph Network Simulator.
+
+    Paper correspondence:
+        node_encoder=f_phi, edge_encoder=f_rho; processor runs M=num_mp_steps
+        GraphNetworkBlock steps; decoders {dX:f_omega, dP:f_mu, dc:f_nu}.
 
     Args:
         node_feature_dim: Raw node feature dimensionality.
@@ -120,7 +129,7 @@ class GNS(nn.Module):
         num_mlp_layers: Number of linear layers in each encoder, processor,
             and decoder MLP.
         output_dims: Mapping from output head name to per-node output
-            dimensionality. Defaults to ``{"dX": 3, "dP": 3, "dG": 2}``.
+            dimensionality. Defaults to ``{"dX": 3, "dP": 3, "dc": 2}``.
         activation: Activation function name accepted by
             :class:`waxmorph.torch.mlp.MLP`.
         layer_norm: Whether to apply :class:`torch.nn.LayerNorm` in encoder
@@ -154,7 +163,7 @@ class GNS(nn.Module):
         self._hidden_dim = hidden_dim
 
         if output_dims is None:
-            output_dims = {"dX": 3, "dP": 3, "dG": 2}
+            output_dims = {"dX": 3, "dP": 3, "dc": 2}
 
         # --- Encoder ---
         self.node_encoder = MLP(
@@ -274,11 +283,11 @@ class GNS(nn.Module):
             Dictionary mapping each output head name to a tensor with shape
             ``[N, output_dim]``.
         """
-        # Encode
+        # Encode: raw features -> latents (f_phi nodes, f_rho edges)
         node_latent = self.node_encoder(node_features)
         edge_latent = self.edge_encoder(edge_features)
 
-        # Process
+        # Process: M message-passing rounds, optionally recomputed in backward to save memory
         for block in self.processor:
             if self.checkpoint_processor:
                 node_latent, edge_latent = torch_checkpoint(
@@ -291,7 +300,7 @@ class GNS(nn.Module):
             else:
                 node_latent, edge_latent = block(node_latent, edge_latent, edge_index)
 
-        # Decode
+        # Decode: per-head MLP maps final node latent -> output field (f_omega/f_mu/f_nu)
         ret_val = None
         if self.checkpoint_processor:
             ret_val = {

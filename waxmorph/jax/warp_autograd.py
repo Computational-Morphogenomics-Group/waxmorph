@@ -15,8 +15,8 @@ import warp as wp
 
 from waxmorph.constants import EPS_DIST, EPS_NORM
 
-# Emulator-specific force constants. Keep these in sync with waxmorph.emulator
-# without importing its @wp.func helpers across modules.
+# Force constants duplicated from waxmorph.emulator (avoids importing its
+# @wp.func helpers across modules); must stay in sync with that source.
 K_REP = 2.0
 K_ATT = 0.5
 
@@ -63,37 +63,41 @@ def _sticky_pair_forces_kernel_impl(
     F_i: wp.array(dtype=wp.vec3f),
     F_j: wp.array(dtype=wp.vec3f),
 ):
-    e = wp.tid()
+    e = wp.tid()  # one thread per neighbor pair (edge)
     d = X_i[e] - X_j[e]
     dist = wp.length(d) + EPS_NORM
-    u = d / dist
+    u = d / dist  # unit separation direction
 
     rs = R_i[e] + R_j[e]
-    drep = rs - EPS_DIST
-    datr = rs + EPS_DIST
+    drep = rs - EPS_DIST  # repulsion onset (overlap)
+    datr = rs + EPS_DIST  # adhesion cutoff
 
     f_rep = K_REP * wp.max(drep - dist, wp.float32(0.0))
+    # adhesion only past contact (gated off while still overlapping)
     f_att = K_ATT * wp.max(datr - dist, wp.float32(0.0)) * wp.float32(dist > drep)
 
+    # equal-and-opposite force on the pair endpoints
     f_ij = (f_rep - f_att) * u
     F_i[e] = f_ij
     F_j[e] = -f_ij
 
 
-def _gene_pair_flux_kernel_impl(
-    G_i: wp.array2d(dtype=wp.float32),
-    G_j: wp.array2d(dtype=wp.float32),
+def _molecule_pair_flux_kernel_impl(
+    c_i: wp.array2d(dtype=wp.float32),
+    c_j: wp.array2d(dtype=wp.float32),
     flux_i: wp.array2d(dtype=wp.float32),
     flux_j: wp.array2d(dtype=wp.float32),
 ):
-    e, g = wp.tid()
-    flux = G_j[e, g] - G_i[e, g]
+    e, g = wp.tid()  # per (edge, molecule channel)
+    # concentration difference along the edge; antisymmetric across endpoints
+    flux = c_j[e, g] - c_i[e, g]
     flux_i[e, g] = flux
     flux_j[e, g] = -flux
 
 
 @cache
 def _sticky_pair_forces_jax():
+    # wrap the Warp kernel as a JAX primitive with a custom VJP (enable_backward)
     from warp.jax_experimental.ffi import jax_kernel
 
     return jax_kernel(
@@ -104,11 +108,12 @@ def _sticky_pair_forces_jax():
 
 
 @cache
-def _gene_pair_flux_jax():
+def _molecule_pair_flux_jax():
+    # wrap the Warp kernel as a JAX primitive with a custom VJP (enable_backward)
     from warp.jax_experimental.ffi import jax_kernel
 
     return jax_kernel(
-        wp.kernel(_gene_pair_flux_kernel_impl),
+        wp.kernel(_molecule_pair_flux_kernel_impl),
         num_outputs=2,
         enable_backward=True,
     )
@@ -143,37 +148,40 @@ def warp_mech_step(
     pair_i = jnp.asarray(pair_i, dtype=jnp.int32)
     pair_j = jnp.asarray(pair_j, dtype=jnp.int32)
 
+    # gather pair endpoints, compute per-edge forces via the Warp VJP kernel
     force_i, force_j = _sticky_pair_forces_jax()(
         X[pair_i],
         X[pair_j],
         R[pair_i],
         R[pair_j],
     )
+    # zero out padded edges (static pair buffer over-allocates to num_pairs)
     real_pair_mask = jnp.arange(pair_count, dtype=jnp.int32) < num_pairs
     force_i = jnp.where(real_pair_mask[:, None], force_i, 0.0)
     force_j = jnp.where(real_pair_mask[:, None], force_j, 0.0)
-    gx = jnp.zeros_like(X)
-    gx = gx.at[pair_i].add(force_i)
-    gx = gx.at[pair_j].add(force_j)
-    return X + jnp.asarray(dt, dtype=X.dtype) * gx
+    # scatter-add edge forces back onto particles, then explicit Euler step
+    f_net = jnp.zeros_like(X)
+    f_net = f_net.at[pair_i].add(force_i)
+    f_net = f_net.at[pair_j].add(force_j)
+    return X + jnp.asarray(dt, dtype=X.dtype) * f_net
 
 
 def warp_diffusion_step(
-    G: jax.Array,
+    c: jax.Array,
     pair_i: jax.Array,
     pair_j: jax.Array,
-    alpha: float,
+    D_emu: float,
     dt: float,
     *,
     num_pairs: jax.Array | int | None = None,
     device: str | wp.Device | None = "cuda",
 ) -> jax.Array:
-    """Apply one differentiable graph-Laplacian gene diffusion step."""
+    """Apply one differentiable graph-Laplacian signaling-molecule diffusion step."""
     _device_requires_cuda(device)
 
     pair_count = int(pair_i.shape[0])
     if pair_count == 0:
-        return G
+        return c
     if num_pairs is None:
         num_pairs = jnp.asarray(pair_count, dtype=jnp.int32)
     else:
@@ -182,16 +190,20 @@ def warp_diffusion_step(
     pair_i = jnp.asarray(pair_i, dtype=jnp.int32)
     pair_j = jnp.asarray(pair_j, dtype=jnp.int32)
 
-    flux_i, flux_j = _gene_pair_flux_jax()(G[pair_i], G[pair_j])
+    # per-edge concentration differences via the Warp VJP kernel
+    flux_i, flux_j = _molecule_pair_flux_jax()(c[pair_i], c[pair_j])
+    # zero out padded edges (static pair buffer over-allocates to num_pairs)
     real_pair_mask = jnp.arange(pair_count, dtype=jnp.int32) < num_pairs
     flux_i = jnp.where(real_pair_mask[:, None], flux_i, 0.0)
     flux_j = jnp.where(real_pair_mask[:, None], flux_j, 0.0)
-    lap = jnp.zeros_like(G)
+    # scatter-add fluxes to form the graph Laplacian per particle
+    lap = jnp.zeros_like(c)
     lap = lap.at[pair_i].add(flux_i)
     lap = lap.at[pair_j].add(flux_j)
 
-    scale = jnp.asarray(dt * alpha, dtype=G.dtype)
-    return jnp.maximum(G + scale * lap, jnp.asarray(0.0, dtype=G.dtype))
+    # explicit Euler diffusion step, clamped non-negative
+    scale = jnp.asarray(dt * D_emu, dtype=c.dtype)
+    return jnp.maximum(c + scale * lap, jnp.asarray(0.0, dtype=c.dtype))
 
 
 __all__ = ["warp_diffusion_step", "warp_mech_step"]

@@ -31,7 +31,7 @@ class WarpMechStep(torch.autograd.Function):
         R_wp: wp.array,
         particle_count: int,
         dt: float,
-        gx_wp: wp.array,
+        f_net_wp: wp.array,
         grid: wp.HashGrid | None,
     ) -> torch.Tensor:
         """Apply a Warp mechanics step during the PyTorch forward pass.
@@ -42,18 +42,23 @@ class WarpMechStep(torch.autograd.Function):
             R_wp: Warp radius array.
             particle_count: Number of active particles.
             dt: Mechanics Euler step size.
-            gx_wp: Scratch Warp force buffer.
+            f_net_wp: Scratch Warp net-force buffer.
             grid: Optional reusable :class:`warp.HashGrid`.
 
         Returns:
             Updated position tensor with shape ``[N, 3]``.
         """
+        # zero-copy view of torch positions as a grad-tracked Warp array
         X_wp = wp.from_torch(X_torch.detach().contiguous(), dtype=wp.vec3f)
         X_wp.requires_grad = True
 
+        # record pairwise force kernels on the tape (topology frozen for the step)
         tape = wp.Tape()
-        X_out = mech_step_sticky_differentiable(tape, X_wp, R_wp, particle_count, dt, gx_wp, grid)
+        X_out = mech_step_sticky_differentiable(
+            tape, X_wp, R_wp, particle_count, dt, f_net_wp, grid
+        )
 
+        # stash tape + endpoints for backward replay
         ctx.tape = tape
         ctx.X_wp = X_wp
         ctx.X_out = X_out
@@ -63,29 +68,31 @@ class WarpMechStep(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
         """Replay the Warp tape and return the gradient with respect to positions."""
+        # seed output adjoint, replay tape in reverse to accumulate input adjoint
         ctx.X_out.grad = wp.from_torch(grad_output.detach().contiguous(), dtype=wp.vec3f)
         ctx.tape.backward()
+        # clone before zeroing: grad buffer is reused once the tape is cleared
         grad_input = wp.to_torch(ctx.X_wp.grad).view(-1, 3).clone()
         ctx.tape.zero()
         return grad_input, None, None, None, None, None
 
 
 class WarpDiffusionStep(torch.autograd.Function):
-    """Differentiable gene diffusion step.
+    """Differentiable signaling-molecule diffusion step.
 
-    Forward: graph-Laplacian diffusion of gene concentrations.
-    Backward: replay :class:`warp.Tape` to propagate ``dL/dG_out → dL/dG_in``.
+    Forward: graph-Laplacian diffusion of signaling-molecule concentrations.
+    Backward: replay :class:`warp.Tape` to propagate ``dL/dc_out → dL/dc_in``.
     """
 
     @staticmethod
     def forward(
         ctx,
-        G_torch: torch.Tensor,
+        c_torch: torch.Tensor,
         X_wp: wp.array,
         R_wp: wp.array,
-        lap_G_wp: wp.array,
+        lap_c_wp: wp.array,
         particle_count: int,
-        alpha: float,
+        D_emu: float,
         dt: float,
         grid: wp.HashGrid | None,
     ) -> torch.Tensor:
@@ -93,43 +100,47 @@ class WarpDiffusionStep(torch.autograd.Function):
 
         Args:
             ctx: PyTorch :class:`torch.autograd.Function` context.
-            G_torch: Gene concentration tensor with shape ``[N, num_genes]``.
+            c_torch: Concentration tensor with shape ``[N, num_molecules]``.
             X_wp: Warp position array used for neighbor topology.
             R_wp: Warp radius array.
-            lap_G_wp: Scratch Warp Laplacian buffer.
+            lap_c_wp: Scratch Warp Laplacian buffer.
             particle_count: Number of active particles.
-            alpha: Diffusion coefficient.
+            D_emu: Diffusion coefficient.
             dt: Diffusion Euler step size.
             grid: Optional reusable :class:`warp.HashGrid`.
 
         Returns:
-            Updated gene concentration tensor with shape ``[N, num_genes]``.
+            Updated concentration tensor with shape ``[N, num_molecules]``.
         """
-        n, num_genes = G_torch.shape
-        G_wp = wp.from_torch(G_torch.detach().contiguous().view(-1), dtype=wp.float32)
-        G_wp = G_wp.reshape((n, num_genes))
-        G_wp.requires_grad = True
+        n, num_molecules = c_torch.shape
+        # flatten then reshape: Warp 2d arrays need a contiguous 1d source
+        c_wp = wp.from_torch(c_torch.detach().contiguous().view(-1), dtype=wp.float32)
+        c_wp = c_wp.reshape((n, num_molecules))
+        c_wp.requires_grad = True
 
+        # record graph-Laplacian diffusion kernels on the tape
         tape = wp.Tape()
-        G_out = diffusion_step_differentiable(
-            tape, X_wp, R_wp, G_wp, lap_G_wp, particle_count, alpha, dt, grid
+        c_out = diffusion_step_differentiable(
+            tape, X_wp, R_wp, c_wp, lap_c_wp, particle_count, D_emu, dt, grid
         )
 
         ctx.tape = tape
-        ctx.G_wp = G_wp
-        ctx.G_out = G_out
-        ctx.shape = (n, num_genes)
+        ctx.c_wp = c_wp
+        ctx.c_out = c_out
+        ctx.shape = (n, num_molecules)
 
-        return wp.to_torch(G_out).view(n, num_genes)
+        return wp.to_torch(c_out).view(n, num_molecules)
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
-        """Replay the Warp tape and return the gradient with respect to genes."""
-        n, num_genes = ctx.shape
-        ctx.G_out.grad = wp.from_torch(
+        """Replay the Warp tape and return the gradient with respect to concentrations."""
+        n, num_molecules = ctx.shape
+        # seed output adjoint (flatten/reshape to match the 2d Warp buffer)
+        ctx.c_out.grad = wp.from_torch(
             grad_output.detach().contiguous().view(-1), dtype=wp.float32
-        ).reshape((n, num_genes))
+        ).reshape((n, num_molecules))
         ctx.tape.backward()
-        grad_input = wp.to_torch(ctx.G_wp.grad).view(n, num_genes).clone()
+        # clone before zeroing: grad buffer is reused once the tape is cleared
+        grad_input = wp.to_torch(ctx.c_wp.grad).view(n, num_molecules).clone()
         ctx.tape.zero()
         return grad_input, None, None, None, None, None, None, None

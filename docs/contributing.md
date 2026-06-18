@@ -1,10 +1,10 @@
 # Contributing
 
-WaxMorph is a scientific package, so contributions should make both the code
-and the modelling assumptions easier to inspect. A useful pull request should
-answer three questions clearly: what biological or computational behavior is
-being changed, where that behavior lives in the package, and how a user can
-verify it.
+waxMorph is a scientific package, so contributions should keep both the code
+and the underlying modelling assumptions open to inspection. A well-formed
+pull request answers three questions clearly: which biological or computational
+behavior is changed, where that behavior resides in the package, and how the
+change can be verified.
 
 ## Development setup
 
@@ -22,9 +22,9 @@ pytest tests/
 ```
 
 The default pytest configuration writes terminal and XML coverage reports for
-the `waxmorph` package. The full test suite includes both PyTorch and JAX
-coverage, so development environments should install `.[all]` or at least
-`.[learning,simulation,jax]` before running it.
+the `waxmorph` package. The full suite exercises both the PyTorch and JAX
+backends, so a development environment should install `.[all]`, or at minimum
+`.[learning,simulation,jax]`, before running it.
 
 ## Code style
 
@@ -38,22 +38,31 @@ pre-commit run --all-files
 
 ## Pull requests
 
-1. Create a feature branch from `main`
-2. Make your changes and add tests
-3. Run `pytest`, `ruff check waxmorph tests`, and `black --check waxmorph tests` locally
-4. Open a PR against `main`
+1. Create a feature branch from `main`.
+2. Make the changes and add tests.
+3. Run `pytest`, `ruff check waxmorph tests`, and `black --check waxmorph tests` locally.
+4. Open a pull request against `main`.
+
+Because the PyTorch and JAX backends are kept at parity, a change to graph
+construction, losses, training, or the simulator and emulator should be mirrored
+across both backends and their tests, and the assertions guarding
+PyTorch-versus-JAX agreement should not be weakened.
 
 ## Documentation expectations
 
-Public functions should explain the biological object being represented, the
-array shapes expected by the implementation, and whether gradients are meant to
-flow through the operation. Avoid vague phrases such as "processes data" or
-"handles simulation"; name the concrete state variables, for example positions
-`X`, polarities `P`, radii `R`, gene state `G`, cell types `CT`, or contact
-edges.
+Public functions should state the biological object being represented, the
+array shapes expected by the implementation, and whether gradients are intended
+to flow through the operation. Vague phrasing such as "processes data" or
+"handles simulation" should be avoided in favor of naming the concrete state
+variables: positions `X` (shape `[N, 3]`), polarities `P` (shape `[N, 3]`),
+radii `R` (shape `[N]`), signaling-molecule concentrations `c`
+(shape `[N, num_molecules]`), cell types `CT`, and the contact edges induced by
+spatial proximity. The notation follows the waxMorph manuscript; in particular,
+the per-cell molecular state is denoted `c` and the predicted increments are
+`dX`, `dP`, and `dc`.
 
-When a modelling choice is an approximation, say so directly. For example,
-graph topology is rebuilt from state snapshots and treated as fixed within a
-rollout step, while continuous node and edge features can remain
-differentiable. That distinction is important for users interpreting learned
-biophysical rules.
+When a modelling choice is an approximation, it should be stated directly. For
+example, the contact graph is rebuilt from a detached state snapshot and treated
+as fixed within a rollout step, while the continuous node and edge features
+remain differentiable. That distinction matters when interpreting the learned
+biophysical update rules.

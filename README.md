@@ -4,51 +4,56 @@
 [![Documentation](https://readthedocs.org/projects/waxmorph/badge/?version=latest)](https://waxmorph.readthedocs.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Joint forward simulation and inverse learning of biophysical shape assembly
-with spheroidal agents.
+Joint forward simulation and inverse design of biophysical shape assembly with
+spheroidal cellular agents.
 
 ## Overview
 
-WaxMorph represents tissues as interacting spheroidal agents with positions,
-radii, polarities, gene or morphogen states, and optional cell-type labels. The
-package is organized around three connected workflows:
+WaxMorph represents tissues as three-dimensional populations of spheroidal
+cellular agents, each carrying position, volume, polarity, signaling molecule
+concentrations, and an optional cell-type label. A graph-network processor
+learns local, neighbor-dependent update rules from target morphologies, while
+differentiable physical constraints guide tissue-scale assembly. Local
+neighborhoods are induced by spatial proximity and rebuilt as tissues deform.
+The package is organized around three connected workflows:
 
-| Workflow | Use it when you want to | Main modules |
+| Workflow | Purpose | Main modules |
 |---|---|---|
-| **Simulation** | Run explicit mechanochemical dynamics with sticky-sphere mechanics, reaction-diffusion, growth, and division | `waxmorph.simulator` |
-| **Emulation** | Train a graph-network local update rule that assembles a fixed number of agents into a target shape | `waxmorph.data`, `waxmorph.graph`, `waxmorph.gnn`, `waxmorph.train` |
-| **Rendering** | Inspect states, trajectories, and learned rollouts as static views, interactive views, USD stages, or OpenGL videos | `waxmorph.render` |
+| **Simulation** | Forward simulation of explicit mechanochemical dynamics: soft-sphere mechanics, reaction-diffusion patterning, growth, and division | `waxmorph.simulator` |
+| **Emulation** | Learned emulation in which a graph-network-based simulator (GNS) assembles a fixed population of agents into a target morphology under differentiable physics | `waxmorph.data`, `waxmorph.graph`, `waxmorph.gnn`, `waxmorph.train` |
+| **Rendering** | Visualization of states, trajectories, and learned rollouts as static views, interactive views, USD stages, or OpenGL videos | `waxmorph.render` |
 
-The default learning path uses PyTorch-compatible top-level imports. JAX and
-Equinox implementations live under `waxmorph.jax`.
+The default learning path resolves the PyTorch implementations through the
+top-level imports. JAX and Equinox implementations provide a parity backend
+under `waxmorph.jax`.
 
 ## Installation
 
-For the base package:
+The base package:
 
 ```bash
 pip install waxmorph
 ```
 
-For the usual simulation and PyTorch learning workflow:
+The forward simulation and PyTorch learning workflow:
 
 ```bash
 pip install "waxmorph[simulation,learning]"
 ```
 
-For the JAX/Equinox backend on CPU:
+The JAX/Equinox backend on CPU:
 
 ```bash
 pip install "waxmorph[jax]"
 ```
 
-For JAX with CUDA 12 support:
+JAX with CUDA 12 support:
 
 ```bash
 pip install "waxmorph[jax-cuda]"
 ```
 
-For development:
+The development installation:
 
 ```bash
 git clone https://github.com/waxmorph/waxmorph.git
@@ -57,25 +62,25 @@ pip install -e ".[all]"
 pre-commit install
 ```
 
-The simulation kernels and the main movie-rendering paths are designed for
-NVIDIA Warp and are normally run on CUDA. Small graph and data utilities can be
-used on CPU, but full examples are GPU-oriented. USD export uses Warp's USD
-renderer; if that backend is unavailable in your environment, install a USD
-Python package such as `usd-core` or `usd-exchange`.
+The simulation kernels and the principal movie-rendering paths are implemented
+on NVIDIA Warp and are intended to run on CUDA. The graph and data utilities are
+available on CPU, but the full examples are GPU-oriented. USD export relies on
+Warp's USD renderer; where that backend is unavailable, a USD Python package
+such as `usd-core` or `usd-exchange` is required.
 
 ## Quickstart: mesh-to-mesh shape assembly
 
-This example follows the workflow in `shape_assembly.ipynb`: sample a source
-mesh and target mesh, initialize a fixed population of spheroidal agents, train
-a Graph Network-based Simulator (GNS), then export the best rollout as a USD
-stage. The bundled meshes live in `meshes/`.
+This example follows the workflow in `shape_assembly.ipynb`: a source mesh and a
+target mesh are sampled, a fixed population of spheroidal agents is initialized,
+a graph-network-based simulator (GNS) is trained, and the best rollout is
+exported as a USD stage. The bundled meshes reside in `meshes/`.
 
 Inputs:
 
 - `meshes/bunny.ply`: source morphology sampled into initial cell centers.
 - `meshes/armadillo.ply`: target morphology sampled into training targets.
-- `N_POINTS`: fixed number of agents. This emulation workflow does not add or
-  remove particles during the rollout.
+- `n_points`: fixed number of agents. This learned-emulation workflow neither
+  adds nor removes particles during the rollout.
 
 Outputs:
 
@@ -102,7 +107,7 @@ wp.init()
 
 device = "cuda"
 torch_device = torch.device(device)
-num_genes = 32
+num_molecules = 32
 n_points = 2000
 
 data = sample_mesh_pair(
@@ -120,20 +125,20 @@ radii = np.full(n_cells, data["source_radius"], dtype=np.float32)
 rng = np.random.default_rng(42)
 polarities = rng.standard_normal((n_cells, 3)).astype(np.float32)
 polarities /= np.linalg.norm(polarities, axis=1, keepdims=True) + 1e-9
-genes = rng.random((n_cells, num_genes), dtype=np.float32)
+c = rng.random((n_cells, num_molecules), dtype=np.float32)
 
-# Probe the graph once so the model dimensions match the current state encoding.
+# Probe the graph once so the model dimensions match the state encoding.
 X_probe = wp.from_numpy(data["source_pos"], dtype=wp.vec3f, device=device)
 P_probe = wp.from_numpy(polarities, dtype=wp.vec3f, device=device)
 R_probe = wp.from_numpy(radii, dtype=wp.float32, device=device)
-G_probe = wp.from_numpy(genes, dtype=wp.float32, device=device)
+c_probe = wp.from_numpy(c, dtype=wp.float32, device=device)
 
 node_features, edge_index, edge_features = build_graph(
     X_probe,
     P_probe,
     R_probe,
     particle_count=n_cells,
-    G=G_probe,
+    c=c_probe,
 )
 
 model = GNS(
@@ -144,7 +149,7 @@ model = GNS(
     hidden_dim=256,
     num_mp_steps=5,
     num_mlp_layers=3,
-    output_dims={"dX": 3, "dP": 3, "dG": num_genes},
+    output_dims={"dX": 3, "dP": 3, "dc": num_molecules},
     checkpoint_processor=True,
 ).to(torch_device)
 
@@ -158,7 +163,7 @@ result = train(
     loss_fn,
     source_pos=data["source_pos"],
     polarities=polarities,
-    genes=genes,
+    c=c,
     radii=radii,
     targets=[(config.t_rollout - 1, data["target_pos"])],
     config=config,
@@ -187,56 +192,66 @@ with WarpMovieRenderer(
         )
 ```
 
-For a shorter smoke test, reduce `n_points`, `n_epochs`, and `t_rollout`.
-Training quality depends on those values, so small settings are useful for API
-validation but not for judging morphology quality.
+A shorter smoke test follows from reducing `n_points`, `n_epochs`, and
+`t_rollout`. Assembly quality depends on those values, so small settings serve
+API validation rather than assessment of morphology quality.
 
 ## Simulation workflow
 
-Use explicit simulation when the scientific question is about a specified
-mechanistic model rather than a learned shape-assembly rule. The
+Forward simulation is appropriate when the scientific question concerns a
+specified mechanistic model rather than a learned shape-assembly rule. The
 `simulation_with_autodiff.ipynb` notebook demonstrates the main components:
 
 1. Allocate fixed-capacity Warp arrays for centers `X`, radii `R`, equilibrium
    radii `R_eq`, polarities `P`, activator `A`, inhibitor `I`, and cell types
    `CT`.
-2. Relax geometry with `simulator.mech_step_sticky` or the autodiff-consistent
+2. Relax geometry under the soft-sphere potential with
+   `simulator.mech_step_sticky`, or with the autodiff-consistent
    `simulator.mech_step_sticky_implicit`.
-3. Pattern morphogens with `simulator.chem_step`.
-4. Grow cells with `simulator.growth_step`.
+3. Pattern the activator and inhibitor fields by reaction-diffusion with
+   `simulator.chem_step`, parameterized by `chi` (the spatial characteristic of
+   the activator), `gamma` (the reaction rate), and `D_inhib` (the inhibitor
+   diffusivity).
+4. Grow cells with `simulator.growth_step`, parameterized by the growth Hill
+   exponent `alpha_grow` and the switch concentration `ell_sw`.
 5. Count neighbors and divide cells with `simulator.count_neighbors_step`,
    `simulator.division_decision`, and `simulator.division_logic`.
 6. Write frames from the live Warp state with
    `render.WarpMovieRenderer.write_frame_from_state`.
 
-Inputs are Warp arrays and scalar parameters such as time steps, diffusion
-rates, growth constants, and division thresholds. Outputs are updated in-place
-state arrays and, when requested, rendered frames. The simulation path can grow
-the active particle count up to the preallocated `max_particles` capacity.
+Inputs are Warp arrays and scalar parameters such as time steps, diffusivities,
+growth constants, and division thresholds. Outputs are state arrays updated
+in-place and, when requested, rendered frames. The simulation path can grow the
+active particle count up to the preallocated `max_particles` capacity.
 
 The notebook includes long-running examples with tens of thousands of particles
-and many time steps. Start with lower particle counts and fewer steps when
+over many time steps. Lower particle counts and fewer steps are advisable when
 validating a new environment.
 
 ## Emulation workflow
 
-Use emulation when you have source and target morphologies and want to learn a
-local rollout rule. The standard PyTorch flow is:
+Learned emulation is appropriate given source and target morphologies and the
+objective of inferring a local rollout rule. The standard PyTorch flow is:
 
 1. Sample meshes with `sample_mesh_pair` for a single final target, or
    `sample_mesh_sequence` for intermediate target frames.
-2. Initialize `source_pos`, `polarities`, `genes`, and `radii` as NumPy arrays.
-3. Build graph features with `build_graph`.
-4. Construct `GNS` with output heads matching the variables to update, usually
-   `{"dX": 3, "dP": 3, "dG": num_genes}`.
+2. Initialize `source_pos`, `polarities`, the signaling molecule concentrations
+   `c`, and `radii` as NumPy arrays.
+3. Build graph features with `build_graph`, which induces the contact graph from
+   spatial proximity.
+4. Construct `GNS` with output heads matching the variables to update, namely
+   `{"dX": 3, "dP": 3, "dc": num_molecules}`.
 5. Train with `train(..., targets=[(frame, target_pos), ...])`.
-6. Inspect `TrainResult.log`, especially `losses_total` and `best_traj_pos`.
+6. Inspect `TrainResult.log`, in particular `losses_total` and `best_traj_pos`.
 
 Frame indices in `targets` are zero-based rollout steps after updates. For
-example, `(99, target_pos)` supervises the state after 100 learned updates when
-`TrainConfig(t_rollout=100)`.
+example, `(99, target_pos)` supervises the state after 100 learned updates under
+`TrainConfig(t_rollout=100)`. Molecule diffusion during the rollout is
+controlled by `TrainConfig.D_emu`, and the squared-displacement regularization
+by `TrainConfig.lambda_reg`. The corresponding concentration trajectory is
+recorded in `result.log["best_traj_c"]`.
 
-The JAX/Equinox version follows the same data flow with explicit backend
+The JAX/Equinox backend follows the same data flow with explicit backend
 imports:
 
 ```python
@@ -246,28 +261,31 @@ from waxmorph.jax.losses import make_sinkhorn_loss
 from waxmorph.jax.train import TrainConfig, train
 ```
 
-The JAX training call also takes an Optax optimizer and optimizer state. Use
-the JAX backend when your downstream analysis already depends on JAX, Equinox,
-or Optax, or when static-shape compilation is important.
+On the JAX backend, `build_graph` additionally returns the active edge count as
+`(node_features, edge_index, edge_features, num_edges)`, and the training call
+takes an Optax optimizer and optimizer state. The JAX backend is appropriate
+when downstream analysis already depends on JAX, Equinox, or Optax, or when
+static-shape compilation is required.
 
 ## Rendering workflow
 
-`waxmorph.render` supports three rendering styles:
+`waxmorph.render` provides three rendering styles:
 
-- `MPLInterface`: static Matplotlib inspection in simple scripts or notebooks.
+- `MPLInterface`: static Matplotlib inspection for scripts or notebooks.
 - `PyVistaInterface`: interactive PyVista/VTK views of spheroids, polarities,
-  morphogen colors, and cell-type colors.
-- `WarpMovieRenderer`: trajectory export through Warp. Use `backend="usd"` for
-  the main USD-stage path, or `backend="opengl"` for a headless video file.
+  signaling molecule concentrations, and cell-type colors.
+- `WarpMovieRenderer`: trajectory export through Warp, with `backend="usd"` for
+  the principal USD-stage path and `backend="opengl"` for a headless video file.
 
-For learned shape assembly, use `write_frame_from_numpy` with positions, radii,
-and explicit RGB colors. For live simulations, use `write_frame_from_state`
-with Warp arrays and choose `morph="A"`, `morph="I"`, or `morph="ratio"` to
-color particles by morphogen state.
+For learned shape assembly, `write_frame_from_numpy` takes positions, radii, and
+explicit RGB colors. For live simulations, `write_frame_from_state` takes Warp
+arrays, and `morph="A"`, `morph="I"`, or `morph="ratio"` colors particles by the
+activator, inhibitor, or activator-to-inhibitor ratio of the reaction-diffusion
+state.
 
 ## Citation
 
-If you use WaxMorph in your research, please cite:
+WaxMorph may be cited as:
 
 ```bibtex
 @software{waxmorph,

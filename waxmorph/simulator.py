@@ -171,8 +171,8 @@ def sticky_sphere_forces(
         if dist > d0 + atr:
             return wp.vec3f(0.0), wp.vec3f(0.0)
 
-        gamma = wp.max((d0 + atr) - dist, wp.float32(0.0)) * wp.float32(dist > d0)
-        f_att = k_att * gamma
+        att_ramp = wp.max((d0 + atr) - dist, wp.float32(0.0)) * wp.float32(dist > d0)
+        f_att = k_att * att_ramp
 
     fmag = f_rep - f_att
     F_ij = fmag * -u
@@ -274,8 +274,8 @@ def sticky_sphere_grads(
     P: wp.array(dtype=wp.vec3f),
     CT: wp.array(dtype=wp.uint32),
     query_radius: wp.float32,
-    gx: wp.array(dtype=wp.vec3f),
-    gp: wp.array(dtype=wp.vec3f),
+    f_net: wp.array(dtype=wp.vec3f),  # net mechanical force on positions (paper f_net)
+    f_pol: wp.array(dtype=wp.vec3f),  # polarity gradient/torque accumulator (paper f_pol)
 ):
     """Accumulate mechanics and polarity gradients over all unordered pairs."""
     tid = wp.tid()
@@ -297,8 +297,8 @@ def sticky_sphere_grads(
 
         # Forces
         grad_x_i_f, grad_x_j_f = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
-        wp.atomic_add(gx, i, grad_x_i_f)
-        wp.atomic_add(gx, j, grad_x_j_f)
+        wp.atomic_add(f_net, i, grad_x_i_f)
+        wp.atomic_add(f_net, j, grad_x_j_f)
 
         # Polarity Neighbors
         dist = wp.norm_l2(x_i - x_j)
@@ -320,18 +320,18 @@ def sticky_sphere_grads(
                 grad_x_i_p[k] = wp.clamp(grad_x_i_p[k], -1.0 * v_i, 1.0 * v_i)
                 grad_x_j_p[k] = wp.clamp(grad_x_j_p[k], -1.0 * v_j, 1.0 * v_j)
 
-            wp.atomic_add(gx, i, grad_x_i_p)
-            wp.atomic_add(gx, j, grad_x_j_p)
-            wp.atomic_add(gx, i, grad_x_i_t)
-            wp.atomic_add(gx, j, grad_x_j_t)
-            wp.atomic_add(gp, i, grad_p_i)
-            wp.atomic_add(gp, j, grad_p_j)
+            wp.atomic_add(f_net, i, grad_x_i_p)
+            wp.atomic_add(f_net, j, grad_x_j_p)
+            wp.atomic_add(f_net, i, grad_x_i_t)
+            wp.atomic_add(f_net, j, grad_x_j_t)
+            wp.atomic_add(f_pol, i, grad_p_i)
+            wp.atomic_add(f_pol, j, grad_p_j)
 
         # Polarities - mesenchyme
         if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
             grad_p_i, grad_p_j = mes_polarity_grads(p_i, p_j)
-            wp.atomic_add(gp, i, grad_p_i)
-            wp.atomic_add(gp, j, grad_p_j)
+            wp.atomic_add(f_pol, i, grad_p_i)
+            wp.atomic_add(f_pol, j, grad_p_j)
 
 
 @wp.kernel(enable_backward=False)
@@ -384,20 +384,20 @@ def sticky_sphere_wnt_grads(
 @wp.kernel
 def gd_update(
     X: wp.array(dtype=wp.vec3f),  # (N, 3)
-    gx: wp.array(dtype=wp.vec3f),  # (N, 3) gradient of objective w.r.t. x
+    f_net: wp.array(dtype=wp.vec3f),  # (N, 3) net mechanical force on positions (paper f_net)
     lr: wp.float32,
     X_next: wp.array(dtype=wp.vec3f),  # (N, 3)
 ):
     """Euler position update: ``X_next = X - lr * grad_X``."""
 
     i = wp.tid()
-    X_next[i] = X[i] - lr * gx[i]
+    X_next[i] = X[i] - lr * f_net[i]
 
 
 @wp.kernel
 def gd_update_normalized(
     P: wp.array(dtype=wp.vec3f),  # (N, 3)
-    gp: wp.array(dtype=wp.vec3f),  # (N, 3) gradient of objective w.r.t. x
+    f_pol: wp.array(dtype=wp.vec3f),  # (N, 3) polarity gradient/torque accumulator (paper f_pol)
     lr: wp.float32,
     P_next: wp.array(dtype=wp.vec3f),  # (N, 3)
 ):
@@ -405,7 +405,7 @@ def gd_update_normalized(
 
     i = wp.tid()
     P_next[i] = wp.normalize(
-        P[i] - lr * gp[i]
+        P[i] - lr * f_pol[i]
     )  # Normals pointing both inward / outward, but direction is used only
 
 
@@ -433,8 +433,8 @@ def mech_step_sticky(
     """
 
     # Set up gradients
-    gx = wp.zeros_like(X, device=device)
-    gp = wp.zeros_like(P, device=device)
+    f_net = wp.zeros_like(X, device=device)
+    f_pol = wp.zeros_like(P, device=device)
 
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + ATR_EE_CUTOFF
@@ -446,7 +446,7 @@ def mech_step_sticky(
         sticky_sphere_grads,
         dim=particle_count,
         inputs=[wp.uint64(grid.id), X, R, P, CT, query_radius],
-        outputs=[gx, gp],
+        outputs=[f_net, f_pol],
         device=device,
     )
 
@@ -455,37 +455,37 @@ def mech_step_sticky(
             sticky_sphere_wnt_grads,
             dim=particle_count,
             inputs=[wp.uint64(grid.id), X, R, P, CT, wnt, query_radius],
-            outputs=[gp],
+            outputs=[f_pol],
             device=device,
         )
 
     if grad_consist:
-        gx.mark_write()
+        f_net.mark_write()
 
     wp.launch(
         gd_update,
         dim=particle_count,
-        inputs=[X, gx, dt, X_next],
+        inputs=[X, f_net, dt, X_next],
         device=device,
     )
 
     wp.launch(
         gd_update_normalized,
         dim=particle_count,
-        inputs=[P, gp, dt, P_next],
+        inputs=[P, f_pol, dt, P_next],
         device=device,
     )
 
     if grad_consist:
         X.mark_read()
         P.mark_read()
-        gx.mark_read()
-        gp.mark_read()
+        f_net.mark_read()
+        f_pol.mark_read()
 
         X_next.mark_write()
         P_next.mark_write()
 
-    return gx
+    return f_net
 
 
 ############################################################
@@ -581,8 +581,8 @@ def sticky_sphere_grads_implicit(
     P: wp.array(dtype=wp.vec3f),
     CT: wp.array(dtype=wp.uint32),
     query_radius: wp.float32,
-    gx: wp.array(dtype=wp.vec3f),
-    gp: wp.array(dtype=wp.vec3f),
+    f_net: wp.array(dtype=wp.vec3f),  # net mechanical force on positions (paper f_net)
+    f_pol: wp.array(dtype=wp.vec3f),  # polarity gradient/torque accumulator (paper f_pol)
 ):
     """Autodiff-based counterpart of ``sticky_sphere_grads`` using :func:`warp.grad`."""
     tid = wp.tid()
@@ -604,8 +604,8 @@ def sticky_sphere_grads_implicit(
 
         # Forces
         grad_x_i_f, grad_x_j_f = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
-        wp.atomic_add(gx, i, grad_x_i_f)
-        wp.atomic_add(gx, j, grad_x_j_f)
+        wp.atomic_add(f_net, i, grad_x_i_f)
+        wp.atomic_add(f_net, j, grad_x_j_f)
 
         # Polarity Neighbors
         dist = wp.norm_l2(x_i - x_j)
@@ -629,18 +629,18 @@ def sticky_sphere_grads_implicit(
                 grad_x_i_p[k] = wp.clamp(grad_x_i_p[k], -1.0 * v_i, 1.0 * v_i)
                 grad_x_j_p[k] = wp.clamp(grad_x_j_p[k], -1.0 * v_j, 1.0 * v_j)
 
-            wp.atomic_add(gx, i, grad_x_i_p)
-            wp.atomic_add(gx, j, grad_x_j_p)
-            wp.atomic_add(gx, i, grad_x_i_t)
-            wp.atomic_add(gx, j, grad_x_j_t)
-            wp.atomic_add(gp, i, grad_p_i)
-            wp.atomic_add(gp, j, grad_p_j)
+            wp.atomic_add(f_net, i, grad_x_i_p)
+            wp.atomic_add(f_net, j, grad_x_j_p)
+            wp.atomic_add(f_net, i, grad_x_i_t)
+            wp.atomic_add(f_net, j, grad_x_j_t)
+            wp.atomic_add(f_pol, i, grad_p_i)
+            wp.atomic_add(f_pol, j, grad_p_j)
 
         # Polarities - mesenchyme
         if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
             grad_p_i, grad_p_j = wp.grad(mes_polarity_potential)(p_i, p_j)
-            wp.atomic_add(gp, i, grad_p_i)
-            wp.atomic_add(gp, j, grad_p_j)
+            wp.atomic_add(f_pol, i, grad_p_i)
+            wp.atomic_add(f_pol, j, grad_p_j)
 
 
 @wp.kernel(enable_backward=False)
@@ -708,8 +708,8 @@ def mech_step_sticky_implicit(
 ):
     """Mechanics step matching ``mech_step_sticky`` but using :func:`warp.grad` locally."""
 
-    gx = wp.zeros_like(X, device=device)
-    gp = wp.zeros_like(P, device=device)
+    f_net = wp.zeros_like(X, device=device)
+    f_pol = wp.zeros_like(P, device=device)
 
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + ATR_EE_CUTOFF
@@ -721,7 +721,7 @@ def mech_step_sticky_implicit(
         sticky_sphere_grads_implicit,
         dim=particle_count,
         inputs=[wp.uint64(grid.id), X, R, P, CT, query_radius],
-        outputs=[gx, gp],
+        outputs=[f_net, f_pol],
         device=device,
     )
 
@@ -730,25 +730,25 @@ def mech_step_sticky_implicit(
             sticky_sphere_wnt_grads_implicit,
             dim=particle_count,
             inputs=[wp.uint64(grid.id), X, R, P, CT, wnt, query_radius],
-            outputs=[gp],
+            outputs=[f_pol],
             device=device,
         )
 
     wp.launch(
         gd_update,
         dim=particle_count,
-        inputs=[X, gx, dt, X_next],
+        inputs=[X, f_net, dt, X_next],
         device=device,
     )
 
     wp.launch(
         gd_update_normalized,
         dim=particle_count,
-        inputs=[P, gp, dt, P_next],
+        inputs=[P, f_pol, dt, P_next],
         device=device,
     )
 
-    return gx
+    return f_net
 
 
 ############################################################
@@ -817,9 +817,9 @@ def reaction_step(
     R: wp.array(dtype=wp.float32),
     lapA: wp.array(dtype=wp.float32),  # (N,)
     lapI: wp.array(dtype=wp.float32),  # (N,)
-    S: wp.array(dtype=wp.float32),
-    T: wp.array(dtype=wp.float32),
-    phi: wp.float32,
+    chi: wp.array(dtype=wp.float32),  # paper chi: spatial characteristic of activator
+    gamma: wp.array(dtype=wp.float32),  # paper gamma: reaction rate
+    D_inhib: wp.float32,  # paper D_inhib: inhibitor diffusivity scaling
     dt: wp.float32,
     A_next: wp.array(dtype=wp.float32),  # (N,)
     I_next: wp.array(dtype=wp.float32),  # (N,)
@@ -837,6 +837,8 @@ def reaction_step(
     cA2 = cA * cA
     ciI = cI
 
+    # Activator self-production, saturating: take the smaller of the two
+    # forms so high inhibitor caps production and the field cannot blow up.
     prodA_lin = safe_div(cA2, ciI)
     prodA_quad = safe_div(cA2, ciI * ciI)
 
@@ -847,15 +849,15 @@ def reaction_step(
     prodI = cA2
 
     # Diffusion with graph laplacian
-    diffA = (S[0] * phi) * lapA[i]
-    diffI = phi * lapI[i]
+    diffA = (chi[0] * D_inhib) * lapA[i]
+    diffI = D_inhib * lapI[i]
 
     # Explicit Euler step with temporal scaling
-    zAi = A[i] + dt * T[0] * (diffA + prodA)
-    zIi = I[i] + dt * T[0] * (diffI + prodI)
+    zAi = A[i] + dt * gamma[0] * (diffA + prodA)
+    zIi = I[i] + dt * gamma[0] * (diffI + prodI)
 
     # Linear damping
-    inv = 1.0 / (1.0 + dt * T[0])
+    inv = 1.0 / (1.0 + dt * gamma[0])
     Ai_next = zAi * inv
     Ii_next = zIi * inv
 
@@ -870,9 +872,9 @@ def reaction_step_masked(
     R: wp.array(dtype=wp.float32),
     lapA: wp.array(dtype=wp.float32),  # (N,)
     lapI: wp.array(dtype=wp.float32),  # (N,)
-    S: wp.array(dtype=wp.float32),
-    T: wp.array(dtype=wp.float32),
-    phi: wp.float32,
+    chi: wp.array(dtype=wp.float32),  # paper chi: spatial characteristic of activator
+    gamma: wp.array(dtype=wp.float32),  # paper gamma: reaction rate
+    D_inhib: wp.float32,  # paper D_inhib: inhibitor diffusivity scaling
     dt: wp.float32,
     CT: wp.array(dtype=wp.uint32),
     reaction_cell_type: wp.uint32,
@@ -883,15 +885,15 @@ def reaction_step_masked(
 
     i = wp.tid()
 
-    # Diffusion with graph laplacian. The temporal scale T is intentionally kept
-    # consistent with reaction_step so masked and unmasked calls use the same
-    # effective diffusion coefficient.
-    diffA = (S[0] * phi) * lapA[i]
-    diffI = phi * lapI[i]
+    # Diffusion with graph laplacian. The reaction rate gamma is intentionally
+    # kept consistent with reaction_step so masked and unmasked calls use the
+    # same effective diffusion coefficient.
+    diffA = (chi[0] * D_inhib) * lapA[i]
+    diffI = D_inhib * lapI[i]
 
     if CT[i] != reaction_cell_type:
-        Ai_next = A[i] + dt * T[0] * diffA
-        Ii_next = I[i] + dt * T[0] * diffI
+        Ai_next = A[i] + dt * gamma[0] * diffA
+        Ii_next = I[i] + dt * gamma[0] * diffI
         A_next[i] = wp.clamp(Ai_next, 0.0, 1e4)
         I_next[i] = wp.clamp(Ii_next, 0.0, 1e4)
         return
@@ -905,6 +907,8 @@ def reaction_step_masked(
     cA2 = cA * cA
     ciI = cI
 
+    # Activator self-production, saturating: take the smaller of the two
+    # forms so high inhibitor caps production and the field cannot blow up.
     prodA_lin = safe_div(cA2, ciI)
     prodA_quad = safe_div(cA2, ciI * ciI)
 
@@ -915,11 +919,11 @@ def reaction_step_masked(
     prodI = cA2
 
     # Explicit Euler step with temporal scaling
-    zAi = A[i] + dt * T[0] * (diffA + prodA)
-    zIi = I[i] + dt * T[0] * (diffI + prodI)
+    zAi = A[i] + dt * gamma[0] * (diffA + prodA)
+    zIi = I[i] + dt * gamma[0] * (diffI + prodI)
 
     # Linear damping on reacting cells only.
-    inv = 1.0 / (1.0 + dt * T[0])
+    inv = 1.0 / (1.0 + dt * gamma[0])
     Ai_next = zAi * inv
     Ii_next = zIi * inv
 
@@ -934,9 +938,9 @@ def chem_step(
     R: wp.array,
     lapA: wp.array,
     lapI: wp.array,
-    S: wp.array,
-    T: wp.array,
-    phi: float,
+    chi: wp.array,  # paper chi: spatial characteristic of activator
+    gamma: wp.array,  # paper gamma: reaction rate
+    D_inhib: float,  # paper D_inhib: inhibitor diffusivity scaling
     dt: float,
     particle_count: int,
     A_next: wp.array,
@@ -979,7 +983,7 @@ def chem_step(
         wp.launch(
             reaction_step,
             dim=particle_count,
-            inputs=[A, I, R, lapA, lapI, S, T, phi, dt],
+            inputs=[A, I, R, lapA, lapI, chi, gamma, D_inhib, dt],
             outputs=[A_next, I_next],
             device=device,
         )
@@ -987,7 +991,19 @@ def chem_step(
         wp.launch(
             reaction_step_masked,
             dim=particle_count,
-            inputs=[A, I, R, lapA, lapI, S, T, phi, dt, CT, wp.uint32(reaction_cell_type)],
+            inputs=[
+                A,
+                I,
+                R,
+                lapA,
+                lapI,
+                chi,
+                gamma,
+                D_inhib,
+                dt,
+                CT,
+                wp.uint32(reaction_cell_type),
+            ],
             outputs=[A_next, I_next],
             device=device,
         )
@@ -1103,8 +1119,8 @@ def growth_step(
     A: wp.array(dtype=wp.float32),
     CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
-    AP: wp.array(dtype=wp.float32),
-    SC: wp.array(dtype=wp.float32),
+    alpha_grow: wp.array(dtype=wp.float32),  # paper alpha_grow: growth Hill exponent
+    ell_sw: wp.array(dtype=wp.float32),  # paper ell_sw: switch concentration
     dt: float,
     R_ref: wp.float32,
     R_max: wp.float32,
@@ -1118,7 +1134,7 @@ def growth_step(
     wp.launch(
         growth_step_inner,
         dim=particle_count,
-        inputs=[R, R_eq, A, CT, keys, AP, SC, dt, R_ref, R_max, R_next, R_eq_next],
+        inputs=[R, R_eq, A, CT, keys, alpha_grow, ell_sw, dt, R_ref, R_max, R_next, R_eq_next],
         device=device,
     )
 
@@ -1138,8 +1154,8 @@ def growth_step_inner(
     A: wp.array(dtype=wp.float32),
     CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
-    AP: wp.array(dtype=wp.float32),
-    SC: wp.array(dtype=wp.float32),
+    alpha_grow: wp.array(dtype=wp.float32),  # paper alpha_grow: growth Hill exponent
+    ell_sw: wp.array(dtype=wp.float32),  # paper ell_sw: switch concentration
     dt: wp.float32,
     R_ref: wp.float32,
     R_max: wp.float32,
@@ -1149,21 +1165,24 @@ def growth_step_inner(
     """Per-particle growth rule conditioned on cell type and local chemistry."""
     i = wp.tid()
 
+    # Mesenchyme: activator-driven growth of the target (equilibrium) radius.
     if CT[i] == wp.uint32(0):
         r_i_0, r_eq_i = R[i], wp.min(R_eq[i], R_max)
 
         V = volume_from_radius(R[i])
-        num = safe_div(A[i], V) ** AP[0]
+        num = safe_div(A[i], V) ** alpha_grow[0]
 
         key = keys[i]
-        lam = wp.randf(key, 0.8, 1.0)
+        lam = wp.randf(key, 0.8, 1.0)  # per-step stochastic growth rate
         key = wp.randu(key)
-        frac = safe_div(num, (SC[0] ** AP[0]) + num)
+        # Hill switch on activator concentration (half-max at ell_sw)
+        frac = safe_div(num, (ell_sw[0] ** alpha_grow[0]) + num)
 
         R_eq_next[i] = r_eq_i + frac * lam * dt
-        R_next[i] = r_i_0 + ((1.0 - safe_div(r_i_0, r_eq_i)) ** 2.0) * dt
+        R_next[i] = r_i_0 + ((1.0 - safe_div(r_i_0, r_eq_i)) ** 2.0) * dt  # relax r -> r_eq
         keys[i] = key
 
+    # Epithelium: deterministic relaxation toward the reference radius R_ref.
     if CT[i] == wp.uint32(1):
         r_i_1 = R[i]
         R_next[i] = r_i_1 + ((1.0 - safe_div(r_i_1, R_ref)) ** 2.0) * dt

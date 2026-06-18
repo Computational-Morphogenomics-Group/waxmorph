@@ -26,7 +26,7 @@ except RuntimeError:
     DEVICE = "cpu"
 
 
-def _make_state(positions, radii, polarities=None, num_genes=2):
+def _make_state(positions, radii, polarities=None, num_molecules=2):
     """Helper to create Warp arrays from numpy data."""
     n = len(positions)
     pos = np.zeros((MAX_PARTICLES, 3), dtype=np.float32)
@@ -44,11 +44,11 @@ def _make_state(positions, radii, polarities=None, num_genes=2):
         pol[:n, 2] = 1.0  # default: z-axis
     P = wp.from_numpy(pol, dtype=wp.vec3f, device=DEVICE)
 
-    genes = np.zeros((MAX_PARTICLES, num_genes), dtype=np.float32)
-    genes[:n] = np.random.default_rng(42).random((n, num_genes)).astype(np.float32)
-    G = wp.from_numpy(genes, dtype=wp.float32, device=DEVICE)
+    c_init = np.zeros((MAX_PARTICLES, num_molecules), dtype=np.float32)
+    c_init[:n] = np.random.default_rng(42).random((n, num_molecules)).astype(np.float32)
+    c = wp.from_numpy(c_init, dtype=wp.float32, device=DEVICE)
 
-    return X, P, R, G, n
+    return X, P, R, c, n
 
 
 class TestBuildEdgeIndex:
@@ -56,7 +56,7 @@ class TestBuildEdgeIndex:
         """Two particles within contact range, third far away."""
         positions = [[0, 0, 0], [0.9, 0, 0], [10, 0, 0]]
         radii = [0.5, 0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _c, n = _make_state(positions, radii)
 
         edge_index = build_edge_index(X, R, particle_count=n)
 
@@ -69,7 +69,7 @@ class TestBuildEdgeIndex:
     def test_no_self_loops(self):
         positions = [[0, 0, 0], [0.5, 0, 0]]
         radii = [0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _c, n = _make_state(positions, radii)
 
         edge_index = build_edge_index(X, R, particle_count=n)
 
@@ -79,7 +79,7 @@ class TestBuildEdgeIndex:
     def test_all_connected(self):
         positions = [[0, 0, 0], [0.5, 0, 0], [0.25, 0.4, 0]]
         radii = [0.5, 0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _c, n = _make_state(positions, radii)
 
         edge_index = build_edge_index(X, R, particle_count=n)
 
@@ -88,7 +88,7 @@ class TestBuildEdgeIndex:
     def test_no_edges_far_apart(self):
         positions = [[0, 0, 0], [100, 0, 0]]
         radii = [0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _c, n = _make_state(positions, radii)
 
         edge_index = build_edge_index(X, R, particle_count=n)
 
@@ -99,18 +99,18 @@ class TestBuildNodeFeatures:
     def test_shape_genes_only(self):
         positions = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
         radii = [0.5, 0.5, 0.5]
-        _X, _P, _R, G, n = _make_state(positions, radii, num_genes=4)
+        _X, _P, _R, c, n = _make_state(positions, radii, num_molecules=4)
 
-        feats = build_node_features(G, particle_count=n)
+        feats = build_node_features(c, particle_count=n)
 
         assert feats.shape == (3, 4)
 
     def test_single_gene(self):
         positions = [[0, 0, 0], [1, 0, 0]]
         radii = [0.5, 0.5]
-        _X, _P, _R, G, n = _make_state(positions, radii, num_genes=1)
+        _X, _P, _R, c, n = _make_state(positions, radii, num_molecules=1)
 
-        feats = build_node_features(G, particle_count=n)
+        feats = build_node_features(c, particle_count=n)
 
         assert feats.shape == (2, 1)
 
@@ -119,7 +119,7 @@ class TestBuildEdgeFeatures:
     def test_shape(self):
         positions = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
         radii = [0.8, 0.8, 0.8]
-        X, P, R, _G, n = _make_state(positions, radii)
+        X, P, R, _c, n = _make_state(positions, radii)
 
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
@@ -132,7 +132,7 @@ class TestBuildEdgeFeatures:
         positions = [[0, 0, 0], [0.5, 0, 0]]
         radii = [0.5, 0.5]
         polarities = [[0, 0, 1], [0, 0, 1]]
-        X, P, R, _G, n = _make_state(positions, radii, polarities=polarities)
+        X, P, R, _c, n = _make_state(positions, radii, polarities=polarities)
 
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
@@ -146,7 +146,7 @@ class TestBuildEdgeFeatures:
         positions = [[0, 0, 0], [0.5, 0, 0]]
         radii = [0.5, 0.5]
         polarities = [[0, 0, 1], [0, 0, -1]]
-        X, P, R, _G, n = _make_state(positions, radii, polarities=polarities)
+        X, P, R, _c, n = _make_state(positions, radii, polarities=polarities)
 
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
@@ -157,7 +157,7 @@ class TestBuildEdgeFeatures:
         """Distance should be the same for i->j and j->i."""
         positions = [[0, 0, 0], [1, 2, 3]]
         radii = [3.0, 3.0]
-        X, P, R, _G, n = _make_state(positions, radii)
+        X, P, R, _c, n = _make_state(positions, radii)
 
         edge_index = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
@@ -173,7 +173,7 @@ class TestSparseMatchesDense:
     def test_same_edges(self):
         positions = [[0, 0, 0], [0.9, 0, 0], [10, 0, 0], [0.25, 0.4, 0]]
         radii = [0.5, 0.5, 0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _c, n = _make_state(positions, radii)
 
         edge_index = build_edge_index(X, R, particle_count=n)
 
@@ -188,11 +188,11 @@ class TestBuildGraph:
     def test_convenience_wrapper(self):
         positions = [[0, 0, 0], [0.5, 0, 0], [0.25, 0.4, 0]]
         radii = [0.5, 0.5, 0.5]
-        X, P, R, G, n = _make_state(positions, radii, num_genes=5)
+        X, P, R, c, n = _make_state(positions, radii, num_molecules=5)
 
-        node_feats, edge_index, edge_feats = build_graph(X, P, R, particle_count=n, G=G)
+        node_feats, edge_index, edge_feats = build_graph(X, P, R, particle_count=n, c=c)
 
-        assert node_feats.shape == (3, 5)  # genes only
+        assert node_feats.shape == (3, 5)  # concentrations only
         assert edge_index.shape[0] == 2
         assert edge_feats.shape[1] == 2  # dist, angle
         assert edge_feats.shape[0] == edge_index.shape[1]
@@ -218,19 +218,19 @@ class TestDeviceResolution:
 
 
 class TestTorchGraphGradients:
-    def test_node_features_preserve_gene_gradients(self):
-        genes = torch.tensor(
+    def test_node_features_preserve_concentration_gradients(self):
+        c = torch.tensor(
             [[0.2, -0.5, 0.1], [0.7, 0.4, -0.3]],
             dtype=torch.float32,
             requires_grad=True,
         )
 
-        feats = build_node_features(genes, particle_count=2)
+        feats = build_node_features(c, particle_count=2)
         loss = feats.square().sum()
         loss.backward()
 
-        assert genes.grad is not None
-        torch.testing.assert_close(genes.grad, 2.0 * genes.detach())
+        assert c.grad is not None
+        torch.testing.assert_close(c.grad, 2.0 * c.detach())
 
     def test_edge_features_preserve_position_and_polarity_gradients(self):
         positions = torch.tensor(

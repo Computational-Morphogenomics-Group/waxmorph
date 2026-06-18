@@ -34,12 +34,12 @@ class TrainConfig:
         n_epochs: Number of optimization epochs.
         t_rollout: Number of rollout steps per epoch.
         mech_steps: Number of sticky-sphere mechanics corrections per rollout.
-        diff_steps: Number of gene diffusion corrections per rollout.
+        diff_steps: Number of signaling-molecule diffusion corrections per rollout.
         dt_mech: Euler step size for mechanics corrections.
         dt_diff: Euler step size for diffusion corrections.
         dt_gns: Scale applied to model-predicted deltas.
-        alpha_diff: Gene diffusion coefficient.
-        l2_lambda: Weight applied to squared model displacement regularization.
+        D_emu: Signaling-molecule diffusion coefficient.
+        lambda_reg: Weight applied to squared model displacement regularization.
         grad_clip_norm: Optional maximum gradient norm.
         log_every: Epoch interval used for progress logging.
         max_edges_factor: Edge and pair capacity multiplier per active
@@ -58,8 +58,8 @@ class TrainConfig:
     dt_mech: float = 1e-2
     dt_diff: float = 1e-2
     dt_gns: float = 1e-2
-    alpha_diff: float = 0.1
-    l2_lambda: float = 1e-3
+    D_emu: float = 0.1
+    lambda_reg: float = 1e-3
     grad_clip_norm: float | None = 1.0
     log_every: int = 10
     max_edges_factor: int = 10
@@ -109,8 +109,8 @@ class _TopologyBatch(NamedTuple):
 @dataclasses.dataclass(frozen=True)
 class _WarpCollectionContext:
     R_wp: Any
-    gx: Any
-    lap_G: Any
+    f_net: Any
+    lap_c: Any
     grid: Any
     query_radius: float
     particle_count: int
@@ -332,7 +332,7 @@ def _build_pair_topology(
 
 def _make_warp_collection_context(
     R: jax.Array,
-    G: jax.Array,
+    c: jax.Array,
     *,
     particle_count: int,
     max_pairs: int,
@@ -346,11 +346,11 @@ def _make_warp_collection_context(
     r_max = float(np.asarray(jax.device_get(R[:particle_count])).max())
     query_radius = 2.0 * r_max + EPS_DIST
     max_particles = int(R.shape[0])
-    num_genes = int(G.shape[1]) if G.ndim > 1 else 1
+    num_molecules = int(c.shape[1]) if c.ndim > 1 else 1
     return _WarpCollectionContext(
         R_wp=R_wp,
-        gx=wp.zeros(max_particles, dtype=wp.vec3f, device=device),
-        lap_G=wp.zeros((max_particles, num_genes), dtype=wp.float32, device=device),
+        f_net=wp.zeros(max_particles, dtype=wp.vec3f, device=device),
+        lap_c=wp.zeros((max_particles, num_molecules), dtype=wp.float32, device=device),
         grid=wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device),
         query_radius=query_radius,
         particle_count=particle_count,
@@ -365,13 +365,13 @@ def _jax_positions_to_warp(X: jax.Array):
     return wp.from_jax(X, dtype=wp.vec3f)
 
 
-def _jax_genes_to_warp(G: jax.Array):
+def _jax_c_to_warp(c: jax.Array):
     import warp as wp
 
-    G_wp = wp.from_jax(G, dtype=wp.float32)
-    if G.ndim == 2:
-        G_wp = G_wp.reshape((int(G.shape[0]), int(G.shape[1])))
-    return G_wp
+    c_wp = wp.from_jax(c, dtype=wp.float32)
+    if c.ndim == 2:
+        c_wp = c_wp.reshape((int(c.shape[0]), int(c.shape[1])))
+    return c_wp
 
 
 def _warp_positions_to_jax(X_wp, dtype) -> jax.Array:
@@ -380,10 +380,10 @@ def _warp_positions_to_jax(X_wp, dtype) -> jax.Array:
     return jnp.asarray(wp.to_jax(X_wp), dtype=dtype)
 
 
-def _warp_genes_to_jax(G_wp, dtype) -> jax.Array:
+def _warp_c_to_jax(c_wp, dtype) -> jax.Array:
     import warp as wp
 
-    return jnp.asarray(wp.to_jax(G_wp), dtype=dtype)
+    return jnp.asarray(wp.to_jax(c_wp), dtype=dtype)
 
 
 def _build_warp_collection_pairs(
@@ -432,20 +432,20 @@ def _native_warp_mech_step(
 
     from waxmorph.emulator import _gd_update, _sticky_sphere_grads_from_pairs
 
-    ctx.gx.zero_()
+    ctx.f_net.zero_()
     X_out = wp.zeros_like(X_wp, device=ctx.device)
     if num_pairs > 0:
         wp.launch(
             _sticky_sphere_grads_from_pairs,
             dim=num_pairs,
             inputs=[X_wp, ctx.R_wp, pair_i_wp[:num_pairs], pair_j_wp[:num_pairs]],
-            outputs=[ctx.gx],
+            outputs=[ctx.f_net],
             device=ctx.device,
         )
     wp.launch(
         _gd_update,
         dim=ctx.particle_count,
-        inputs=[X_wp, ctx.gx, float(dt)],
+        inputs=[X_wp, ctx.f_net, float(dt)],
         outputs=[X_out],
         device=ctx.device,
     )
@@ -454,46 +454,49 @@ def _native_warp_mech_step(
 
 def _native_warp_diffusion_step(
     X_wp,
-    G_wp,
+    c_wp,
     pair_i_wp,
     pair_j_wp,
     num_pairs: int,
-    alpha: float,
+    D_emu: float,
     dt: float,
     ctx: _WarpCollectionContext,
 ):
     import warp as wp
 
-    from waxmorph.emulator import _gene_diffusion_laplacian_from_pairs, _gene_diffusion_step_out
+    from waxmorph.emulator import (
+        _molecule_diffusion_laplacian_from_pairs,
+        _molecule_diffusion_step_out,
+    )
 
-    ctx.lap_G.zero_()
-    G_out = wp.zeros_like(G_wp, device=ctx.device)
+    ctx.lap_c.zero_()
+    c_out = wp.zeros_like(c_wp, device=ctx.device)
     if num_pairs > 0:
         wp.launch(
-            _gene_diffusion_laplacian_from_pairs,
+            _molecule_diffusion_laplacian_from_pairs,
             dim=num_pairs,
-            inputs=[X_wp, ctx.R_wp, G_wp, pair_i_wp[:num_pairs], pair_j_wp[:num_pairs]],
-            outputs=[ctx.lap_G],
+            inputs=[X_wp, ctx.R_wp, c_wp, pair_i_wp[:num_pairs], pair_j_wp[:num_pairs]],
+            outputs=[ctx.lap_c],
             device=ctx.device,
         )
     wp.launch(
-        _gene_diffusion_step_out,
-        dim=(int(G_wp.shape[0]), int(G_wp.shape[1])),
-        inputs=[G_wp, ctx.lap_G, float(alpha), float(dt), ctx.particle_count],
-        outputs=[G_out],
+        _molecule_diffusion_step_out,
+        dim=(int(c_wp.shape[0]), int(c_wp.shape[1])),
+        inputs=[c_wp, ctx.lap_c, float(D_emu), float(dt), ctx.particle_count],
+        outputs=[c_out],
         device=ctx.device,
     )
-    return G_out
+    return c_out
 
 
 def _graph_features_from_topology(
     X: jax.Array,
     P: jax.Array,
-    G: jax.Array,
+    c: jax.Array,
     topology: _StepTopology,
     particle_count: int,
 ) -> tuple[jax.Array, jax.Array]:
-    node_feats = build_node_features(G, particle_count)
+    node_feats = build_node_features(c, particle_count)
     edge_feats = build_edge_features(X, P, topology.edge_index, particle_count)
     return node_feats, edge_feats
 
@@ -504,23 +507,23 @@ def _apply_rollout_step(
     config: TrainConfig,
     X: jax.Array,
     P: jax.Array,
-    G: jax.Array,
+    c: jax.Array,
     R: jax.Array,
     topology: _StepTopology,
     particle_count: int,
     device: str,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    node_feats, edge_feats = _graph_features_from_topology(X, P, G, topology, particle_count)
+    node_feats, edge_feats = _graph_features_from_topology(X, P, c, topology, particle_count)
 
     out = model(node_feats, topology.edge_index, edge_feats, num_edges=topology.num_edges)
     dX = out["dX"] * config.dt_gns
     dP = out["dP"] * config.dt_gns
-    dG = out["dG"] * config.dt_gns
+    dc = out["dc"] * config.dt_gns
 
     X = X + dX
     P = P + dP
     P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), 1e-9)
-    G = jnp.maximum(G + dG, jnp.asarray(0.0, dtype=G.dtype))
+    c = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
 
     if topology.mech_pairs or topology.diff_pairs:
         from waxmorph.jax.warp_autograd import warp_diffusion_step, warp_mech_step
@@ -537,17 +540,17 @@ def _apply_rollout_step(
             )
 
         for pairs in topology.diff_pairs:
-            G = warp_diffusion_step(
-                G,
+            c = warp_diffusion_step(
+                c,
                 pairs.pair_i,
                 pairs.pair_j,
-                config.alpha_diff,
+                config.D_emu,
                 config.dt_diff,
                 num_pairs=pairs.num_pairs,
                 device=device,
             )
 
-    return X, P, G, jnp.sum(dX**2)
+    return X, P, c, jnp.sum(dX**2)
 
 
 @eqx.filter_jit
@@ -555,7 +558,7 @@ def _collection_gns_step(
     model,
     X: jax.Array,
     P: jax.Array,
-    G: jax.Array,
+    c: jax.Array,
     edge_index: jax.Array,
     num_edges: jax.Array,
     particle_count: int,
@@ -567,17 +570,17 @@ def _collection_gns_step(
         mech_pairs=(),
         diff_pairs=(),
     )
-    node_feats, edge_feats = _graph_features_from_topology(X, P, G, topology, particle_count)
+    node_feats, edge_feats = _graph_features_from_topology(X, P, c, topology, particle_count)
     out = model(node_feats, edge_index, edge_feats, num_edges=num_edges)
     dX = out["dX"] * dt_gns
     dP = out["dP"] * dt_gns
-    dG = out["dG"] * dt_gns
+    dc = out["dc"] * dt_gns
 
     X_next = X + dX
     P_next = P + dP
     P_next = P_next / jnp.maximum(jnp.linalg.norm(P_next, axis=-1, keepdims=True), 1e-9)
-    G_next = jnp.maximum(G + dG, jnp.asarray(0.0, dtype=G.dtype))
-    return X_next, P_next, G_next, dX, dP, dG
+    c_next = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
+    return X_next, P_next, c_next, dX, dP, dc
 
 
 def _collect_topologies_and_trajectory(
@@ -586,20 +589,20 @@ def _collect_topologies_and_trajectory(
     config: TrainConfig,
     X: jax.Array,
     P: jax.Array,
-    G: jax.Array,
+    c: jax.Array,
     R: jax.Array,
     particle_count: int,
     device: str,
 ) -> tuple[tuple[_StepTopology, ...], list[dict[str, np.ndarray]]]:
     topologies: list[_StepTopology] = []
-    trajectory = [{"pos": _as_numpy(X), "pol": _as_numpy(P), "genes": _as_numpy(G)}]
+    trajectory = [{"pos": _as_numpy(X), "pol": _as_numpy(P), "c": _as_numpy(c)}]
     max_edges = _max_edges_for_config(config, particle_count)
     max_pairs = max_edges
     use_native_warp = str(device).startswith("cuda") and _uses_warp_bridge(config)
     warp_ctx = (
         _make_warp_collection_context(
             R,
-            G,
+            c,
             particle_count=particle_count,
             max_pairs=max_pairs,
             device=device,
@@ -611,7 +614,7 @@ def _collect_topologies_and_trajectory(
     for t in range(config.t_rollout):
         _validate_finite_array("X", X, rollout_step=t, phase="pre-graph build")
         _validate_finite_array("P", P, rollout_step=t, phase="pre-graph build")
-        _validate_finite_array("G", G, rollout_step=t, phase="pre-graph build")
+        _validate_finite_array("c", c, rollout_step=t, phase="pre-graph build")
 
         edge_index, num_edges = build_edge_index(
             X,
@@ -619,11 +622,11 @@ def _collect_topologies_and_trajectory(
             particle_count=particle_count,
             max_edges=max_edges,
         )
-        X_next, P_next, G_next, dX, dP, dG = _collection_gns_step(
+        X_next, P_next, c_next, dX, dP, dc = _collection_gns_step(
             model,
             X,
             P,
-            G,
+            c,
             edge_index,
             num_edges,
             particle_count,
@@ -634,15 +637,15 @@ def _collect_topologies_and_trajectory(
 
         _validate_finite_array("dX", dX, rollout_step=t, phase="gns output")
         _validate_finite_array("dP", dP, rollout_step=t, phase="gns output")
-        _validate_finite_array("dG", dG, rollout_step=t, phase="gns output")
+        _validate_finite_array("dc", dc, rollout_step=t, phase="gns output")
 
         X = jax.lax.stop_gradient(X_next)
         P = jax.lax.stop_gradient(P_next)
-        G = jax.lax.stop_gradient(G_next)
+        c = jax.lax.stop_gradient(c_next)
 
         _validate_finite_array("X", X, rollout_step=t, phase="post-gns update")
         _validate_finite_array("P", P, rollout_step=t, phase="post-gns update")
-        _validate_finite_array("G", G, rollout_step=t, phase="post-gns update")
+        _validate_finite_array("c", c, rollout_step=t, phase="post-gns update")
 
         mech_pairs: list[_PairTopology] = []
         if warp_ctx is not None and config.mech_steps > 0:
@@ -691,24 +694,24 @@ def _collect_topologies_and_trajectory(
         diff_pairs: list[_PairTopology] = []
         if warp_ctx is not None and config.diff_steps > 0:
             X_wp = _jax_positions_to_warp(X)
-            G_wp = _jax_genes_to_warp(G)
+            c_wp = _jax_c_to_warp(c)
             pairs, pair_i_wp, pair_j_wp, num_pairs = _build_warp_collection_pairs(
                 X_wp,
                 warp_ctx,
             )
             for _ in range(config.diff_steps):
                 diff_pairs.append(pairs)
-                G_wp = _native_warp_diffusion_step(
+                c_wp = _native_warp_diffusion_step(
                     X_wp,
-                    G_wp,
+                    c_wp,
                     pair_i_wp,
                     pair_j_wp,
                     num_pairs,
-                    config.alpha_diff,
+                    config.D_emu,
                     config.dt_diff,
                     warp_ctx,
                 )
-            G = jax.lax.stop_gradient(_warp_genes_to_jax(G_wp, G.dtype))
+            c = jax.lax.stop_gradient(_warp_c_to_jax(c_wp, c.dtype))
         else:
             diff_pairs_for_step = None
             for _ in range(config.diff_steps):
@@ -723,19 +726,19 @@ def _collect_topologies_and_trajectory(
                 diff_pairs.append(diff_pairs_for_step)
                 from waxmorph.jax.warp_autograd import warp_diffusion_step
 
-                G = jax.lax.stop_gradient(
+                c = jax.lax.stop_gradient(
                     warp_diffusion_step(
-                        G,
+                        c,
                         diff_pairs_for_step.pair_i,
                         diff_pairs_for_step.pair_j,
-                        config.alpha_diff,
+                        config.D_emu,
                         config.dt_diff,
                         num_pairs=diff_pairs_for_step.num_pairs,
                         device=device,
                     )
                 )
 
-        _validate_finite_array("G", G, rollout_step=t, phase="post-diffusion")
+        _validate_finite_array("c", c, rollout_step=t, phase="post-diffusion")
 
         topologies.append(
             _StepTopology(
@@ -745,7 +748,7 @@ def _collect_topologies_and_trajectory(
                 diff_pairs=tuple(diff_pairs),
             )
         )
-        trajectory.append({"pos": _as_numpy(X), "pol": _as_numpy(P), "genes": _as_numpy(G)})
+        trajectory.append({"pos": _as_numpy(X), "pol": _as_numpy(P), "c": _as_numpy(c)})
 
     return tuple(topologies), trajectory
 
@@ -886,24 +889,24 @@ def _apply_rollout_step_from_batch(
     config: TrainConfig,
     X: jax.Array,
     P: jax.Array,
-    G: jax.Array,
+    c: jax.Array,
     R: jax.Array,
     topology: _TopologyBatch,
     particle_count: int,
     device: str,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    node_feats = build_node_features(G, particle_count)
+    node_feats = build_node_features(c, particle_count)
     edge_feats = build_edge_features(X, P, topology.edge_index, particle_count)
 
     out = model(node_feats, topology.edge_index, edge_feats, num_edges=topology.num_edges)
     dX = out["dX"] * config.dt_gns
     dP = out["dP"] * config.dt_gns
-    dG = out["dG"] * config.dt_gns
+    dc = out["dc"] * config.dt_gns
 
     X = X + dX
     P = P + dP
     P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), 1e-9)
-    G = jnp.maximum(G + dG, jnp.asarray(0.0, dtype=G.dtype))
+    c = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
 
     if config.mech_steps > 0 or config.diff_steps > 0:
         from waxmorph.jax.warp_autograd import warp_diffusion_step, warp_mech_step
@@ -920,17 +923,17 @@ def _apply_rollout_step_from_batch(
             )
 
         for step in range(config.diff_steps):
-            G = warp_diffusion_step(
-                G,
+            c = warp_diffusion_step(
+                c,
                 topology.diff_pair_i[step],
                 topology.diff_pair_j[step],
-                config.alpha_diff,
+                config.D_emu,
                 config.dt_diff,
                 num_pairs=topology.diff_num_pairs[step],
                 device=device,
             )
 
-    return X, P, G, jnp.sum(dX**2)
+    return X, P, c, jnp.sum(dX**2)
 
 
 def _epoch_loss_with_topology_batch(
@@ -939,7 +942,7 @@ def _epoch_loss_with_topology_batch(
     config: TrainConfig,
     X_source: jax.Array,
     P_source: jax.Array,
-    G_source: jax.Array,
+    c_source: jax.Array,
     R: jax.Array,
     particle_count: int,
     targets_by_frame: dict[int, jax.Array],
@@ -948,23 +951,23 @@ def _epoch_loss_with_topology_batch(
     device: str,
 ) -> tuple[jax.Array, jax.Array]:
     def scan_step(carry, topology):
-        X, P, G = carry
-        X, P, G, step_l2 = _apply_rollout_step_from_batch(
+        X, P, c = carry
+        X, P, c, step_l2 = _apply_rollout_step_from_batch(
             model=model,
             config=config,
             X=X,
             P=P,
-            G=G,
+            c=c,
             R=R,
             topology=topology,
             particle_count=particle_count,
             device=device,
         )
-        return (X, P, G), (X, step_l2)
+        return (X, P, c), (X, step_l2)
 
-    (_X, _P, _G), (positions, step_l2) = jax.lax.scan(
+    (_X, _P, _c), (positions, step_l2) = jax.lax.scan(
         scan_step,
-        (X_source, P_source, G_source),
+        (X_source, P_source, c_source),
         topology_batch,
     )
     loss_l2 = jnp.sum(step_l2)
@@ -980,7 +983,7 @@ def _epoch_loss_with_topologies(
     config: TrainConfig,
     X_source: jax.Array,
     P_source: jax.Array,
-    G_source: jax.Array,
+    c_source: jax.Array,
     R: jax.Array,
     particle_count: int,
     targets_by_frame: dict[int, jax.Array],
@@ -990,17 +993,17 @@ def _epoch_loss_with_topologies(
 ) -> tuple[jax.Array, jax.Array]:
     X = X_source
     P = P_source
-    G = G_source
+    c = c_source
     loss_shape = jnp.asarray(0.0, dtype=X.dtype)
     loss_l2 = jnp.asarray(0.0, dtype=X.dtype)
 
     for t, topology in enumerate(topologies):
-        X, P, G, step_l2 = _apply_rollout_step(
+        X, P, c, step_l2 = _apply_rollout_step(
             model=model,
             config=config,
             X=X,
             P=P,
-            G=G,
+            c=c,
             R=R,
             topology=topology,
             particle_count=particle_count,
@@ -1019,7 +1022,7 @@ def _run_epoch(
     config: TrainConfig,
     source_pos: np.ndarray,
     polarities: np.ndarray,
-    genes: np.ndarray,
+    c: np.ndarray,
     R: jax.Array,
     particle_count: int,
     targets_by_frame: dict[int, jax.Array],
@@ -1034,14 +1037,14 @@ def _run_epoch(
     with jax.default_device(jax_device):
         X_source = jnp.asarray(source_pos, dtype=jnp.float32)
         P_source = jnp.asarray(polarities, dtype=jnp.float32)
-        G_source = jnp.asarray(genes, dtype=jnp.float32)
+        c_source = jnp.asarray(c, dtype=jnp.float32)
 
     topologies, trajectory = _collect_topologies_and_trajectory(
         model=model,
         config=config,
         X=X_source,
         P=P_source,
-        G=G_source,
+        c=c_source,
         R=R,
         particle_count=particle_count,
         device=device,
@@ -1051,7 +1054,7 @@ def _run_epoch(
         config=config,
         X_source=X_source,
         P_source=P_source,
-        G_source=G_source,
+        c_source=c_source,
         R=R,
         particle_count=particle_count,
         targets_by_frame=targets_by_frame,
@@ -1084,7 +1087,7 @@ def _make_train_step(
         opt_state: optax.OptState,
         X_source: jax.Array,
         P_source: jax.Array,
-        G_source: jax.Array,
+        c_source: jax.Array,
         R: jax.Array,
         topology_batch: _TopologyBatch,
     ):
@@ -1094,7 +1097,7 @@ def _make_train_step(
                 config=config,
                 X_source=X_source,
                 P_source=P_source,
-                G_source=G_source,
+                c_source=c_source,
                 R=R,
                 particle_count=particle_count,
                 targets_by_frame=targets_by_frame,
@@ -1102,7 +1105,7 @@ def _make_train_step(
                 loss_fn=loss_fn,
                 device=device,
             )
-            return loss_shape + (loss_l2 * config.l2_lambda), (loss_shape, loss_l2)
+            return loss_shape + (loss_l2 * config.lambda_reg), (loss_shape, loss_l2)
 
         (loss, (loss_shape, loss_l2)), grads = eqx.filter_value_and_grad(
             loss_fn_inner, has_aux=True
@@ -1134,7 +1137,7 @@ def train(
     *,
     source_pos: np.ndarray,
     polarities: np.ndarray,
-    genes: np.ndarray,
+    c: np.ndarray,
     radii: np.ndarray,
     targets: list[tuple[int, np.ndarray]] | None = None,
     config: TrainConfig | None = None,
@@ -1151,7 +1154,7 @@ def train(
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.
         polarities: Initial polarity vectors with shape ``[N, 3]``.
-        genes: Initial gene concentrations with shape ``[N, num_genes]``.
+        c: Initial signaling-molecule concentrations with shape ``[N, num_molecules]``.
         radii: Particle radii with shape ``[N]``.
         targets: ``(frame, positions)`` supervision pairs. Frame ``0`` supervises
             the state after the first rollout update. Frames must lie in
@@ -1178,7 +1181,7 @@ def train(
 
     _validate_finite_numpy("source_pos", source_pos)
     _validate_finite_numpy("polarities", polarities)
-    _validate_finite_numpy("genes", genes)
+    _validate_finite_numpy("c", c)
     _validate_finite_numpy("radii", radii)
 
     N = len(source_pos)
@@ -1186,7 +1189,7 @@ def train(
     with jax.default_device(jax_device):
         X_source = jnp.asarray(source_pos, dtype=jnp.float32)
         P_source = jnp.asarray(polarities, dtype=jnp.float32)
-        G_source = jnp.asarray(genes, dtype=jnp.float32)
+        c_source = jnp.asarray(c, dtype=jnp.float32)
         R = jnp.asarray(radii, dtype=jnp.float32)
 
     if save_path is not None and os.path.exists(save_path):
@@ -1232,7 +1235,7 @@ def train(
             config=config,
             X=X_source,
             P=P_source,
-            G=G_source,
+            c=c_source,
             R=R,
             particle_count=N,
             device=device,
@@ -1253,7 +1256,7 @@ def train(
             opt_state,
             X_source,
             P_source,
-            G_source,
+            c_source,
             R,
             topology_batch,
         )
@@ -1300,7 +1303,7 @@ def train(
 
     traj_pos = np.stack([f["pos"] for f in best_trajectory])
     traj_pol = np.stack([f["pol"] for f in best_trajectory])
-    traj_genes = np.stack([f["genes"] for f in best_trajectory])
+    traj_c = np.stack([f["c"] for f in best_trajectory])
 
     log = {
         "losses_total": np.array(losses_total),
@@ -1308,7 +1311,7 @@ def train(
         "losses_l2": np.array(losses_l2),
         "best_traj_pos": traj_pos,
         "best_traj_pol": traj_pol,
-        "best_traj_genes": traj_genes,
+        "best_traj_c": traj_c,
         "best_epoch": best_epoch,
         "best_loss": best_loss,
         "target_frames": np.array(sorted(targets_by_frame.keys()), dtype=np.int64),

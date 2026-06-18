@@ -58,8 +58,6 @@ class RenderInterface(ABC):
 
 # INTERACTIVE RENDERERS
 
-# TODO: Update Docstrings
-
 ############################################################
 ############################################################
 ############################################################
@@ -88,6 +86,7 @@ class MPLInterface(RenderInterface):
         - theta_res, phi_res control mesh resolution (longitude/latitude)
         """
         cx, cy, cz = center
+        # parametric sphere: theta=longitude, phi=latitude, gridded then mapped to xyz
         theta = np.linspace(0, 2 * np.pi, theta_res)
         phi = np.linspace(0, np.pi, phi_res)
         TH, PH = np.meshgrid(theta, phi)
@@ -153,6 +152,7 @@ class MPLInterface(RenderInterface):
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111, projection="3d")
 
+        # one surface per active particle; morphogen drives HSV saturation
         for center, radius, morphogen in zip(
             centers[:particle_count],
             radii[:particle_count],
@@ -216,6 +216,7 @@ class PyVistaInterface(RenderInterface):
         # enforce unsigned-ish, but keep it robust if negatives sneak in
         cats = cats.astype(np.int64, copy=False)
 
+        # palette indexed by sorted-unique rank → same category always same color
         uniq, inv = np.unique(cats, return_inverse=True)  # uniq sorted
         palette = PyVistaInterface._husl_palette(len(uniq))  # (K,3) float
         rgb = palette[inv]  # (N,3) float
@@ -252,6 +253,7 @@ class PyVistaInterface(RenderInterface):
         r = np.asarray(radii, dtype=float).reshape(-1)
         m = np.asarray(morphogens, dtype=float).reshape(-1)
 
+        # clamp n to the shortest input so per-point arrays stay aligned
         if n is None:
             n = len(c)
         n = min(n, len(c), len(r), len(m))
@@ -284,6 +286,7 @@ class PyVistaInterface(RenderInterface):
                 raise ValueError(f"polarities must have shape (N,3); got {p.shape}")
             p = p[:n]
 
+            # unit-normalize so arrow glyphs encode direction only, not magnitude
             norms = np.linalg.norm(p, axis=1, keepdims=True)
             p = p / np.clip(norms, 1e-12, None)
 
@@ -295,6 +298,7 @@ class PyVistaInterface(RenderInterface):
     def _glyph_spheres(points_pd: pv.PolyData, theta_res=24, phi_res=12) -> pv.PolyData:
         """Create sphere glyph geometry from point-cloud radius data."""
         _require_pyvista()
+        # instance one unit sphere at every point, scaled by per-point 'radius'
         base = pv.Sphere(radius=1.0, theta_resolution=theta_res, phi_resolution=phi_res)
         glyphs = points_pd.glyph(geom=base, scale="radius", orient=False)
         return glyphs
@@ -396,7 +400,6 @@ class PyVistaInterface(RenderInterface):
         polarity_shaft_radius: float = 0.03,
         polarity_tip_length: float = 0.25,
         polarity_tip_radius: float = 0.06,
-        # NEW
         cell_types: np.ndarray | None = None,
     ):
         """Render an interactive PyVista view of active particles.
@@ -459,12 +462,14 @@ class PyVistaInterface(RenderInterface):
             morphogens,
             polarities=polarities,
             n=n,
-            cell_types=cell_types,  # NEW
+            cell_types=cell_types,
         )
 
+        # all spheres as one glyphed actor (single GPU draw); rgb=True reads 'rgb'
         glyphs = PyVistaInterface._glyph_spheres(pd, theta_res, phi_res)
         plotter.add_mesh(glyphs, scalars="rgb", **sphere_kwargs)
 
+        # second actor: polarity arrows, only when vectors are supplied
         if show_polarities and polarities is not None:
             pol_glyphs = PyVistaInterface._glyph_polarity_arrows(
                 pd,
@@ -586,7 +591,7 @@ class _OpenGLVideoBackend(_BaseBackend):
         """Render one OpenGL frame and append it to the video writer."""
         self.renderer.clear()
 
-        # TODO: Update instancer rather than clearing shape instancers
+        # drop instancers so a fresh point count rebuilds geometry each frame
         self.renderer._shape_instancers = {}
 
         self.renderer.begin_frame(float(t))
@@ -829,6 +834,7 @@ class WarpMovieRenderer:
     ):
         i = wp.tid()
 
+        # inactive slots: zero radius → glyph scale 0 → invisible
         if i >= particle_count:
             points_out[i] = wp.vec3(0.0, 0.0, 0.0)
             radii_out[i] = wp.float32(0.0)
@@ -847,6 +853,7 @@ class WarpMovieRenderer:
         b = wp.float32(I_in[i])
         eps = wp.float32(1e-8)
 
+        # pick scalar by mode: activator, inhibitor, or normalized ratio
         m = a
         if morph_mode == 1:
             m = b
@@ -924,6 +931,7 @@ class WarpMovieRenderer:
             base_r, base_g, base_b = [float(np.clip(value, 0.0, 1.0)) for value in base_color]
             use_base_color = 1
 
+        # launch over full capacity; kernel zeroes slots past n_active
         wp.launch(
             self._pack_buffers_kernel,
             dim=self.max_particles,
@@ -988,8 +996,8 @@ class WarpMovieRenderer:
         """Write a video frame from :mod:`numpy` arrays with explicit RGB colors.
 
         This is a convenience method for cases where colors are precomputed
-        (e.g. shape assembly with multi-gene states) rather than derived from
-        separate activator/inhibitor Warp arrays.
+        (e.g. shape assembly with multiple signaling-molecule states) rather
+        than derived from separate activator/inhibitor Warp arrays.
 
         Args:
             t: Time stamp for the frame.
@@ -1008,7 +1016,7 @@ class WarpMovieRenderer:
         r = np.asarray(radii, dtype=np.float32).ravel()[:n]
         col = np.clip(np.asarray(colors, dtype=np.float32)[:n], 0.0, 1.0)
 
-        # Pad to max_particles for Warp buffer size
+        # Pad to max_particles to match fixed-size Warp buffers; tail stays zero
         c_pad = np.zeros((self.max_particles, 3), dtype=np.float32)
         r_pad = np.zeros(self.max_particles, dtype=np.float32)
         col_pad = np.zeros((self.max_particles, 3), dtype=np.float32)

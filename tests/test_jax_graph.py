@@ -27,7 +27,7 @@ except RuntimeError:
     DEVICE = "cpu"
 
 
-def _make_state(positions, radii, polarities=None, num_genes=2):
+def _make_state(positions, radii, polarities=None, num_molecules=2):
     """Helper to create Warp arrays from numpy data."""
     n = len(positions)
     pos = np.zeros((MAX_PARTICLES, 3), dtype=np.float32)
@@ -45,11 +45,11 @@ def _make_state(positions, radii, polarities=None, num_genes=2):
         pol[:n, 2] = 1.0  # default: z-axis
     P = wp.from_numpy(pol, dtype=wp.vec3f, device=DEVICE)
 
-    genes = np.zeros((MAX_PARTICLES, num_genes), dtype=np.float32)
-    genes[:n] = np.random.default_rng(42).random((n, num_genes)).astype(np.float32)
-    G = wp.from_numpy(genes, dtype=wp.float32, device=DEVICE)
+    c = np.zeros((MAX_PARTICLES, num_molecules), dtype=np.float32)
+    c[:n] = np.random.default_rng(42).random((n, num_molecules)).astype(np.float32)
+    C = wp.from_numpy(c, dtype=wp.float32, device=DEVICE)
 
-    return X, P, R, G, n
+    return X, P, R, C, n
 
 
 class TestBuildEdgeIndex:
@@ -57,7 +57,7 @@ class TestBuildEdgeIndex:
         """Two particles within contact range, third far away."""
         positions = [[0, 0, 0], [0.9, 0, 0], [10, 0, 0]]
         radii = [0.5, 0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _C, n = _make_state(positions, radii)
 
         edge_index, num_edges = build_edge_index(X, R, particle_count=n)
 
@@ -71,7 +71,7 @@ class TestBuildEdgeIndex:
     def test_no_self_loops(self):
         positions = [[0, 0, 0], [0.5, 0, 0]]
         radii = [0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _C, n = _make_state(positions, radii)
 
         edge_index, _num_edges = build_edge_index(X, R, particle_count=n)
 
@@ -85,7 +85,7 @@ class TestBuildEdgeIndex:
     def test_all_connected(self):
         positions = [[0, 0, 0], [0.5, 0, 0], [0.25, 0.4, 0]]
         radii = [0.5, 0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _C, n = _make_state(positions, radii)
 
         edge_index, num_edges = build_edge_index(X, R, particle_count=n)
 
@@ -95,7 +95,7 @@ class TestBuildEdgeIndex:
     def test_no_edges_far_apart(self):
         positions = [[0, 0, 0], [100, 0, 0]]
         radii = [0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _C, n = _make_state(positions, radii)
 
         edge_index, num_edges = build_edge_index(X, R, particle_count=n)
 
@@ -107,18 +107,18 @@ class TestBuildNodeFeatures:
     def test_shape_genes_only(self):
         positions = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
         radii = [0.5, 0.5, 0.5]
-        _X, _P, _R, G, n = _make_state(positions, radii, num_genes=4)
+        _X, _P, _R, C, n = _make_state(positions, radii, num_molecules=4)
 
-        feats = build_node_features(G, particle_count=n)
+        feats = build_node_features(C, particle_count=n)
 
         assert feats.shape == (3, 4)
 
     def test_single_gene(self):
         positions = [[0, 0, 0], [1, 0, 0]]
         radii = [0.5, 0.5]
-        _X, _P, _R, G, n = _make_state(positions, radii, num_genes=1)
+        _X, _P, _R, C, n = _make_state(positions, radii, num_molecules=1)
 
-        feats = build_node_features(G, particle_count=n)
+        feats = build_node_features(C, particle_count=n)
 
         assert feats.shape == (2, 1)
 
@@ -127,7 +127,7 @@ class TestBuildEdgeFeatures:
     def test_shape(self):
         positions = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
         radii = [0.8, 0.8, 0.8]
-        X, P, R, _G, n = _make_state(positions, radii)
+        X, P, R, _C, n = _make_state(positions, radii)
 
         edge_index, _ne = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
@@ -140,7 +140,7 @@ class TestBuildEdgeFeatures:
         positions = [[0, 0, 0], [0.5, 0, 0]]
         radii = [0.5, 0.5]
         polarities = [[0, 0, 1], [0, 0, 1]]
-        X, P, R, _G, n = _make_state(positions, radii, polarities=polarities)
+        X, P, R, _C, n = _make_state(positions, radii, polarities=polarities)
 
         edge_index, _ne = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
@@ -153,7 +153,7 @@ class TestBuildEdgeFeatures:
         positions = [[0, 0, 0], [0.5, 0, 0]]
         radii = [0.5, 0.5]
         polarities = [[0, 0, 1], [0, 0, -1]]
-        X, P, R, _G, n = _make_state(positions, radii, polarities=polarities)
+        X, P, R, _C, n = _make_state(positions, radii, polarities=polarities)
 
         edge_index, _ne = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
@@ -172,29 +172,29 @@ class TestBuildEdgeFeatures:
             dtype=jnp.float32,
         )
         radii = jnp.full((3,), 0.5, dtype=jnp.float32)
-        genes = jnp.array([[0.2, 0.1], [0.05, 0.3], [0.4, 0.5]], dtype=jnp.float32)
+        c = jnp.array([[0.2, 0.1], [0.05, 0.3], [0.4, 0.5]], dtype=jnp.float32)
 
         edge_index, _num_edges = build_edge_index(positions, radii, particle_count=3)
 
-        def feature_loss(x, p, g):
-            node_feats = build_node_features(g, particle_count=3)
+        def feature_loss(x, p, conc):
+            node_feats = build_node_features(conc, particle_count=3)
             edge_feats = build_edge_features(x, p, edge_index, particle_count=3)
             return jnp.sum(node_feats**2) + jnp.sum(edge_feats[:, 0] ** 2)
 
-        grad_x, _grad_p, grad_g = jax.grad(feature_loss, argnums=(0, 1, 2))(
+        grad_x, _grad_p, grad_c = jax.grad(feature_loss, argnums=(0, 1, 2))(
             positions,
             polarities,
-            genes,
+            c,
         )
 
         assert jnp.abs(grad_x).sum() > 0
-        assert jnp.abs(grad_g).sum() > 0
+        assert jnp.abs(grad_c).sum() > 0
 
     def test_distance_symmetric(self):
         """Distance should be the same for i->j and j->i."""
         positions = [[0, 0, 0], [1, 2, 3]]
         radii = [3.0, 3.0]
-        X, P, R, _G, n = _make_state(positions, radii)
+        X, P, R, _C, n = _make_state(positions, radii)
 
         edge_index, _ne = build_edge_index(X, R, particle_count=n)
         edge_feats = build_edge_features(X, P, edge_index, particle_count=n)
@@ -210,7 +210,7 @@ class TestSparseMatchesDense:
     def test_same_edges(self):
         positions = [[0, 0, 0], [0.9, 0, 0], [10, 0, 0], [0.25, 0.4, 0]]
         radii = [0.5, 0.5, 0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _C, n = _make_state(positions, radii)
 
         edge_index, _ne = build_edge_index(X, R, particle_count=n)
 
@@ -225,17 +225,17 @@ class TestBuildGraph:
     def test_convenience_wrapper(self):
         positions = [[0, 0, 0], [0.5, 0, 0], [0.25, 0.4, 0]]
         radii = [0.5, 0.5, 0.5]
-        X, P, R, G, n = _make_state(positions, radii, num_genes=5)
+        X, P, R, C, n = _make_state(positions, radii, num_molecules=5)
 
         node_feats, edge_index, edge_feats, num_edges = build_graph(
             X,
             P,
             R,
             particle_count=n,
-            G=G,
+            c=C,
         )
 
-        assert node_feats.shape == (3, 5)  # genes only
+        assert node_feats.shape == (3, 5)  # signaling molecules only
         assert edge_index.shape[0] == 2
         assert edge_feats.shape[1] == 2  # dist, angle
         assert edge_feats.shape[0] == edge_index.shape[1]
@@ -247,14 +247,14 @@ class TestEdgePadding:
         """max_edges pads edge_index and edge_features to a fixed size."""
         positions = [[0, 0, 0], [0.5, 0, 0]]
         radii = [0.5, 0.5]
-        X, P, R, G, n = _make_state(positions, radii)
+        X, P, R, C, n = _make_state(positions, radii)
 
         node_feats, edge_index, edge_feats, num_edges = build_graph(
             X,
             P,
             R,
             particle_count=n,
-            G=G,
+            c=C,
             max_edges=100,
         )
 
@@ -268,21 +268,21 @@ class TestEdgePadding:
         """Real edges in padded output match unpadded output."""
         positions = [[0, 0, 0], [0.9, 0, 0], [10, 0, 0]]
         radii = [0.5, 0.5, 0.5]
-        X, P, R, G, n = _make_state(positions, radii)
+        X, P, R, C, n = _make_state(positions, radii)
 
         _, ei_unpadded, ef_unpadded, ne_unpadded = build_graph(
             X,
             P,
             R,
             particle_count=n,
-            G=G,
+            c=C,
         )
         _, ei_padded, ef_padded, ne_padded = build_graph(
             X,
             P,
             R,
             particle_count=n,
-            G=G,
+            c=C,
             max_edges=50,
         )
 
@@ -302,7 +302,7 @@ class TestEdgePadding:
         """max_edges too small raises ValueError."""
         positions = [[0, 0, 0], [0.5, 0, 0], [0.25, 0.4, 0]]
         radii = [0.5, 0.5, 0.5]
-        X, _P, R, _G, n = _make_state(positions, radii)
+        X, _P, R, _C, n = _make_state(positions, radii)
 
         with pytest.raises(ValueError, match="max_edges"):
             build_edge_index(X, R, particle_count=n, max_edges=1)

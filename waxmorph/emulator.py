@@ -1,9 +1,9 @@
 """Warp mechanics and diffusion kernels for differentiable emulation.
 
 The functions in this module advance non-growing cell states using
-sticky-sphere mechanics and graph-Laplacian gene diffusion. Differentiable
-entry points record pairwise kernels on :class:`warp.Tape` objects while
-freezing neighbor topology for the current step.
+sticky-sphere mechanics and graph-Laplacian signaling-molecule diffusion.
+Differentiable entry points record pairwise kernels on :class:`warp.Tape`
+objects while freezing neighbor topology for the current step.
 """
 
 import warp as wp
@@ -89,7 +89,7 @@ def _sticky_sphere_grads_from_pairs(
     R: wp.array(dtype=wp.float32),
     edges_i: wp.array(dtype=wp.int32),
     edges_j: wp.array(dtype=wp.int32),
-    gx: wp.array(dtype=wp.vec3f),
+    f_net: wp.array(dtype=wp.vec3f),
 ):
     """Compute forces from precomputed neighbor pairs (tape-compatible).
 
@@ -100,20 +100,20 @@ def _sticky_sphere_grads_from_pairs(
     i = edges_i[e]
     j = edges_j[e]
     force_i, force_j = _sticky_sphere_forces(X[i], X[j], R[i], R[j])
-    wp.atomic_add(gx, i, force_i)
-    wp.atomic_add(gx, j, force_j)
+    wp.atomic_add(f_net, i, force_i)
+    wp.atomic_add(f_net, j, force_j)
 
 
 @wp.kernel
 def _gd_update(
     X: wp.array(dtype=wp.vec3f),
-    gx: wp.array(dtype=wp.vec3f),
+    f_net: wp.array(dtype=wp.vec3f),
     lr: wp.float32,
     X_next: wp.array(dtype=wp.vec3f),
 ):
     """Euler step for positions: ``X_next = X + dt * force``."""
     i = wp.tid()
-    X_next[i] = X[i] + lr * gx[i]
+    X_next[i] = X[i] + lr * f_net[i]
 
 
 def _build_neighbor_pairs_dynamic(
@@ -172,13 +172,13 @@ def _build_neighbor_pairs_dynamic(
 
 
 @wp.kernel
-def _gene_diffusion_laplacian_from_pairs(
+def _molecule_diffusion_laplacian_from_pairs(
     X: wp.array(dtype=wp.vec3f),
     R: wp.array(dtype=wp.float32),
-    G: wp.array2d(dtype=wp.float32),
+    c: wp.array2d(dtype=wp.float32),
     edges_i: wp.array(dtype=wp.int32),
     edges_j: wp.array(dtype=wp.int32),
-    lap_G: wp.array2d(dtype=wp.float32),
+    lap_c: wp.array2d(dtype=wp.float32),
 ):
     """Accumulate graph-Laplacian from precomputed neighbor pairs (tape-compatible).
 
@@ -189,30 +189,30 @@ def _gene_diffusion_laplacian_from_pairs(
     i = edges_i[e]
     j = edges_j[e]
 
-    num_genes = G.shape[1]
-    for g in range(num_genes):
-        flux = G[j, g] - G[i, g]
-        wp.atomic_add(lap_G, i, g, flux)
-        wp.atomic_add(lap_G, j, g, -flux)
+    num_molecules = c.shape[1]
+    for g in range(num_molecules):
+        flux = c[j, g] - c[i, g]
+        wp.atomic_add(lap_c, i, g, flux)
+        wp.atomic_add(lap_c, j, g, -flux)
 
 
 @wp.kernel
-def _gene_diffusion_step_out(
-    G: wp.array2d(dtype=wp.float32),
-    lap_G: wp.array2d(dtype=wp.float32),
-    alpha: wp.float32,
+def _molecule_diffusion_step_out(
+    c: wp.array2d(dtype=wp.float32),
+    lap_c: wp.array2d(dtype=wp.float32),
+    D_emu: wp.float32,
     dt: wp.float32,
     particle_count: wp.int32,
-    G_out: wp.array2d(dtype=wp.float32),
+    c_out: wp.array2d(dtype=wp.float32),
 ):
-    """Out-of-place Euler step (tape-safe: G and G_out must be distinct arrays)."""
+    """Out-of-place Euler step (tape-safe: c and c_out must be distinct arrays)."""
     i, g = wp.tid()
     if i >= particle_count:
-        G_out[i, g] = G[i, g]
+        c_out[i, g] = c[i, g]
         return
 
-    v = G[i, g] + dt * alpha * lap_G[i, g]
-    G_out[i, g] = wp.max(v, wp.float32(0.0))
+    v = c[i, g] + dt * D_emu * lap_c[i, g]
+    c_out[i, g] = wp.max(v, wp.float32(0.0))
 
 
 ############################################################
@@ -232,7 +232,7 @@ def mech_step_sticky_differentiable(
     R: wp.array,
     particle_count: int,
     dt: float,
-    gx: wp.array,
+    f_net: wp.array,
     grid: "wp.HashGrid | None" = None,
 ) -> wp.array:
     """Tape-recorded mechanics step. Returns a new position array.
@@ -248,11 +248,11 @@ def mech_step_sticky_differentiable(
         R: Warp radius array.
         particle_count: Number of active particles.
         dt: Mechanics Euler step size.
-        gx: Scratch Warp force buffer.
+        f_net: Scratch Warp net-force buffer.
         grid: Optional reusable :class:`warp.HashGrid`.
     """
-    gx.zero_()
-    gx.requires_grad = True
+    f_net.zero_()
+    f_net.requires_grad = True
 
     device = X.device
     r_max = float(R.numpy()[:particle_count].max())
@@ -280,13 +280,13 @@ def mech_step_sticky_differentiable(
                 _sticky_sphere_grads_from_pairs,
                 dim=num_edges,
                 inputs=[X, R, edges_i[:num_edges], edges_j[:num_edges]],
-                outputs=[gx],
+                outputs=[f_net],
                 device=device,
             )
         wp.launch(
             _gd_update,
             dim=particle_count,
-            inputs=[X, gx, dt],
+            inputs=[X, f_net, dt],
             outputs=[X_out],
             device=device,
         )
@@ -298,33 +298,33 @@ def diffusion_step_differentiable(
     tape: "wp.Tape",
     X: wp.array,
     R: wp.array,
-    G: wp.array,
-    lap_G: wp.array,
+    c: wp.array,
+    lap_c: wp.array,
     particle_count: int,
-    alpha: float = 0.1,
+    D_emu: float = 0.1,
     dt: float = 1e-2,
     grid: "wp.HashGrid | None" = None,
 ) -> wp.array:
-    """Tape-recorded diffusion step. Returns a new gene array.
+    """Tape-recorded diffusion step. Returns a new concentration array.
 
     Neighbor discovery happens outside the tape (frozen topology).
     Laplacian computation from precomputed pairs and the Euler update
     are recorded on the tape so that ``tape.backward()`` propagates
-    ``dL/dG_out → dL/dG_in`` through the full diffusion operator.
+    ``dL/dc_out → dL/dc_in`` through the full diffusion operator.
 
     Args:
         tape: :class:`warp.Tape` used to record differentiable kernel launches.
         X: Warp position array used for neighbor topology.
         R: Warp radius array.
-        G: Warp gene concentration array.
-        lap_G: Scratch Warp Laplacian buffer.
+        c: Warp signaling-molecule concentration array.
+        lap_c: Scratch Warp Laplacian buffer.
         particle_count: Number of active particles.
-        alpha: Diffusion coefficient.
+        D_emu: Diffusion coefficient.
         dt: Diffusion Euler step size.
         grid: Optional reusable :class:`warp.HashGrid`.
     """
-    lap_G.zero_()
-    lap_G.requires_grad = True
+    lap_c.zero_()
+    lap_c.requires_grad = True
 
     device = X.device
     r_max = float(R.numpy()[:particle_count].max())
@@ -344,27 +344,27 @@ def diffusion_step_differentiable(
     )
 
     # Step 2: Laplacian + Euler step ON the tape
-    num_genes = int(G.shape[1])
-    G_out = wp.zeros_like(G, device=device, requires_grad=True)
+    num_molecules = int(c.shape[1])
+    c_out = wp.zeros_like(c, device=device, requires_grad=True)
 
     with tape:
         if num_edges > 0:
             wp.launch(
-                _gene_diffusion_laplacian_from_pairs,
+                _molecule_diffusion_laplacian_from_pairs,
                 dim=num_edges,
-                inputs=[X, R, G, edges_i[:num_edges], edges_j[:num_edges]],
-                outputs=[lap_G],
+                inputs=[X, R, c, edges_i[:num_edges], edges_j[:num_edges]],
+                outputs=[lap_c],
                 device=device,
             )
         wp.launch(
-            _gene_diffusion_step_out,
-            dim=(int(G.shape[0]), num_genes),
-            inputs=[G, lap_G, float(alpha), float(dt), particle_count],
-            outputs=[G_out],
+            _molecule_diffusion_step_out,
+            dim=(int(c.shape[0]), num_molecules),
+            inputs=[c, lap_c, float(D_emu), float(dt), particle_count],
+            outputs=[c_out],
             device=device,
         )
 
-    return G_out
+    return c_out
 
 
 wp.clear_lto_cache()

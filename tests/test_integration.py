@@ -40,7 +40,7 @@ def test_warp_to_gns_roundtrip():
     """Full pipeline: create Warp state, build graph, run GNS, check outputs."""
     particle_count = 80
     max_particles = 200
-    num_genes = 2
+    num_molecules = 2
 
     # Create positions on a sphere
     centers = np.zeros((max_particles, 3), dtype=np.float32)
@@ -57,18 +57,18 @@ def test_warp_to_gns_roundtrip():
     cell_types = np.zeros(max_particles, dtype=np.uint32)
     cell_types[:particle_count] = 1  # all epithelium
 
-    genes = np.zeros((max_particles, num_genes), dtype=np.float32)
-    genes[:particle_count] = np.random.rand(particle_count, num_genes).astype(np.float32)
+    c_init = np.zeros((max_particles, num_molecules), dtype=np.float32)
+    c_init[:particle_count] = np.random.rand(particle_count, num_molecules).astype(np.float32)
 
     X = wp.from_numpy(centers, dtype=wp.vec3f, device=DEVICE)
     P = wp.from_numpy(polarities, dtype=wp.vec3f, device=DEVICE)
     R = wp.from_numpy(radii, dtype=wp.float32, device=DEVICE)
-    G = wp.from_numpy(genes, dtype=wp.float32, device=DEVICE)
+    c = wp.from_numpy(c_init, dtype=wp.float32, device=DEVICE)
 
     # Build graph
-    node_feats, edge_index, edge_feats = build_graph(X, P, R, particle_count=particle_count, G=G)
+    node_feats, edge_index, edge_feats = build_graph(X, P, R, particle_count=particle_count, c=c)
 
-    assert node_feats.shape == (particle_count, num_genes)
+    assert node_feats.shape == (particle_count, num_molecules)
     assert edge_index.shape[0] == 2
     assert edge_feats.shape[1] == 2
     assert edge_index.shape[1] > 0, "Should have at least some edges"
@@ -78,7 +78,7 @@ def test_warp_to_gns_roundtrip():
         node_feature_dim=node_feats.shape[1],
         edge_feature_dim=edge_feats.shape[1],
         num_mp_steps=3,
-        output_dims={"dX": 3, "dP": 3, "dG": num_genes},
+        output_dims={"dX": 3, "dP": 3, "dc": num_molecules},
     )
 
     # Move model to same device as data
@@ -89,7 +89,7 @@ def test_warp_to_gns_roundtrip():
 
     assert out["dX"].shape == (particle_count, 3)
     assert out["dP"].shape == (particle_count, 3)
-    assert out["dG"].shape == (particle_count, num_genes)
+    assert out["dc"].shape == (particle_count, num_molecules)
 
     # Verify gradient flow through the full pipeline
     node_feats_grad = node_feats.detach().requires_grad_(True)
@@ -99,8 +99,8 @@ def test_warp_to_gns_roundtrip():
     assert node_feats_grad.grad is not None
 
 
-def test_torch_graph_to_gns_preserves_gene_gradients():
-    """Torch graph features should keep gene state connected to the GNN loss."""
+def test_torch_graph_to_gns_preserves_concentration_gradients():
+    """Torch graph features should keep concentration state connected to the GNN loss."""
     positions = torch.tensor(
         [[0.0, 0.0, 0.0], [0.9, 0.0, 0.0], [0.25, 0.4, 0.0]],
         dtype=torch.float32,
@@ -110,30 +110,30 @@ def test_torch_graph_to_gns_preserves_gene_gradients():
         dtype=torch.float32,
     )
     radii = torch.full((3,), 0.5, dtype=torch.float32)
-    genes = torch.randn(3, 2, dtype=torch.float32, requires_grad=True)
+    c = torch.randn(3, 2, dtype=torch.float32, requires_grad=True)
 
     node_feats, edge_index, edge_feats = build_graph(
         positions,
         polarities,
         radii,
         particle_count=3,
-        G=genes,
+        c=c,
     )
 
     gns = GNS(
         node_feature_dim=node_feats.shape[1],
         edge_feature_dim=edge_feats.shape[1],
         num_mp_steps=2,
-        output_dims={"dX": 3, "dP": 3, "dG": genes.shape[1]},
+        output_dims={"dX": 3, "dP": 3, "dc": c.shape[1]},
     )
 
     out = gns(node_feats, edge_index, edge_feats)
-    loss = out["dG"].square().sum() + out["dX"].square().sum()
+    loss = out["dc"].square().sum() + out["dX"].square().sum()
     loss.backward()
 
     assert node_feats.grad_fn is not None
-    assert genes.grad is not None
-    assert torch.isfinite(genes.grad).all()
+    assert c.grad is not None
+    assert torch.isfinite(c.grad).all()
 
 
 def test_torch_run_epoch_uses_live_torch_graph_inputs(monkeypatch):
@@ -146,7 +146,7 @@ def test_torch_run_epoch_uses_live_torch_graph_inputs(monkeypatch):
         [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
         dtype=np.float32,
     )
-    genes = np.array(
+    c = np.array(
         [[0.2, -0.1], [0.0, 0.3], [-0.4, 0.5]],
         dtype=np.float32,
     )
@@ -159,16 +159,16 @@ def test_torch_run_epoch_uses_live_torch_graph_inputs(monkeypatch):
         seen["X"] = X
         seen["P"] = P
         seen["R"] = R
-        seen["G"] = kwargs["G"]
+        seen["c"] = kwargs["c"]
         return real_build_graph(X, P, R, *args, **kwargs)
 
     monkeypatch.setattr(torch_train_module, "build_graph", spy_build_graph)
 
     model = GNS(
-        node_feature_dim=genes.shape[1],
+        node_feature_dim=c.shape[1],
         edge_feature_dim=2,
         num_mp_steps=1,
-        output_dims={"dX": 3, "dP": 3, "dG": genes.shape[1]},
+        output_dims={"dX": 3, "dP": 3, "dc": c.shape[1]},
     )
 
     config = torch_train_module.TrainConfig(
@@ -184,11 +184,11 @@ def test_torch_run_epoch_uses_live_torch_graph_inputs(monkeypatch):
         config=config,
         source_pos=source_pos,
         polarities=polarities,
-        genes=genes,
+        c=c,
         R_t=torch.from_numpy(radii),
         R_wp=None,
-        gx=None,
-        lap_G=None,
+        f_net=None,
+        lap_c=None,
         grid=None,
         N=source_pos.shape[0],
         targets_by_frame={0: torch.from_numpy(source_pos + 0.1)},
@@ -203,14 +203,14 @@ def test_torch_run_epoch_uses_live_torch_graph_inputs(monkeypatch):
     assert isinstance(seen["X"], torch.Tensor)
     assert isinstance(seen["P"], torch.Tensor)
     assert isinstance(seen["R"], torch.Tensor)
-    assert isinstance(seen["G"], torch.Tensor)
+    assert isinstance(seen["c"], torch.Tensor)
     assert seen["X"].requires_grad is True
-    assert seen["G"].requires_grad is True
+    assert seen["c"].requires_grad is True
     assert any(param.grad is not None for param in model.parameters())
 
 
 def test_torch_run_epoch_clamps_genes_nonnegative_after_dg_update():
-    """The learned gene update should not drive gene counts below zero."""
+    """The learned concentration update should not drive concentrations below zero."""
     source_pos = np.array(
         [[0.0, 0.0, 0.0], [0.9, 0.0, 0.0], [0.25, 0.4, 0.0]],
         dtype=np.float32,
@@ -219,7 +219,7 @@ def test_torch_run_epoch_clamps_genes_nonnegative_after_dg_update():
         [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
         dtype=np.float32,
     )
-    genes = np.array(
+    c = np.array(
         [[0.2, 0.1], [0.05, 0.3], [0.4, 0.5]],
         dtype=np.float32,
     )
@@ -228,12 +228,15 @@ def test_torch_run_epoch_clamps_genes_nonnegative_after_dg_update():
     class FixedNegativeGeneUpdate(torch.nn.Module):
         def forward(self, node_feats, edge_index, edge_feats):
             del edge_index, edge_feats
-            num_nodes, num_genes = node_feats.shape
+            num_nodes, num_molecules = node_feats.shape
             return {
                 "dX": torch.zeros((num_nodes, 3), dtype=node_feats.dtype, device=node_feats.device),
                 "dP": torch.zeros((num_nodes, 3), dtype=node_feats.dtype, device=node_feats.device),
-                "dG": -torch.full(
-                    (num_nodes, num_genes), 10.0, dtype=node_feats.dtype, device=node_feats.device
+                "dc": -torch.full(
+                    (num_nodes, num_molecules),
+                    10.0,
+                    dtype=node_feats.dtype,
+                    device=node_feats.device,
                 ),
             }
 
@@ -251,11 +254,11 @@ def test_torch_run_epoch_clamps_genes_nonnegative_after_dg_update():
         config=config,
         source_pos=source_pos,
         polarities=polarities,
-        genes=genes,
+        c=c,
         R_t=torch.from_numpy(radii),
         R_wp=None,
-        gx=None,
-        lap_G=None,
+        f_net=None,
+        lap_c=None,
         grid=None,
         N=source_pos.shape[0],
         targets_by_frame={0: torch.from_numpy(source_pos)},
@@ -268,8 +271,8 @@ def test_torch_run_epoch_clamps_genes_nonnegative_after_dg_update():
     assert loss_shape.item() == 0.0
     assert loss_l2.item() >= 0.0
     assert len(trajectory) == 1
-    assert np.all(trajectory[0]["genes"] >= 0.0)
-    assert np.allclose(trajectory[0]["genes"], 0.0)
+    assert np.all(trajectory[0]["c"] >= 0.0)
+    assert np.allclose(trajectory[0]["c"], 0.0)
 
 
 def test_train_raises_before_optimizer_step_on_nonfinite_gradients():
@@ -282,7 +285,7 @@ def test_train_raises_before_optimizer_step_on_nonfinite_gradients():
         [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
         dtype=np.float32,
     )
-    genes = np.array(
+    c = np.array(
         [[0.2, 0.1], [0.05, 0.3], [0.4, 0.5]],
         dtype=np.float32,
     )
@@ -296,16 +299,16 @@ def test_train_raises_before_optimizer_step_on_nonfinite_gradients():
 
         def forward(self, node_feats, edge_index, edge_feats):
             del edge_index, edge_feats
-            num_nodes, num_genes = node_feats.shape
+            num_nodes, num_molecules = node_feats.shape
             scale = self.scale.to(node_feats.dtype)
             return {
                 "dX": scale
                 * torch.ones((num_nodes, 3), dtype=node_feats.dtype, device=node_feats.device),
                 "dP": scale
                 * torch.zeros((num_nodes, 3), dtype=node_feats.dtype, device=node_feats.device),
-                "dG": scale
+                "dc": scale
                 * torch.zeros(
-                    (num_nodes, num_genes), dtype=node_feats.dtype, device=node_feats.device
+                    (num_nodes, num_molecules), dtype=node_feats.dtype, device=node_feats.device
                 ),
             }
 
@@ -329,7 +332,7 @@ def test_train_raises_before_optimizer_step_on_nonfinite_gradients():
             source_pos=source_pos,
             targets=[(0, source_pos + 0.1)],
             polarities=polarities,
-            genes=genes,
+            c=c,
             radii=radii,
             config=config,
             device="cpu",

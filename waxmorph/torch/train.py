@@ -28,12 +28,12 @@ class TrainConfig:
         n_epochs: Number of optimization epochs.
         t_rollout: Number of rollout steps per epoch.
         mech_steps: Number of sticky-sphere mechanics corrections per rollout.
-        diff_steps: Number of gene diffusion corrections per rollout.
+        diff_steps: Number of signaling-molecule diffusion corrections per rollout.
         dt_mech: Euler step size for mechanics corrections.
         dt_diff: Euler step size for diffusion corrections.
         dt_gns: Scale applied to model-predicted deltas.
-        alpha_diff: Gene diffusion coefficient.
-        l2_lambda: Weight applied to squared model displacement regularization.
+        D_emu: Signaling-molecule diffusion coefficient.
+        lambda_reg: Weight applied to squared model displacement regularization.
         grad_clip_norm: Optional maximum gradient norm.
         log_every: Epoch interval used for progress logging.
 
@@ -50,8 +50,8 @@ class TrainConfig:
     dt_mech: float = 1e-2
     dt_diff: float = 1e-2
     dt_gns: float = 1e-2
-    alpha_diff: float = 0.1
-    l2_lambda: float = 1e-3
+    D_emu: float = 0.1
+    lambda_reg: float = 1e-3
     grad_clip_norm: float | None = 1.0
     log_every: int = 10
 
@@ -213,11 +213,11 @@ def _run_epoch(
     config,
     source_pos,
     polarities,
-    genes,
+    c,
     R_t,
     R_wp,
-    gx,
-    lap_G,
+    f_net,
+    lap_c,
     grid,
     N,
     targets_by_frame,
@@ -228,9 +228,10 @@ def _run_epoch(
 ):
     """Run one training epoch with differentiable physics.
 
-    Positions and genes stay on the :mod:`torch.autograd` computation graph throughout.
-    Physics corrections are applied via WarpMechStep / WarpDiffusionStep
-    autograd functions, so gradients flow through the full trajectory.
+    Positions and concentrations stay on the :mod:`torch.autograd` computation
+    graph throughout. Physics corrections are applied via WarpMechStep /
+    WarpDiffusionStep autograd functions, so gradients flow through the full
+    trajectory.
 
     ``targets_by_frame`` maps rollout-step index -> target position tensor.
     A shape loss is accumulated at every tagged post-update state; frame ``0``
@@ -238,7 +239,7 @@ def _run_epoch(
     initial source state.
     """
     X_t = X_source_t.clone().requires_grad_(True)
-    G_t = torch.from_numpy(genes.copy()).to(torch_device).requires_grad_(True)
+    c_t = torch.from_numpy(c.copy()).to(torch_device).requires_grad_(True)
     P_t = torch.from_numpy(polarities.copy()).to(torch_device)
 
     loss_l2 = torch.tensor(0.0, device=torch_device)
@@ -246,59 +247,59 @@ def _run_epoch(
 
     _validate_finite_tensor("X_t", X_t, rollout_step=0, phase="epoch start")
     _validate_finite_tensor("P_t", P_t, rollout_step=0, phase="epoch start")
-    _validate_finite_tensor("G_t", G_t, rollout_step=0, phase="epoch start")
+    _validate_finite_tensor("c_t", c_t, rollout_step=0, phase="epoch start")
 
     for _t in range(config.t_rollout):
         _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="pre-graph build")
         _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="pre-graph build")
-        _validate_finite_tensor("G_t", G_t, rollout_step=_t, phase="pre-graph build")
+        _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="pre-graph build")
 
         # Build graph from the live Torch state. Feature gradients remain
-        # connected to X_t / P_t / G_t; edge_index is rebuilt from a snapshot.
+        # connected to X_t / P_t / c_t; edge_index is rebuilt from a snapshot.
         node_feats, edge_index, edge_feats = build_graph(
             X_t,
             P_t,
             R_t,
             particle_count=N,
-            G=G_t,
+            c=c_t,
         )
 
         # GNS forward (differentiable)
         out = model(node_feats, edge_index, edge_feats)
         dX = out["dX"] * config.dt_gns
         dP = out["dP"] * config.dt_gns
-        dG = out["dG"] * config.dt_gns
+        dc = out["dc"] * config.dt_gns
         _validate_finite_tensor("dX", dX, rollout_step=_t, phase="gns output")
         _validate_finite_tensor("dP", dP, rollout_step=_t, phase="gns output")
-        _validate_finite_tensor("dG", dG, rollout_step=_t, phase="gns output")
+        _validate_finite_tensor("dc", dc, rollout_step=_t, phase="gns output")
 
         loss_l2 = loss_l2 + dX.square().sum()
 
         # Apply GNS deltas (stays on PyTorch graph)
         X_t = X_t + dX
         P_t = torch.nn.functional.normalize(P_t + dP, dim=-1)
-        G_t = torch.clamp_min(G_t + dG, 0.0)
+        c_t = torch.clamp_min(c_t + dc, 0.0)
         _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="post-gns update")
         _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="post-gns update")
-        _validate_finite_tensor("G_t", G_t, rollout_step=_t, phase="post-gns update")
+        _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="post-gns update")
 
         # Physics correction (differentiable via autograd functions)
         for _ in range(config.mech_steps):
-            X_t = WarpMechStep.apply(X_t, R_wp, N, config.dt_mech, gx, grid)
+            X_t = WarpMechStep.apply(X_t, R_wp, N, config.dt_mech, f_net, grid)
         _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="post-mechanics")
 
         for _ in range(config.diff_steps):
             X_wp_diff = wp.from_torch(X_t.detach().contiguous(), dtype=wp.vec3f)
-            G_t = WarpDiffusionStep.apply(
-                G_t, X_wp_diff, R_wp, lap_G, N, config.alpha_diff, config.dt_diff, grid
+            c_t = WarpDiffusionStep.apply(
+                c_t, X_wp_diff, R_wp, lap_c, N, config.D_emu, config.dt_diff, grid
             )
-        _validate_finite_tensor("G_t", G_t, rollout_step=_t, phase="post-diffusion")
+        _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="post-diffusion")
 
         epoch_trajectory.append(
             {
                 "pos": X_t.detach().cpu().numpy().copy(),
                 "pol": P_t.detach().cpu().numpy().copy(),
-                "genes": G_t.detach().cpu().numpy().copy(),
+                "c": c_t.detach().cpu().numpy().copy(),
             }
         )
 
@@ -316,7 +317,7 @@ def train(
     *,
     source_pos: np.ndarray,
     polarities: np.ndarray,
-    genes: np.ndarray,
+    c: np.ndarray,
     radii: np.ndarray,
     targets: list[tuple[int, np.ndarray]] | None = None,
     config: TrainConfig | None = None,
@@ -332,7 +333,7 @@ def train(
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.
         polarities: Initial polarity vectors with shape ``[N, 3]``.
-        genes: Initial gene concentrations with shape ``[N, num_genes]``.
+        c: Initial signaling-molecule concentrations with shape ``[N, num_molecules]``.
         radii: Particle radii with shape ``[N]``.
         targets: ``(frame, positions)`` supervision pairs. Frame ``0`` supervises
             the state after the first rollout update. Frames must lie in
@@ -358,7 +359,7 @@ def train(
 
     _validate_finite_numpy("source_pos", source_pos)
     _validate_finite_numpy("polarities", polarities)
-    _validate_finite_numpy("genes", genes)
+    _validate_finite_numpy("c", c)
     _validate_finite_numpy("radii", radii)
 
     # Detect devices
@@ -368,7 +369,7 @@ def train(
 
     N = len(source_pos)
     max_particles = N
-    num_genes = genes.shape[1]
+    num_molecules = c.shape[1]
 
     # Checkpoint detection
     if save_path is not None and os.path.exists(save_path):
@@ -376,10 +377,10 @@ def train(
         config = dataclasses.replace(config, n_epochs=1)
 
     # Warp scratch buffers
-    gx = wp.zeros(max_particles, dtype=wp.vec3f, device=wp_device)
+    f_net = wp.zeros(max_particles, dtype=wp.vec3f, device=wp_device)
     R_t = torch.from_numpy(radii.copy()).to(torch_device)
     R_wp = wp.from_numpy(radii.copy(), dtype=wp.float32, device=wp_device)
-    lap_G = wp.zeros((max_particles, num_genes), dtype=wp.float32, device=wp_device)
+    lap_c = wp.zeros((max_particles, num_molecules), dtype=wp.float32, device=wp_device)
 
     # Per-frame target tensors (device-resident)
     targets_by_frame: dict[int, torch.Tensor] = {}
@@ -411,20 +412,18 @@ def train(
     for epoch in trange(config.n_epochs):
         optimizer.zero_grad(set_to_none=True)
 
-        epoch_trajectory = [
-            {"pos": source_pos.copy(), "pol": polarities.copy(), "genes": genes.copy()}
-        ]
+        epoch_trajectory = [{"pos": source_pos.copy(), "pol": polarities.copy(), "c": c.copy()}]
 
         loss_shape, loss_l2, epoch_trajectory = _run_epoch(
             model=model,
             config=config,
             source_pos=source_pos,
             polarities=polarities,
-            genes=genes,
+            c=c,
             R_t=R_t,
             R_wp=R_wp,
-            gx=gx,
-            lap_G=lap_G,
+            f_net=f_net,
+            lap_c=lap_c,
             grid=grid,
             N=N,
             targets_by_frame=targets_by_frame,
@@ -434,7 +433,7 @@ def train(
             epoch_trajectory=epoch_trajectory,
         )
 
-        loss = loss_shape + (loss_l2 * config.l2_lambda)
+        loss = loss_shape + (loss_l2 * config.lambda_reg)
 
         loss.backward()
         _raise_on_nonfinite_named_tensors(
@@ -490,7 +489,7 @@ def train(
     # Build log dict
     traj_pos = np.stack([f["pos"] for f in best_trajectory])
     traj_pol = np.stack([f["pol"] for f in best_trajectory])
-    traj_genes = np.stack([f["genes"] for f in best_trajectory])
+    traj_c = np.stack([f["c"] for f in best_trajectory])
 
     log = {
         "losses_total": np.array(losses_total),
@@ -498,7 +497,7 @@ def train(
         "losses_l2": np.array(losses_l2),
         "best_traj_pos": traj_pos,
         "best_traj_pol": traj_pol,
-        "best_traj_genes": traj_genes,
+        "best_traj_c": traj_c,
         "best_epoch": best_epoch,
         "best_loss": best_loss,
         "target_frames": np.array(sorted(targets_by_frame.keys()), dtype=np.int64),
