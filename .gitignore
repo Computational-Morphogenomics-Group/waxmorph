@@ -61,3 +61,5 @@ meshes/*
 *.ipynb
 *.zip
 *.tex
+*.renamebak
+*.out
