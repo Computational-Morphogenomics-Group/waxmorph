@@ -1,7 +1,8 @@
-"""Backward-compatible PyTorch graph construction exports.
+"""Graph construction surface.
 
-This module re-exports the default graph builders from
-:mod:`waxmorph.torch.graph` for callers that import from ``waxmorph.graph``.
+Re-exports the PyTorch implementation (:mod:`waxmorph.torch.graph`) for callers
+importing from ``waxmorph.*``. PyTorch is the default backend; reach the JAX
+parity builders explicitly via :mod:`waxmorph.jax.graph`.
 """
 
 from .torch.graph import (

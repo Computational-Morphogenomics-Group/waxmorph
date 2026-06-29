@@ -1,8 +1,10 @@
-"""Configurable MLP building block for GNS encoder/processor/decoder (Equinox).
+"""JAX/Equinox MLP building block for the graph-network simulator.
 
-Wraps :class:`equinox.nn.MLP` with an optional trailing
-:class:`equinox.nn.LayerNorm` and a constructor signature matching the PyTorch
-:class:`waxmorph.torch.mlp.MLP`.
+Encoder, processor, and decoder sub-networks of the GNS are all instances of
+this small feed-forward block, so depth, width, activation, and normalization
+are exposed as constructor arguments. This is the parity backend for the
+default PyTorch twin in :mod:`waxmorph.torch.mlp`; it keeps the same
+constructor interface but requires an explicit PRNG ``key`` for initialization.
 """
 
 from __future__ import annotations
@@ -20,26 +22,34 @@ _ACTIVATIONS = {
 
 
 class MLP(eqx.Module):
-    """Multi-layer perceptron with configurable depth, width, activation, and normalization.
+    """Feed-forward block with configurable depth, width, activation, and normalization.
 
-    Thin wrapper around :class:`equinox.nn.MLP` that adds an optional trailing
-    :class:`equinox.nn.LayerNorm` and exposes the same constructor interface as
-    :class:`waxmorph.torch.mlp.MLP`.
+    Linear layers are interleaved with the chosen activation; the
+    sigmoid-weighted linear unit (SiLU) is used throughout by default. An
+    optional final LayerNorm stabilizes the output scale of GNS encoder/decoder
+    blocks. A single-layer block is a plain linear map with no activation, used
+    where the GNS needs an unbounded affine projection.
 
     Args:
-        input_dim: Dimensionality of the final axis of the input array.
-        output_dim: Dimensionality of the final axis of the output array.
+        input_dim: Width of the trailing input axis.
+        output_dim: Width of the trailing output axis.
         hidden_dim: Width of each hidden linear layer.
         num_layers: Total number of linear layers, including the output
             projection. ``num_layers=1`` creates a single linear map.
-        activation: Activation name: ``"relu"``, ``"silu"``, ``"gelu"``, or
-            ``"tanh"``.
-        layer_norm: Whether to append :class:`equinox.nn.LayerNorm` over
-            ``output_dim``.
-        key: :class:`jax.Array` PRNG key used to initialize the linear layers.
+        activation: Activation name; one of ``"relu"``, ``"silu"``, ``"gelu"``,
+            or ``"tanh"``. Defaults to ``"silu"``.
+        layer_norm: Whether to append a LayerNorm over the output features.
+        key: PRNG key that seeds the linear-layer weight initialization;
+            keyword-only, with no default, so callers must pass a fresh key.
 
     Raises:
-        ValueError: If ``activation`` is not supported.
+        ValueError: If ``activation`` is not one of the supported names.
+
+    See Also:
+        waxmorph.torch.mlp.MLP: Default PyTorch twin with the same interface.
+            That backend applies Kaiming-uniform init, whereas Equinox linear
+            layers initialize from a LeCun-uniform distribution, so initial
+            weight scales differ slightly across backends.
 
     Examples:
         >>> mlp = MLP(3, 2, hidden_dim=4, num_layers=1, layer_norm=False, key=jax.random.PRNGKey(0))
@@ -83,15 +93,19 @@ class MLP(eqx.Module):
         self.norm = eqx.nn.LayerNorm(output_dim) if layer_norm else None
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        """Apply the MLP to a single vector or a batch of vectors.
+        """Map the trailing axis of ``x`` from ``input_dim`` to ``output_dim``.
+
+        Equinox builds single-vector networks, so a batched input (more than one
+        axis) is vectorized over its leading axis with :func:`jax.vmap` to match
+        the batched behavior of the PyTorch twin.
 
         Args:
-            x: :class:`jax.Array` with trailing dimension ``input_dim``.
-                Arrays with more than one dimension are vectorized over the
-                leading axis with :func:`jax.vmap`.
+            x: Input with trailing axis of width ``input_dim``; a single leading
+                batch axis is supported via vectorization.
 
         Returns:
-            :class:`jax.Array` with trailing dimension ``output_dim``.
+            Output with trailing axis of width ``output_dim`` and the same
+            leading axis as ``x`` when batched.
         """
         # eqx.nn.MLP is single-vector; vmap over the leading axis for batched input
         if x.ndim > 1:

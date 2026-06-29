@@ -1,8 +1,16 @@
 """Graph Network-based Simulator (GNS) for morphogenesis emulation (Equinox).
 
-Implements the Encode-Process-Decode architecture from Sanchez-Gonzalez et al.
-"Learning to Simulate Complex Physics with Graph Networks" (ICML 2020),
-adapted for the WaxMorph cell state representation.
+A cell aggregate is a graph: cells are nodes carrying signaling state, contacts
+are edges carrying mechanical features, and one emulation step is a learned,
+neighbor-dependent update to each cell. The architecture is the
+Encode-Process-Decode graph network of Sanchez-Gonzalez et al. "Learning to
+Simulate Complex Physics with Graph Networks" (ICML 2020), adapted to the
+waxMorph cell-state representation.
+
+This is the JAX/Equinox parity twin of the default PyTorch backend
+:mod:`waxmorph.torch.gnn`; the two must be kept architecturally identical.
+Static-shape compilation requires padded edge arrays, masked before aggregation
+via ``num_edges``.
 """
 
 from __future__ import annotations
@@ -20,10 +28,11 @@ from .mlp import MLP
 class GraphNetworkBlock(eqx.Module):
     """Single message-passing step: edge update -> aggregation -> node update.
 
-    Both edge and node latents use residual connections. The module subclasses
-    :class:`equinox.Module`.
+    Both edge and node latents use residual connections, which stabilize deep
+    message passing by letting each block learn a correction to the running
+    embedding rather than rebuilding it from scratch.
 
-    Paper correspondence:
+    Notation:
         edge_mlp=f_psi (message fn), node_mlp=f_pi (node-update fn);
         node_latent=u, edge_latent=w, message=eta, node-update=zeta.
 
@@ -36,7 +45,10 @@ class GraphNetworkBlock(eqx.Module):
             :class:`waxmorph.jax.mlp.MLP`.
         layer_norm: Whether to apply :class:`equinox.nn.LayerNorm` in internal
             MLPs.
-        key: :class:`jax.Array` PRNG key used for weight initialization.
+        key: PRNG key used for weight initialization.
+
+    See Also:
+        :class:`waxmorph.torch.gnn.GraphNetworkBlock`: PyTorch parity twin.
     """
 
     edge_mlp: MLP
@@ -99,7 +111,9 @@ class GraphNetworkBlock(eqx.Module):
         """
         senders, receivers = edge_index[0], edge_index[1]
 
-        # Edge update (f_psi): message eta from [sender u, receiver u, edge w], residual
+        # Edge update (f_psi): message eta from [sender u, receiver u, edge w], residual.
+        # Directed COO keeps i->j and j->i as separate rows, so the message MLP can
+        # emit distinct directional latents for each orientation of a contact.
         edge_input = jnp.concatenate(
             [node_latent[senders], node_latent[receivers], edge_latent],
             axis=-1,
@@ -126,7 +140,11 @@ class GraphNetworkBlock(eqx.Module):
 class GNS(eqx.Module):
     """Full Encode-Process-Decode Graph Network Simulator.
 
-    Paper correspondence:
+    Encode raw per-cell and per-contact features into latents, process them with
+    M message-passing blocks over the spatial-adjacency graph, then decode the
+    final node latents into Euler updates for the learned cell state.
+
+    Notation:
         node_encoder=f_phi, edge_encoder=f_rho; processor runs M=num_mp_steps
         GraphNetworkBlock steps; decoders {dX:f_omega, dP:f_mu, dc:f_nu}.
 
@@ -147,7 +165,10 @@ class GNS(eqx.Module):
             and processor MLPs.
         checkpoint_processor: If ``True``, checkpoint processor blocks to
             trade additional compute for lower activation memory.
-        key: :class:`jax.Array` PRNG key used for weight initialization.
+        key: PRNG key used for weight initialization.
+
+    See Also:
+        :class:`waxmorph.torch.gnn.GNS`: PyTorch parity twin (default backend).
 
     Examples:
         >>> model = GNS(1, 2, hidden_dim=4, num_mp_steps=1, output_dims={"dX": 3}, key=jax.random.PRNGKey(0))
@@ -260,15 +281,18 @@ class GNS(eqx.Module):
         """Run full encode-process-decode.
 
         Args:
-            node_features: :class:`jax.Array` node features with shape
+            node_features: Per-cell signaling features with shape
                 ``[N, node_feature_dim]``.
-            edge_index: Directed COO edge array with shape ``[2, E]``.
-            edge_features: :class:`jax.Array` edge features with shape
+            edge_index: Directed COO edges with shape ``[2, E]``; row ``0`` holds
+                senders and row ``1`` holds receivers.
+            edge_features: Per-contact mechanical features with shape
                 ``[E, edge_feature_dim]``.
-            num_edges: Optional JAX scalar count of real, non-padding edges.
+            num_edges: Optional scalar count of real, non-padding edges. When edge
+                arrays are padded for static-shape JIT, padding rows are masked
+                before aggregation.
 
         Returns:
-            Dictionary mapping each output head name to an array with shape
+            Each output head name mapped to its decoded update with shape
             ``[N, output_dim]``.
         """
         # Encode: raw features -> latents (f_phi nodes, f_rho edges)
@@ -303,7 +327,17 @@ class GNS(eqx.Module):
         """Save model config and weights.
 
         Creates two files: ``path`` (weights serialized with
-        :func:`equinox.tree_serialise_leaves`) and ``path.json`` (config).
+        :func:`equinox.tree_serialise_leaves`) and ``path.json`` (config). Unlike
+        the PyTorch twin, the constructor config is carried on the instance
+        (``_config``) and written verbatim, so no layer-width introspection is
+        needed.
+
+        Args:
+            path: Base path for the weights file; the config sidecar is written to
+                ``path.json``.
+
+        See Also:
+            :meth:`waxmorph.torch.gnn.GNS.save`: PyTorch parity twin (single file).
         """
         path = Path(path)
         eqx.tree_serialise_leaves(path, self)
@@ -314,12 +348,19 @@ class GNS(eqx.Module):
     def load(cls, path: str | Path) -> GNS:
         """Load model from files saved with :meth:`save`.
 
+        Reads ``path.json`` for the config, builds an architecture skeleton (with a
+        throwaway PRNG key, since the weights are overwritten), then deserializes
+        the saved leaves into it.
+
         Args:
             path: Path to the weights file. Configuration is read from
                 ``path.json``.
 
         Returns:
             Deserialized :class:`waxmorph.jax.gnn.GNS` model.
+
+        See Also:
+            :meth:`waxmorph.torch.gnn.GNS.load`: PyTorch parity twin.
         """
         path = Path(path)
         with open(str(path) + ".json") as f:

@@ -1,26 +1,58 @@
-"""Shared constants used across simulation, emulation, and graph construction.
+"""Scalar constants shared by the Warp physics core across both backends.
 
-Force-specific constants (K_REP, K_ATT_*, etc.) remain local to their
-respective modules since they are intentionally different between the
-full simulator and the simplified emulator.
+These values are baked into ``@wp.kernel`` / ``@wp.func`` source at compile time, so
+defining them once here keeps the simulator, emulator, and graph construction bit-for-bit
+consistent: the same contact slack that decides which agents are neighbours during a
+simulation step is the same one that builds the GNS contact graph, and the same HashGrid
+resolution accelerates every pairwise kernel. Centralising them is what makes the
+torch and jax backends agree numerically rather than only structurally.
 
-Paper-symbol notes (for cross-referencing the writeup notation):
+Force-law constants (``K_REP``, ``K_ATT_*``, adhesion cutoffs, growth/division rates)
+are intentionally *not* here: they are physics, not numerics, and differ between the full
+:mod:`~waxmorph.simulator` and the simplified :mod:`~waxmorph.emulator`, so each module
+owns its own copies. :mod:`~waxmorph.simulator` likewise shadows ``EPS_DIST`` with a
+larger module-local value tuned for its growing, sticky-sphere mechanics; the value below
+is the one used by the emulator and by contact-graph construction.
 
-- ``FOUR_THIRDS_PI`` is the sphere-volume prefactor 4π/3.
-- ``EPS_DIST`` is the contact-slack tolerance ε on adjacency/contact tests.
-- ``EPS_DEN``, ``EPS_NORM``, ``RAND_EPS`` are numerical-stability epsilons ε.
+The constants fall into three groups:
+
+* **Geometry** -- ``FOUR_THIRDS_PI``, the sphere-volume prefactor :math:`4\\pi/3`.
+* **Adjacency / contact slack** -- ``EPS_DIST``, the tolerance :math:`\\varepsilon`
+  added to the radii sum when deciding contact, edges, and HashGrid query radii.
+* **Numerical-stability epsilons** -- ``EPS_DEN``, ``EPS_NORM``, ``RAND_EPS``: small
+  :math:`\\varepsilon` floors that keep divisions, normalisations, and RNG draws finite
+  and differentiable at degenerate (zero-distance / boundary) configurations.
 """
 
-# Geometry
-FOUR_THIRDS_PI: float = 4.1887902047863905  # paper 4π/3, sphere-volume prefactor
+# --- Geometry ---
+# Sphere-volume prefactor 4*pi/3, multiplied by r**3 to turn an agent radius into a
+# volume proxy (e.g. concentration normalisation, growth bookkeeping). Precomputed as a
+# literal so the Warp kernels never recompute pi at launch time.
+FOUR_THIRDS_PI: float = 4.1887902047863905  # 4*pi/3, sphere-volume prefactor
 
-# Adjacency / contact detection
-EPS_DIST: float = 1e-2  # paper ε, contact slack on adjacency tests
+# --- Adjacency / contact slack ---
+# Tolerance epsilon added to the sum of two radii when testing contact: agents i and j are
+# adjacent when dist(i, j) <= r_i + r_j + EPS_DIST. The same slack widens the HashGrid
+# query radius (2*r_max + EPS_DIST) so no contacting pair is missed, and is the default
+# eps_dist for building the GNS contact graph -- keeping simulated and learned topology
+# identical. The boundary is a hard threshold (non-smooth); gradients are not taken w.r.t.
+# this discrete neighbour selection. Simulator.py overrides this with a larger local value.
+EPS_DIST: float = 1e-2  # contact slack on adjacency tests
 
-# HashGrid spatial acceleration
+# --- HashGrid spatial acceleration ---
+# Number of cells per axis (128**3 total) for the Warp HashGrid used to find contacting
+# pairs in O(n) instead of O(n**2). Shared so the simulator, emulator, and training-time
+# neighbour queries all bin space identically; affects performance only, never the physics.
 HASH_GRID_DIM: int = 128
 
-# Numerical stability
-EPS_DEN: float = 1e-9  # paper ε, denominator-stability epsilon
-EPS_NORM: float = 1e-9  # paper ε, norm-stability epsilon
-RAND_EPS: float = 1e-7  # paper ε, RNG-clamp epsilon
+# --- Numerical stability ---
+# Denominator floor for safe division num / (den + EPS_DEN): prevents inf/NaN when a
+# computed denominator collapses to zero, while leaving the gradient well defined.
+EPS_DEN: float = 1e-9  # denominator-stability epsilon
+# Distance floor added to wp.length(...) before dividing by it to normalise a direction
+# vector: at zero separation the raw norm and its gradient are undefined, so this fixes a
+# finite (arbitrary but stable) direction and keeps the backward pass through the Tape sane.
+EPS_NORM: float = 1e-9  # norm-stability epsilon
+# RNG clamp keeping uniform draws inside (RAND_EPS, 1 - RAND_EPS) before feeding them to
+# log() for Gumbel / division sampling, so the exact endpoints 0 and 1 never produce -inf.
+RAND_EPS: float = 1e-7  # RNG-clamp epsilon

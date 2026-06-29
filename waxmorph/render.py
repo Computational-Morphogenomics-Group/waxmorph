@@ -64,7 +64,16 @@ class RenderInterface(ABC):
 
 
 class MPLInterface(RenderInterface):
-    """Matplotlib interface for rendering frames. Fixed view / non-interactive."""
+    """Matplotlib renderer for static, non-interactive cell-state snapshots.
+
+    Draws each active particle as a translucent parametric sphere surface in a
+    fixed-view 3D axes, tinting it by morphogen value (HSV saturation). Use this
+    for lightweight figures and quick checks; prefer :class:`PyVistaInterface`
+    for many particles or interactive inspection.
+
+    See Also:
+        PyVistaInterface: GPU-glyphed interactive renderer of the same state.
+    """
 
     @staticmethod
     def draw_sphere(
@@ -173,11 +182,16 @@ class MPLInterface(RenderInterface):
 
 
 class PyVistaInterface(RenderInterface):
-    """
-    High-performance renderer using PyVista/VTK.
-    - Uses glyphing to draw N spheres as a single GPU-optimized actor.
-    - Optionally glyphs polarity vectors (arrows) as another single actor.
-    - Supports static and multi-frame inputs (with an interactive slider).
+    """Interactive GPU renderer for cell state, scalable to many particles.
+
+    Built on PyVista/VTK and tuned for throughput: all N spheres are drawn as a
+    single glyphed actor (one GPU draw call), with optional polarity arrows as a
+    second glyphed actor. Particles are colored by morphogen value, or by a
+    stable per-category palette when ``cell_types`` is supplied. Supports static
+    and multi-frame inputs (the latter with an interactive frame slider).
+
+    See Also:
+        MPLInterface: lightweight static Matplotlib renderer of the same state.
     """
 
     @staticmethod
@@ -500,6 +514,20 @@ class PyVistaInterface(RenderInterface):
 
 
 class _BaseBackend:
+    """Adapter contract for a single Warp rendering backend.
+
+    Each backend (headless OpenGL video, USD stage) implements per-frame point
+    rendering and resource teardown behind this common interface so that
+    :class:`WarpMovieRenderer` stays backend-agnostic.
+
+    Attributes:
+        needs_full_buffer: When ``True``, the backend expects the full
+            ``max_particles`` buffer every frame (inactive particles zeroed,
+            radius 0 → invisible glyph) rather than a slice of only the active
+            particles. USD point instancers require the fixed-capacity buffer;
+            OpenGL can take just the active slice.
+    """
+
     # If True, the renderer expects the full max_particles buffer every frame
     # (inactive particles zeroed out) rather than a slice of only active ones.
     needs_full_buffer: bool = False
@@ -514,6 +542,15 @@ class _BaseBackend:
 
 
 class _OpenGLVideoBackend(_BaseBackend):
+    """Headless OpenGL backend that encodes rendered frames to a video file.
+
+    Drives a Warp ``OpenGLRenderer`` offscreen, reads back the framebuffer into
+    a reusable GPU pixel buffer, flips it from OpenGL's bottom-up origin to the
+    image top-down origin, and streams it to an :mod:`imageio` writer. Renders
+    only the active-particle slice (``needs_full_buffer`` stays ``False``), and
+    optionally overlays a static target mesh.
+    """
+
     def __init__(
         self,
         filename: str,
@@ -638,6 +675,15 @@ class _OpenGLVideoBackend(_BaseBackend):
 
 
 class _UsdStageBackend(_BaseBackend):
+    """USD stage backend that writes particle frames to a ``.usd`` file.
+
+    Drives a Warp ``UsdRenderer`` whose single PointInstancer is created at the
+    full ``max_particles`` capacity, so ``needs_full_buffer`` is ``True`` and
+    inactive particles are kept at radius 0 (scale 0 → invisible) rather than
+    dropped. Mesh overlays are not supported here (OpenGL only). The stage is
+    flushed on :meth:`close`, or after every frame when ``save_every_frame``.
+    """
+
     needs_full_buffer: bool = True
 
     def __init__(
@@ -697,7 +743,15 @@ class _UsdStageBackend(_BaseBackend):
 
 
 class WarpMovieRenderer:
-    """Write Warp particle trajectories as video frames or USD stages.
+    """Offscreen animator that writes Warp particle trajectories to a movie.
+
+    Backend-agnostic front end over the rendering adapters: it owns fixed-size
+    GPU buffers sized to ``max_particles``, packs per-frame state into them, and
+    delegates to either :class:`_OpenGLVideoBackend` (headless video file) or
+    :class:`_UsdStageBackend` (USD stage) chosen by ``backend``. Feed frames via
+    :meth:`write_frame_from_numpy` (precomputed RGB) or
+    :meth:`write_frame_from_state` (Warp arrays with morphogen-derived color).
+    Usable as a context manager, which closes the backend on exit.
 
     Args:
         filename: Output video or USD file path.
@@ -832,6 +886,19 @@ class WarpMovieRenderer:
         base_g: wp.float32,
         base_b: wp.float32,
     ):
+        # Pack per-particle simulation state into the fixed-size GPU buffers the
+        # Warp renderer consumes each frame: position (vec3), radius (float32),
+        # and an RGB colour (vec3). One thread handles one buffer slot.
+        #
+        # Colour comes from one of two sources:
+        #   * a constant base_r/base_g/base_b RGB when use_base_color != 0, or
+        #   * a morphogen-driven HSV ramp at the fixed hue `hue` with value=1,
+        #     where saturation encodes a scalar morph signal selected by
+        #     morph_mode: 0 -> activator A, 1 -> inhibitor I, 2 -> the ratio
+        #     A/(A+I). The signal is divided by morph_scale and clamped to
+        #     [0, 1], so saturation 0 reads near-white and 1 reads fully tinted.
+        # The HSV->RGB conversion is hand-rolled here (no NumPy/colorsys inside
+        # a kernel); it follows the standard 6-sector piecewise formula.
         i = wp.tid()
 
         # inactive slots: zero radius → glyph scale 0 → invisible
@@ -864,19 +931,22 @@ class WarpMovieRenderer:
         s = wp.max(morph_scale, wp.float32(1e-8))
         m = wp.clamp(m / s, wp.float32(0.0), wp.float32(1.0))
 
-        # HSV -> RGB (hue fixed, saturation=m, value=1)
+        # HSV -> RGB (hue fixed, saturation=m, value=1) via the standard
+        # 6-sector piecewise conversion.
         h = hue
         sat = m
         v = wp.float32(1.0)
 
         h6 = h * wp.float32(6.0)
-        hi = wp.int32(wp.floor(h6))  # 0..5
-        f = h6 - wp.float32(hi)
+        hi = wp.int32(wp.floor(h6))  # which of the 6 hue sectors, 0..5
+        f = h6 - wp.float32(hi)  # fractional position within the sector
 
+        # the three intermediate channel levels reused across sectors
         p = v * (wp.float32(1.0) - sat)
         q = v * (wp.float32(1.0) - sat * f)
         t = v * (wp.float32(1.0) - sat * (wp.float32(1.0) - f))
 
+        # default branch is sector 0; the elif chain handles sectors 1..5
         r = v
         g = t
         bb = p
@@ -916,6 +986,35 @@ class WarpMovieRenderer:
         hue: float = 0.80,
         base_color: tuple[float, float, float] | None = None,
     ) -> int:
+        """Pack Warp state into the renderer's fixed-size GPU buffers for a frame.
+
+        Resolves the ``morph`` color mode and optional ``base_color`` override,
+        then launches :meth:`_pack_buffers_kernel` over the full ``max_particles``
+        capacity so that slots past the active count are zeroed (radius 0 renders
+        as an invisible glyph). The packed results live in ``self._points_f32``,
+        ``self._radii_f32``, and ``self._colors_f32``.
+
+        Args:
+            centers_wp: Warp position array with dtype ``wp.vec3f``.
+            radii_wp: Warp radius array with dtype ``wp.float32``.
+            A_wp: Warp activator morphogen array.
+            I_wp: Warp inhibitor morphogen array.
+            particle_count: Requested number of active particles; clamped to
+                ``[0, max_particles]``.
+            morph: Color source. ``"A"`` (default) uses the activator,
+                ``"i"``/``"inhibitor"``/``"inhibitors"`` use the inhibitor, and
+                ``"ratio"``/``"a_over_a_plus_i"``/``"a/(a+i)"`` use the
+                normalized ratio ``A/(A+I)``. Matching is case-insensitive;
+                unrecognized values fall back to the activator.
+            morph_scale: Divisor applied to the selected scalar before clipping
+                color saturation to ``[0, 1]``.
+            hue: Fixed HSV hue in ``[0, 1]`` for morphogen coloring.
+            base_color: Optional constant RGB in ``[0, 1]`` that overrides
+                morphogen coloring for every active particle.
+
+        Returns:
+            The clamped active-particle count actually packed into the buffers.
+        """
         n = int(particle_count)
         n = max(0, min(n, self.max_particles))
 
@@ -993,21 +1092,26 @@ class WarpMovieRenderer:
         mesh_points=None,
         mesh_indices=None,
     ) -> None:
-        """Write a video frame from :mod:`numpy` arrays with explicit RGB colors.
+        """Write one frame from :mod:`numpy` arrays with explicit RGB colors.
 
-        This is a convenience method for cases where colors are precomputed
-        (e.g. shape assembly with multiple signaling-molecule states) rather
-        than derived from separate activator/inhibitor Warp arrays.
+        Use when colors are already computed (e.g. shape assembly with multiple
+        signaling-molecule states) rather than derived from separate
+        activator/inhibitor Warp arrays. Inputs are clamped to ``particle_count``
+        and zero-padded to ``max_particles`` to match the fixed-size GPU buffers.
 
         Args:
-            t: Time stamp for the frame.
+            t: Frame time stamp (seconds in renderer time).
             centers: Particle positions with shape ``[N, 3]``.
             radii: Particle radii with shape ``[N]``.
-            colors: Per-particle RGB colors with shape ``[N, 3]`` in
+            colors: Per-particle RGB colors with shape ``[N, 3]``, clipped to
                 ``[0, 1]``.
-            particle_count: Number of active particles.
+            particle_count: Number of active particles; clamped to
+                ``[0, max_particles]``.
             mesh_points: Optional target mesh vertices for the OpenGL backend.
             mesh_indices: Optional target mesh indices for the OpenGL backend.
+
+        See Also:
+            write_frame_from_state: Frames from Warp state with morphogen color.
         """
         n = int(particle_count)
         n = max(0, min(n, self.max_particles))
@@ -1047,23 +1151,34 @@ class WarpMovieRenderer:
         mesh_points=None,
         mesh_indices=None,
     ) -> None:
-        """Write a frame from Warp state arrays and derived morphogen colors.
+        """Write one frame straight from Warp state, coloring by morphogen.
+
+        Use during live Warp simulation: state stays on the GPU and the color is
+        derived on-device by :meth:`_pack_buffers_kernel` (HSV ramp at fixed
+        ``hue``, saturation from the ``morph`` signal divided by ``morph_scale``
+        and clamped to ``[0, 1]``), avoiding a host round-trip. A constant
+        ``base_color`` overrides morphogen coloring when given.
 
         Args:
-            t: Time stamp for the frame.
+            t: Frame time stamp (seconds in renderer time).
             centers_wp: Warp position array with dtype ``wp.vec3f``.
             radii_wp: Warp radius array with dtype ``wp.float32``.
             A_wp: Warp activator morphogen array.
             I_wp: Warp inhibitor morphogen array.
-            particle_count: Number of active particles.
-            morph: Color source, one of ``"A"``, ``"I"``, or ratio aliases.
-            morph_scale: Divisor applied before clipping morphogen color values
-                to ``[0, 1]``.
-            hue: HSV hue used for morphogen coloring.
-            base_color: Optional RGB color in ``[0, 1]`` overriding morphogen
+            particle_count: Number of active particles; clamped to
+                ``[0, max_particles]``.
+            morph: Color source: ``"A"`` (activator), ``"I"`` (inhibitor), or a
+                ratio alias for ``A/(A+I)``; see :meth:`_pack_gpu_buffers`.
+            morph_scale: Divisor applied to the morphogen signal before clipping
+                color saturation to ``[0, 1]``.
+            hue: Fixed HSV hue in ``[0, 1]`` for morphogen coloring.
+            base_color: Optional constant RGB in ``[0, 1]`` overriding morphogen
                 coloring.
             mesh_points: Optional target mesh vertices for the OpenGL backend.
             mesh_indices: Optional target mesh indices for the OpenGL backend.
+
+        See Also:
+            write_frame_from_numpy: Frames from precomputed RGB color arrays.
         """
         n = self._pack_gpu_buffers(
             centers_wp,

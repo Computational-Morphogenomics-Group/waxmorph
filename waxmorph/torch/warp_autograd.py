@@ -1,9 +1,28 @@
-"""PyTorch autograd functions that bridge Warp tape differentiation.
+"""PyTorch autograd bridge that makes Warp physics steps differentiable.
 
-Each function wraps a Warp physics step so that :mod:`torch.autograd` can
-chain backward through it.  Forward records kernel launches on a
-:class:`warp.Tape`; backward replays the tape in reverse to propagate
-gradients.
+Mental model: Warp owns the physics math, PyTorch owns the gradient graph.
+Each class here is a :class:`torch.autograd.Function` wrapping one Warp
+physics step. The design is forward-records / backward-replays: ``forward``
+records every kernel launch on a fresh :class:`warp.Tape` while freezing the
+neighbor topology for the step, and ``backward`` seeds the output adjoint and
+calls ``tape.backward()`` to replay the recorded launches in reverse,
+propagating ``dL/dout → dL/din``. Only the differentiated tensor receives a
+gradient; all other inputs return ``None``.
+
+This is the PyTorch half of a two-backend bridge that keeps gradient flow
+identical across frameworks.
+
+Notes:
+    Backend divergence: this path imposes no device restriction (Warp will run
+    the kernels on whatever device the input tensors live on). The JAX twin,
+    by contrast, hard-requires a CUDA Warp/JAX device and raises
+    :class:`RuntimeError` otherwise (see
+    :func:`waxmorph.jax.warp_autograd._device_requires_cuda`).
+
+See Also:
+    :mod:`waxmorph.jax.warp_autograd`: JAX parity backend, which reaches the
+        same Warp physics through Warp's experimental JAX FFI custom VJP
+        rather than a :class:`torch.autograd.Function`.
 """
 
 from __future__ import annotations
@@ -20,8 +39,17 @@ from waxmorph.emulator import (
 class WarpMechStep(torch.autograd.Function):
     """Differentiable sticky-sphere mechanics step.
 
-    Forward: apply repulsion + adhesion forces and Euler-update positions.
-    Backward: replay :class:`warp.Tape` to propagate ``dL/dX_out → dL/dX_in``.
+    Forward records repulsion + adhesion force kernels and the Euler position
+    update on a :class:`warp.Tape`, then returns the updated positions as a
+    torch tensor. Backward replays that tape to propagate
+    ``dL/dX_out → dL/dX_in``; only the position input is differentiated.
+
+    See Also:
+        :func:`waxmorph.emulator.mech_step_sticky_differentiable`: the
+            tape-recording mechanics step this wraps (force law and Euler
+            update live there).
+        :func:`waxmorph.jax.warp_autograd.warp_mech_step`: JAX twin reaching
+            the same mechanics through a Warp/JAX custom VJP.
     """
 
     @staticmethod
@@ -80,8 +108,16 @@ class WarpMechStep(torch.autograd.Function):
 class WarpDiffusionStep(torch.autograd.Function):
     """Differentiable signaling-molecule diffusion step.
 
-    Forward: graph-Laplacian diffusion of signaling-molecule concentrations.
-    Backward: replay :class:`warp.Tape` to propagate ``dL/dc_out → dL/dc_in``.
+    Forward records the graph-Laplacian diffusion of concentrations and the
+    Euler update on a :class:`warp.Tape`, then returns the updated
+    concentrations as a torch tensor. Backward replays that tape to propagate
+    ``dL/dc_out → dL/dc_in``; only the concentration input is differentiated.
+
+    See Also:
+        :func:`waxmorph.emulator.diffusion_step_differentiable`: the
+            tape-recording diffusion step this wraps.
+        :func:`waxmorph.jax.warp_autograd.warp_diffusion_step`: JAX twin
+            reaching the same diffusion through a Warp/JAX custom VJP.
     """
 
     @staticmethod
