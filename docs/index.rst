@@ -1,47 +1,33 @@
-waxmorph
+waxMorph
 ========
 
-waxMorph is a joint framework for forward simulation and inverse design of
-biophysical shape assembly. Tissues are represented as populations of
-interacting three-dimensional spheroidal agents, spatial adjacency graphs
-encode which agents may exert mechanical or biochemical influence on one
-another, and graph-network-based emulators are trained to reproduce target
-morphologies or target morphology sequences.
+**waxMorph builds tissue shape from the bottom up.** It treats a tissue as a
+population of interacting spheroidal cells and lets you do two things with the
+same representation: run a forward mechanochemical simulation, or learn the
+local update rule that assembles an initial cell population into a target
+morphology.
 
-The framework supports two connected modes of use:
+Why use it: shape assembly is local. Each cell knows only its contact
+neighbors, so waxMorph evaluates mechanics, signaling, and diffusion over a
+spatial adjacency graph that it rebuilds as the tissue deforms — the same
+representation whether you sample cells from a mesh, prescribe a mechanistic
+model, or train a graph network to reproduce an observed morphology.
 
-* **Forward simulation**: mechanochemical trajectories are generated from
-  explicit rules for adhesion, volume exclusion, polarity, reaction-diffusion,
-  and division.
-* **Inverse design / learned emulation**: a graph-network-based simulator
-  (GNS) learns local, neighbor-dependent update rules that transform an initial
-  spheroidal cell population into one or more target morphologies, while
-  differentiable physical constraints guide tissue-scale assembly.
-
-The central modelling assumption is locality. Each cellular agent carries a
-position, volume, polarity vector, signaling molecule concentrations, and an
-optional cell type; interactions are evaluated over contact neighborhoods
-rather than over a global image grid. Local neighborhoods are induced by
-spatial proximity and rebuilt as tissues deform. The same representation
-therefore applies both to morphologies obtained from segmented shapes or meshes
-and to mechanistic models in which local rules of tissue organization are
-specified or learned.
-
-Where to start
---------------
-
-A first introduction is provided in :doc:`getting_started`, followed by
-:doc:`concepts` for the vocabulary used throughout the framework. Adapting the
-framework to a new biological system typically requires :doc:`workflows`
-together with the :doc:`api` reference.
+New here? Install the package (:doc:`installation`), then work through the
+:doc:`tutorials/index` to run a forward simulation and train a learned
+emulator end to end. Reach for the :doc:`how_to/index` guides when you have a
+specific task, the :doc:`explanation/index` pages to understand the modelling
+choices, and the :doc:`reference/index` for the API.
 
 .. toctree::
-   :maxdepth: 2
+   :hidden:
+   :maxdepth: 1
 
-   getting_started
-   concepts
-   workflows
-   api
+   installation
+   tutorials/index
+   how_to/index
+   explanation/index
+   reference/index
    contributing
    changelog
    references

@@ -1,5 +1,5 @@
 waxmorph.train
-===============
+==============
 
 .. currentmodule:: waxmorph.train
 

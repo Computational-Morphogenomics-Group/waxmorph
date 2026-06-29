@@ -1,11 +1,37 @@
 """Sphinx configuration for the waxmorph documentation."""
 
+import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC if SRC.exists() else ROOT))
+
+# Force-tracked root notebooks rendered as tutorials. The copies land under
+# docs/tutorials/ and are picked up by the existing *.ipynb gitignore rule, so
+# they never enter version control. The source notebooks are left untouched.
+TUTORIAL_NOTEBOOKS = {
+    "simulation_with_autodiff.ipynb": "forward_simulator.ipynb",
+    "shape_assembly.ipynb": "learned_emulator.ipynb",
+    "shape_assembly_jax.ipynb": "learned_emulator_jax.ipynb",
+}
+
+
+def _copy_tutorial_notebooks(app):
+    """Copy the tracked root notebooks into docs/tutorials/ before the build."""
+    dest_dir = HERE / "tutorials"
+    dest_dir.mkdir(exist_ok=True)
+    for source_name, dest_name in TUTORIAL_NOTEBOOKS.items():
+        source = ROOT / source_name
+        if source.exists():
+            shutil.copy(source, dest_dir / dest_name)
+
+
+def setup(app):
+    """Register the notebook-copy hook on builder startup."""
+    app.connect("builder-inited", _copy_tutorial_notebooks)
 
 project = "waxmorph"
 copyright = "2026, WaxMorph Contributors"
@@ -88,7 +114,8 @@ intersphinx_mapping = {
     "pyvista": ("https://docs.pyvista.org/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
     "imageio": ("https://imageio.readthedocs.io/en/stable/", None),
-    "warp": ("https://nvidia.github.io/warp/", None),
+    # NVIDIA Warp publishes no intersphinx inventory (objects.inv); omit it so the
+    # build does not emit a fetch warning. ``warp.*`` cross-refs stay unlinked.
     "geomloss": ("https://www.kernel-operations.io/geomloss/", None),
 }
 

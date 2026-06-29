@@ -57,12 +57,33 @@ to flow through the operation. Vague phrasing such as "processes data" or
 variables: positions `X` (shape `[N, 3]`), polarities `P` (shape `[N, 3]`),
 radii `R` (shape `[N]`), signaling-molecule concentrations `c`
 (shape `[N, num_molecules]`), cell types `CT`, and the contact edges induced by
-spatial proximity. The notation follows the waxMorph manuscript; in particular,
-the per-cell molecular state is denoted `c` and the predicted increments are
-`dX`, `dP`, and `dc`.
+spatial proximity. By convention, the per-cell molecular state is denoted `c`
+and the predicted increments are `dX`, `dP`, and `dc`.
 
 When a modelling choice is an approximation, it should be stated directly. For
 example, the contact graph is rebuilt from a detached state snapshot and treated
 as fixed within a rollout step, while the continuous node and edge features
 remain differentiable. That distinction matters when interpreting the learned
 biophysical update rules.
+
+### Docstring conventions
+
+Docstrings follow the Google style that Napoleon renders:
+
+- **Open with an imperative one-line summary.** Write "Build the contact graph
+  …", not "This function builds …" or "Builds …". The summary states what the
+  call does to the cell state, not what kind of object it is.
+- **Do not restate types in the prose.** Type hints already carry the type, and
+  `autodoc_typehints = "description"` renders them, so the argument
+  descriptions should name the biological role and the array shape — for
+  example `X (shape [N, 3])` — rather than repeating `np.ndarray`.
+- **Express physics with `.. math::` blocks.** When a function implements a
+  governing equation (the soft-sphere force, the graph Laplacian, a reaction
+  term, a Hill function), include that equation in a `.. math::` block so the
+  rendered docs match the notation `X`, `P`, `R`, `c`, `dX`, `dP`, `dc`.
+- **Cross-link the torch and jax counterparts with `See Also`.** Because the
+  two backends are kept at parity, a docstring on
+  `waxmorph.torch.<thing>` should point to `waxmorph.jax.<thing>` and vice
+  versa through a `See Also` section, so a reader of one backend can find its
+  twin. Note in the docstring whether gradients are intended to flow through
+  the operation.
