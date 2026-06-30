@@ -143,3 +143,41 @@ class TestMakeSinkhornLoss:
         x = jax.random.normal(key, (50, 3))
         val = loss_fn(x, x)
         assert float(val) == pytest.approx(0.0, abs=1e-3)
+
+    def test_p2_matches_default(self, key):
+        """p=2 selects SqEuclidean, the OTT default, so it reproduces the default."""
+        a = jax.random.normal(key, (40, 3))
+        b = jax.random.normal(jax.random.PRNGKey(1), (40, 3))
+        default = float(make_sinkhorn_loss(blur=0.05)(a, b))
+        p2 = float(make_sinkhorn_loss(blur=0.05, p=2)(a, b))
+        assert p2 == pytest.approx(default, rel=1e-6, abs=1e-6)
+
+    def test_p1_euclidean_forward(self, key):
+        """p=1 selects Euclidean ground cost and still returns a differentiable scalar."""
+        loss_fn = make_sinkhorn_loss(blur=0.05, p=1)
+        a = jax.random.normal(key, (40, 3))
+        b = jax.random.normal(jax.random.PRNGKey(1), (40, 3))
+        assert loss_fn(a, b).ndim == 0
+        grad = jax.grad(lambda x: loss_fn(x, b))(a)
+        assert jnp.abs(grad).sum() > 0
+
+    def test_explicit_cost_fn_overrides_p(self, key):
+        """An explicit OTT cost_fn is accepted and used in place of the p mapping."""
+        from ott.geometry import costs
+
+        loss_fn = make_sinkhorn_loss(blur=0.05, cost_fn=costs.Euclidean())
+        a = jax.random.normal(key, (40, 3))
+        b = jax.random.normal(jax.random.PRNGKey(1), (40, 3))
+        assert loss_fn(a, b).ndim == 0
+
+    def test_invalid_p_raises(self):
+        """An unsupported p with no explicit cost_fn fails fast at factory time."""
+        with pytest.raises(ValueError, match="p in"):
+            make_sinkhorn_loss(p=3)
+
+    def test_solve_kwargs_forwarded(self, key):
+        """Extra keyword args are forwarded to the OTT Sinkhorn solver."""
+        loss_fn = make_sinkhorn_loss(blur=0.05, threshold=1e-2, max_iterations=50)
+        a = jax.random.normal(key, (30, 3))
+        b = jax.random.normal(jax.random.PRNGKey(1), (30, 3))
+        assert loss_fn(a, b).ndim == 0

@@ -124,7 +124,10 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
 
 def make_sinkhorn_loss(
     blur: float = 0.05,
-    **kwargs: Any,
+    *,
+    p: int = 2,
+    cost_fn: Any | None = None,
+    **solve_kwargs: Any,
 ) -> Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray]:
     """Build a debiased Sinkhorn divergence loss for unordered point clouds.
 
@@ -153,8 +156,25 @@ def make_sinkhorn_loss(
     This ensures :math:`S_\\varepsilon(\\alpha, \\alpha) \\approx 0`.
 
     Args:
-        blur: Entropic regularization parameter, passed to OTT as ``epsilon``.
-        **kwargs: Additional keyword arguments forwarded in ``solve_kwargs``.
+        blur: Entropic regularization parameter, passed to OTT as ``epsilon``
+            (the analogue of the geomloss ``blur`` knob).
+        p: Ground-cost exponent selecting the OTT cost when ``cost_fn`` is not
+            given: ``p=2`` uses squared Euclidean cost
+            (:class:`ott.geometry.costs.SqEuclidean`, the OTT default and the
+            torch-side default) and ``p=1`` uses Euclidean cost
+            (:class:`ott.geometry.costs.Euclidean`). Other exponents require an
+            explicit ``cost_fn``.
+        cost_fn: Optional explicit OTT :class:`~ott.geometry.costs.CostFn`. When
+            given it overrides ``p``.
+        **solve_kwargs: Additional Sinkhorn solver options forwarded to OTT as
+            ``solve_kwargs`` (e.g. ``threshold``, ``max_iterations``).
+
+    Note:
+        The divergence is always the debiased three-term form, matching the
+        torch default ``geomloss.SamplesLoss(debias=True)``; this backend does
+        not expose a debias toggle. The geomloss ``scaling`` (multiscale
+        annealing) and ``reach`` (unbalanced OT) knobs have no direct OTT mapping
+        here and are not exposed.
 
     Returns:
         Callable ``loss_fn(X_pred, X_target)`` returning a scalar
@@ -170,8 +190,20 @@ def make_sinkhorn_loss(
         chamfer_distance
             Lightweight unordered-cloud loss with no extra dependencies.
     """
-    from ott.geometry import pointcloud
+    from ott.geometry import costs, pointcloud
     from ott.tools import sinkhorn_divergence as sd
+
+    if cost_fn is None:
+        if p == 1:
+            cost_fn = costs.Euclidean()
+        elif p == 2:
+            cost_fn = costs.SqEuclidean()
+        else:
+            raise ValueError(
+                f"make_sinkhorn_loss maps only p in {{1, 2}} to a built-in OTT "
+                f"cost (got p={p!r}); pass an explicit `cost_fn` for other "
+                "exponents."
+            )
 
     def loss_fn(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
         """Evaluate the configured Sinkhorn divergence between point clouds."""
@@ -179,8 +211,9 @@ def make_sinkhorn_loss(
             pointcloud.PointCloud,
             X_pred,
             X_target,
+            cost_fn=cost_fn,
             epsilon=blur,
-            solve_kwargs=kwargs if kwargs else {},
+            solve_kwargs=solve_kwargs if solve_kwargs else {},
         )
         return divergence
 

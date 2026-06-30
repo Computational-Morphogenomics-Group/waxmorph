@@ -47,9 +47,13 @@ class MLP(eqx.Module):
 
     See Also:
         waxmorph.torch.mlp.MLP: Default PyTorch twin with the same interface.
-            That backend applies Kaiming-uniform init, whereas Equinox linear
-            layers initialize from a LeCun-uniform distribution, so initial
-            weight scales differ slightly across backends.
+            Both backends initialize linear weights and biases from the same
+            distribution ``U(-1/sqrt(fan_in), 1/sqrt(fan_in))`` -- Equinox via its
+            ``lim = 1/sqrt(fan_in)`` uniform init and PyTorch via
+            ``kaiming_uniform_(a=sqrt(5))`` (the ``nn.Linear`` default), which
+            reduce to the same bound -- so initial weight scales match across
+            backends. Only the sampled values differ, because the two frameworks
+            draw from independent RNGs.
 
     Examples:
         >>> mlp = MLP(3, 2, hidden_dim=4, num_layers=1, layer_norm=False, key=jax.random.PRNGKey(0))

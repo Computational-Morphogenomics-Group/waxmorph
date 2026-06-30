@@ -56,3 +56,9 @@ EPS_NORM: float = 1e-9  # norm-stability epsilon
 # RNG clamp keeping uniform draws inside (RAND_EPS, 1 - RAND_EPS) before feeding them to
 # log() for Gumbel / division sampling, so the exact endpoints 0 and 1 never produce -inf.
 RAND_EPS: float = 1e-7  # RNG-clamp epsilon
+# Norm floor for polarity renormalisation P / max(||P||, EPS_POLARITY) after a GNS update.
+# Shared so the torch and jax backends renormalise polarity identically: it is the default
+# eps of torch.nn.functional.normalize, which the jax twin must pass explicitly (it previously
+# used 1e-9, a silent divergence). Active only for degenerate near-zero polarity vectors;
+# polarities start unit-norm and the per-step delta is small, so it rarely binds.
+EPS_POLARITY: float = 1e-12  # polarity-renormalisation norm floor (torch F.normalize default)

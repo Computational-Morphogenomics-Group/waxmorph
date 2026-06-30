@@ -14,7 +14,7 @@ import torch
 import warp as wp
 from tqdm import trange
 
-from waxmorph.constants import HASH_GRID_DIM
+from waxmorph.constants import EPS_POLARITY, HASH_GRID_DIM
 from waxmorph.torch.gnn import GNS
 from waxmorph.torch.graph import build_graph
 from waxmorph.torch.warp_autograd import WarpDiffusionStep, WarpMechStep
@@ -381,7 +381,7 @@ def _run_epoch(
 
         # Apply GNS deltas (stays on PyTorch graph)
         X_t = X_t + dX
-        P_t = torch.nn.functional.normalize(P_t + dP, dim=-1)
+        P_t = torch.nn.functional.normalize(P_t + dP, dim=-1, eps=EPS_POLARITY)
         c_t = torch.clamp_min(c_t + dc, 0.0)
         _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="post-gns update")
         _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="post-gns update")

@@ -15,6 +15,7 @@ import numpy as np
 import optax
 from tqdm import trange
 
+from waxmorph.constants import EPS_POLARITY
 from waxmorph.jax.gnn import GNS as JaxGNS
 from waxmorph.jax.graph import (
     build_edge_features,
@@ -284,10 +285,26 @@ def _tree_all_finite(tree) -> jax.Array:
 
 
 def _tree_global_norm(tree) -> jax.Array:
+    """Global L2 norm over all array leaves, computed overflow-safely.
+
+    The torch backend accumulates this norm in float64 to avoid float32 overflow
+    on large / ill-conditioned gradients (see
+    :func:`waxmorph.torch.train._clip_grad_norm_stable`). JAX defaults to float32
+    and enabling its 64-bit mode is a global, library-wide side effect, so instead
+    we factor out the largest-magnitude element before squaring:
+    ``||g|| = m * sqrt(sum (g / m)^2)`` with ``m = max|g|``. The rescaled squares
+    lie in ``[0, 1]`` and cannot overflow float32, so this matches the torch
+    backend's overflow robustness (and its value to float32 round-off) without
+    touching global precision.
+    """
     leaves = _array_leaves(tree)
     if not leaves:
         return jnp.asarray(0.0, dtype=jnp.float32)
-    return jnp.sqrt(sum(jnp.sum(jnp.square(leaf)) for leaf in leaves))
+    abs_max = jnp.max(jnp.stack([jnp.max(jnp.abs(leaf)) for leaf in leaves]))
+    # Guard the all-zero gradient case so the rescaling divisor is never 0.
+    scale = jnp.where(abs_max > 0, abs_max, jnp.asarray(1.0, dtype=abs_max.dtype))
+    sq_sum = sum(jnp.sum(jnp.square(leaf / scale)) for leaf in leaves)
+    return abs_max * jnp.sqrt(sq_sum)
 
 
 def _clip_grads(grads, max_norm: float):
@@ -620,7 +637,7 @@ def _apply_rollout_step(
 
     X = X + dX
     P = P + dP
-    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), 1e-9)
+    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), EPS_POLARITY)
     c = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
 
     if topology.mech_pairs or topology.diff_pairs:
@@ -676,7 +693,7 @@ def _collection_gns_step(
 
     X_next = X + dX
     P_next = P + dP
-    P_next = P_next / jnp.maximum(jnp.linalg.norm(P_next, axis=-1, keepdims=True), 1e-9)
+    P_next = P_next / jnp.maximum(jnp.linalg.norm(P_next, axis=-1, keepdims=True), EPS_POLARITY)
     c_next = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
     return X_next, P_next, c_next, dX, dP, dc
 
@@ -1059,7 +1076,7 @@ def _apply_rollout_step_from_batch(
 
     X = X + dX
     P = P + dP
-    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), 1e-9)
+    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), EPS_POLARITY)
     c = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
 
     if config.mech_steps > 0 or config.diff_steps > 0:

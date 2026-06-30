@@ -41,10 +41,14 @@ class MLP(nn.Module):
         ValueError: If ``activation`` is not one of the supported names.
 
     See Also:
-        waxmorph.jax.mlp.MLP: JAX/Equinox twin with the same interface. Its
-            Equinox linear layers use LeCun-uniform init rather than the
-            Kaiming-uniform init applied here, so initial weight scales differ
-            slightly across backends.
+        waxmorph.jax.mlp.MLP: JAX/Equinox twin with the same interface. Both
+            backends initialize linear weights and biases from the same
+            distribution ``U(-1/sqrt(fan_in), 1/sqrt(fan_in))`` -- PyTorch via
+            ``kaiming_uniform_(a=sqrt(5))`` (the ``nn.Linear`` default) and
+            Equinox via its ``lim = 1/sqrt(fan_in)`` uniform init, which reduce
+            to the same bound -- so initial weight scales match across backends.
+            Only the sampled values differ, because the two frameworks draw from
+            independent RNGs.
 
     Examples:
         >>> import torch
