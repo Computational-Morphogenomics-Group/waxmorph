@@ -1,39 +1,25 @@
-Differentiable physics
+Emulator differentiability
 ======================
 
-The learned emulator works because the prescribed physics is differentiable:
-gradients of the shape loss flow back through the soft-sphere mechanics and the
-graph diffusion, not only through the graph network. This page explains the two
-ideas that make that possible — the frozen-topology gradient approximation and
-the Warp tape that records and replays the physics.
+The learned emulator works by making the prescribed biophysics differentiable.
+Gradients of the shape loss flow back through the soft-sphere mechanics and the
+graph diffusion.
 
-Frozen topology within a step
+Spatial adjacencies within an update step
 -----------------------------
 
 Each emulation step applies the learned GNS updates and then the prescribed
-constraints. The constraints are the same primitives used everywhere in the
-framework: the soft-sphere force pushes apart overlapping cells, and each latent
-molecule diffuses through the shared graph Laplacian,
-
-.. math::
-
-   x_i^{t+1} \leftarrow x_i^{t+1}
-   + \Delta t \sum_{j:\,(i,j)\in E^{t+1}} f^{\text{soft}}_{ij}, \qquad
-   c_{i,M}^{t+1} \leftarrow c_{i,M}^{t+1}
-   - D_{\text{emu}}\,(L_G c)_{i,M}^{t+1}\,\Delta t .
-
-The constraints run ``n_substeps`` times per learned update on a faster time
-scale, keeping the trajectory biophysically coherent.
+constraints. The constraints run ``n_substeps`` times per learned update and can 
+be ran on a faster time scale, keeping the trajectory biophysically coherent.
 
 The differentiable path in :mod:`waxmorph.emulator` records these pairwise
-kernels while *freezing the neighbor topology for the step*. The edge set
-:math:`E^{t+1}` is rebuilt from the provisional positions, then held fixed while
-the constraint forces and diffusion are computed and differentiated. As in
-:doc:`graphs_and_locality`, gradients flow through the continuous quantities —
-distances, forces, concentrations — but not through the discrete appearance or
-disappearance of an edge. Freezing the topology per step is what lets the
-pairwise physics be expressed as a fixed computation that an autodiff engine can
-record and reverse.
+kernels while *freezing the neighbor topology for the step*. This is feasible for small enough step sizes 
+:math:`\Delta t` and large enough trajectory length :math:`T` as deformations induced by mechanics will be smooth. The edge set :math:`E^{t+1}` 
+is rebuilt from the provisional positions, then held fixed while the constraint forces and diffusion are computed and differentiated. As in
+:doc:`graphs_and_locality`, gradients flow through the cell states, but not through the discrete appearance or
+disappearance of an edge. This choice stems from using the spatial adjacency graph as opposed to 
+a fully connected graph, reducing computational complexity drastically.
+
 
 The Warp tape
 -------------
@@ -45,15 +31,15 @@ backward pass it replays that tape in reverse to propagate gradients: the torch
 side wraps this in a :class:`torch.autograd.Function`, and the jax side exposes
 it as a custom VJP. Either way, the physics corrections become a differentiable
 node in the surrounding computation graph, and the shape-loss gradient reaches
-the GNS parameters through the physics rather than around it.
+the GNS parameters through the physics.
 
-This design also keeps the constraints extensible. Because the physics enters
-through a recorded tape behind a standard autograd interface, you can add a new
-prescribed constraint as a Warp kernel and expose it through the same bridge,
+This design is purposely preferred to keep the constraints extensible. As the physics enters
+through a recorded tape behind a standard autograd interface, new
+prescribed constraints can be added as a Warp kernel and exposed through the same bridge,
 without rewriting how gradients reach the network.
 
-A note on gradient evaluation
------------------------------
+Simulator differentiability
+======================
 
 The forward simulator can obtain its mechanical updates either from
 analytically derived gradients or from Warp's automatic differentiation of the
