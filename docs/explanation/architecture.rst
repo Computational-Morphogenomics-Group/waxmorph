@@ -1,22 +1,20 @@
 Architecture
 ============
 
-waxMorph is a two-backend learning stack layered over a shared Warp physics
-core, plus rendering. This page explains how those pieces fit together and why
-PyTorch is the default while JAX is a parity backend.
+waxMorph is a biophysically constrained trajectory learning stack layered over a shared `Warp <https://nvidia.github.io/warp/stable/>`_ physics
+core, plus rendering. This page explains how those pieces fit together.
 
 The shared Warp physics core
 ----------------------------
 
-Both modes rest on the same NVIDIA Warp kernels, which is what keeps simulation
-and emulation physically consistent.
+The forward simulator, and the inverse `PyTorch <https://docs.pytorch.org/docs/2.12/index.html>`_ / `JAX <https://docs.jax.dev/en/latest/>`_ learning modules build on the same `Warp <https://nvidia.github.io/warp/stable/>`_ kernels, keeping simulation and emulation physically consistent, and the primitives transferable.
 
 * :mod:`waxmorph.simulator` holds the explicit mechanochemical kernels for
-  forward simulation: sticky-sphere mechanics, activator-inhibitor
-  reaction-diffusion, growth, neighbor counting, and division. It generates
-  cheap training data and runs prescribed mechanistic models, and it can grow
+  forward simulation, exemplified by sticky-sphere mechanics, activator-inhibitor
+  reaction-diffusion, growth, neighbor counting, and division. It can generate
+  cheap simulations by running prescribed biophysical models with cell division, growing
   the active particle count up to a preallocated ``max_particles``.
-* :mod:`waxmorph.emulator` holds the Warp mechanics and graph-Laplacian
+* :mod:`waxmorph.emulator` holds the mechanics and graph-Laplacian
   diffusion kernels for the differentiable, non-growing path. Its
   differentiable entry points record pairwise kernels on a :class:`warp.Tape`
   while freezing neighbor topology for the step
@@ -36,31 +34,16 @@ The top-level modules ``waxmorph/{gnn,graph,train,losses,mlp}.py`` are thin
 re-exports of ``waxmorph/torch/*``. PyTorch is the default backend, so
 ``from waxmorph import GNS, train, build_graph`` resolves to the ``torch/``
 implementations. To change learning behavior you edit
-``waxmorph/torch/<module>.py`` — the top-level shim only forwards — and then
-mirror the change in ``waxmorph/jax/<module>.py`` to keep the backends in step.
+``waxmorph/torch/<module>.py`` and then
+mirror the change in ``waxmorph/jax/<module>.py`` to keep the backends in sync.
 
-The JAX/Equinox backend is reached only through explicit
-``from waxmorph.jax import ...`` imports. It uses an Optax optimizer and
-static-shape compilation.
-
-Why PyTorch is the default
---------------------------
-
-The split follows from how each framework reaches the Warp physics. On the
-PyTorch side, Warp's automatic differentiation integrates through
-:class:`torch.autograd.Function`, so the physics tape plugs straight into the
-surrounding graph. The JAX path requires compile-time array sizes and an upper
-bound on the number of edges, so its graph builder pads edge arrays to a fixed
-capacity and the path uses more memory. PyTorch is therefore the default; the
-JAX backend is appropriate when downstream analysis already depends on JAX,
-Equinox, or Optax, or when static-shape compilation is required (see
-:doc:`../how_to/choose_backend`).
+The `JAX <https://docs.jax.dev/en/latest/>`_/`Equinox <https://docs.kidger.site/equinox/>`_ backend is reached only through explicit
+``from waxmorph.jax import ...`` imports. It uses an `Optax <https://optax.readthedocs.io/en/latest/>`_ optimizer and
+static-shape array compilation to trigger recompiles minimally.
 
 Rendering
 ---------
 
 :mod:`waxmorph.render` provides three renderers over the same trajectory
-arrays: ``MPLInterface`` for static views, ``PyVistaInterface`` for interactive
-inspection, and ``WarpMovieRenderer`` for USD-stage or headless-OpenGL movie
-export. ``write_frame_from_numpy`` renders learned rollouts;
-``write_frame_from_state`` renders live Warp simulation state.
+arrays: ``MPLInterface`` for static views built over `Matplotlib <https://matplotlib.org/stable/>`_, ``PyVistaInterface`` for interactive
+inspection built on `PyVista <https://pyvista.org/>`_, and ``WarpMovieRenderer`` using `Warp rendering primitives <https://nvidia.github.io/warp/stable/api_reference/warp_render.html>`_ for exporting `USD stages <https://openusd.org/release/index.html>`_ or headless `OpenGL <https://www.opengl.org/>`_ movies. ``write_frame_from_numpy`` renders learned rollouts; ``write_frame_from_state`` renders live simulation state.
