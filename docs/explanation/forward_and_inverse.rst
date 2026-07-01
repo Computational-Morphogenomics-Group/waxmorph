@@ -1,9 +1,9 @@
 Forward and inverse modes
 =========================
 
-waxMorph runs the same cellular representation in two directions. In the
+waxMorph runs the same cellular representation in two directions. In
 **forward** mode it prescribes every rule and integrates the resulting
-dynamics; in the **inverse** mode it prescribes the known physics and learns
+dynamics; in **inverse** mode it prescribes the known physics and learns
 the rest of the local update rule. Both modes share the cell state of
 :doc:`cell_state` and the physical primitives below.
 
@@ -44,15 +44,14 @@ differences to its neighbors,
 
 Each mode layers its own rules on top of these primitives.
 
-The forward mode
+Forward mode case study - Epithelial / Mesenchymal Turing Spheroids
 ----------------
 
 The forward simulator (:mod:`waxmorph.simulator`) is appropriate when the
 scientific question concerns a specified mechanistic model rather than a learned
 shape-assembly rule. It answers the mechanistic question directly: given an
 explicit biophysical rule set and a set of initial conditions, which tissue
-trajectory results? It also generates cheap training trajectories for the
-learned emulator.
+trajectory results? 
 
 The implemented case study is a polarized epithelial-mesenchymal aggregate
 coupled to a two-component activator-inhibitor reaction-diffusion system. On top
@@ -74,7 +73,7 @@ diffusivity. Mesenchymal cells grow toward an activator-driven equilibrium
 radius through a Hill function and divide with a radius-dependent probability;
 the active particle count grows up to the preallocated capacity.
 
-The inverse mode
+The inverse mode - Learned emulator for volumetric deformations
 ----------------
 
 The learned emulator is appropriate when you have source and target
@@ -96,9 +95,4 @@ implementation under :mod:`waxmorph.jax`. Each rollout step proceeds as:
 4. Apply the differentiable Warp mechanics and graph-Laplacian diffusion
    corrections.
 5. Accumulate a shape loss at one or more supervised target frames.
-
-This separation is deliberate. The graph-network processor learns local,
-neighbor-dependent update fields, while the prescribed physical constraints keep
-the rollout tied to contact mechanics and graph diffusion — guiding
-tissue-scale assembly under biophysical constraints rather than letting the
-network drift away from physically plausible configurations.
+.
