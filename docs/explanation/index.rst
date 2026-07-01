@@ -2,8 +2,8 @@ Explanation
 ===========
 
 These pages explain how waxMorph models a tissue and why it makes the choices
-it does. They are background reading, not step-by-step instructions; for tasks,
-see the :doc:`../how_to/index`, and for the API, the :doc:`../reference/index`.
+it does. For specific tasks, please see the :doc:`../how_to/index`, and for the API, 
+please see the :doc:`../reference/index`.
 
 .. toctree::
    :maxdepth: 1
