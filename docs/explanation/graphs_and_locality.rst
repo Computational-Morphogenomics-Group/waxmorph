@@ -2,7 +2,7 @@ Graphs and locality
 ===================
 
 The central modelling assumption in waxMorph is locality: a cell influences
-only its contact neighbors. waxMorph evaluates every interaction — mechanics,
+primarily its spatial neighbors. waxMorph evaluates every interaction — mechanics,
 polarity potentials, and molecular diffusion — over a spatial adjacency graph
 rather than over a global image grid, and it rebuilds that graph as the tissue
 deforms.
