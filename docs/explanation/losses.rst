@@ -2,8 +2,7 @@ Shape losses
 ============
 
 The shape loss measures how close a predicted cell population is to a target
-morphology, and the right choice depends on whether you can match cells to
-targets one-to-one. :mod:`waxmorph.losses` provides both families.
+morphology. :mod:`waxmorph.losses` provides both families.
 
 When cell identity is known
 ---------------------------
@@ -28,7 +27,7 @@ The shape loss sums a distributional distance over the supervised goal frames,
 
 reducing to :math:`d(X_T, \tilde{X}_T)` for a single terminal target. The
 GeomLoss-backed ``make_samples_loss`` exposes the Chamfer distance, maximum mean
-discrepancy, Hausdorff divergence, and the debiased Sinkhorn divergence; the
+discrepancy, Hausdorff divergence, and the debiased Sinkhorn divergence. The
 default is the Sinkhorn divergence, a fast approximation of the 2-Wasserstein
 distance between the empirical measures of the two clouds.
 
