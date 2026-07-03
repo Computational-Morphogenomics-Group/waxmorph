@@ -33,7 +33,7 @@ Module map
 
 ``waxmorph.simulator`` and ``waxmorph.emulator``
    Warp kernels for explicit mechanochemical forward simulation and for the
-   differentiable non-growing physics corrections. The simulator integrates
+   differentiable non-growing physics corrections. The simulator case study integrates
    soft-sphere mechanics, reaction-diffusion, growth, and division; the
    emulator freezes neighbor topology within a step so gradients propagate
    through the physics.
