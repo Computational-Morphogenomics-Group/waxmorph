@@ -1,8 +1,8 @@
-Run a forward simulation
+Running forward simulations - Epithelial / Mesenchymal Case Study
 ========================
 
 Reach for the forward simulator when your question concerns a specified
-mechanistic model rather than a learned shape-assembly rule. It integrates
+mechanistic model rather than a learned shape-assembly rule. The current case study integrates
 prescribed mechanochemical dynamics and can grow the active particle count up
 to a preallocated ``max_particles`` capacity. The ``simulation_with_autodiff``
 tutorial walks through a complete run; the steps below are the recipe.
@@ -28,9 +28,6 @@ tutorial walks through a complete run; the steps below are the recipe.
 Inputs are Warp arrays and scalar parameters: time steps, diffusivities, growth
 constants, and division thresholds. Outputs are the state arrays, updated
 in place, and any rendered frames you request.
-
-The tutorial includes long runs with tens of thousands of particles over many
-steps.
 
 .. tip::
 
