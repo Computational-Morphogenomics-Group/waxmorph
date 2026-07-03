@@ -15,14 +15,11 @@ trajectory — a quick static view, an interactive session, or an exported movie
    Export a trajectory through Warp, with ``backend="usd"`` for a USD stage and
    ``backend="opengl"`` for a headless video file.
 
-Render a learned rollout
+Rendering a rollout movie
 ------------------------
 
-The arrays stored in ``TrainResult.log`` already match what the renderers
-expect: trajectory positions, polarities, and signaling-molecule
-concentrations are NumPy arrays with time as the first dimension. Feed
-``best_traj_pos`` to ``write_frame_from_numpy`` together with the radii and
-explicit RGB colors:
+The states of spheroids stored in the forward simulator and the learned
+emulator can be fed directly to render the trajectory as follows :
 
 .. code-block:: python
 
@@ -50,12 +47,3 @@ explicit RGB colors:
                colors=colors,
                particle_count=n_cells,
            )
-
-Render live simulation state
-----------------------------
-
-For a running forward simulation, write frames directly from the live Warp
-state with ``write_frame_from_state``, which takes Warp arrays. Color particles
-by the reaction-diffusion fields with ``morph="A"`` for the activator,
-``morph="I"`` for the inhibitor, or ``morph="ratio"`` for the
-activator-to-inhibitor ratio.
