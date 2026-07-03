@@ -1,15 +1,27 @@
-# WaxMorph
+# waxMorph
 
 [![CI](https://github.com/waxmorph/waxmorph/actions/workflows/ci.yml/badge.svg)](https://github.com/waxmorph/waxmorph/actions/workflows/ci.yml)
 [![Documentation](https://readthedocs.org/projects/waxmorph/badge/?version=latest)](https://waxmorph.readthedocs.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Joint forward simulation and inverse design of biophysical shape assembly with
-spheroidal cellular agents.
+**A differentiable cell-based framework for three-dimensional morphogenesis.**
+
+Cells build tissues through local exchanges of force and information, yet the
+rules governing these interactions are difficult to infer from sparse
+observations. waxMorph represents tissue as interacting spheroidal cells and
+makes the governing mechanochemical dynamics differentiable, so the same model
+can be run forward to simulate prescribed shape programs and inverse to
+reconstruct continuous morphogenetic trajectories from static tissue volumes.
+
+📖 **[Documentation](https://waxmorph.readthedocs.io)** ·
+[Tutorials](https://waxmorph.readthedocs.io/en/latest/tutorials/index.html) ·
+[Gallery](https://waxmorph.readthedocs.io/en/latest/gallery.html) ·
+[Explanation](https://waxmorph.readthedocs.io/en/latest/explanation/index.html) ·
+[API reference](https://waxmorph.readthedocs.io/en/latest/reference/index.html)
 
 ## Overview
 
-WaxMorph represents tissues as three-dimensional populations of spheroidal
+waxMorph represents tissues as three-dimensional populations of spheroidal
 cellular agents, each carrying position, volume, polarity, signaling molecule
 concentrations, and an optional cell-type label. A graph-network processor
 learns local, neighbor-dependent update rules from target morphologies, while
@@ -285,13 +297,20 @@ state.
 
 ## Citation
 
-WaxMorph may be cited as:
+If you use waxMorph in your research, please cite the preprint:
+
+> Beker, O. and Dumitrascu, B. (2026). *Differentiable Design for Morphogenesis
+> I: Simulation and Simulacra*. bioRxiv.
+> [https://doi.org/10.64898/2026.07.02.736195](https://www.biorxiv.org/content/10.64898/2026.07.02.736195v1)
 
 ```bibtex
-@software{waxmorph,
-  title  = {WaxMorph: Differentiable Morphogenesis on NVIDIA Warp},
-  author = {WaxMorph Contributors},
-  year   = {2026},
-  url    = {https://github.com/waxmorph/waxmorph},
+@article{beker2026waxmorph,
+  title     = {Differentiable Design for Morphogenesis {I}: Simulation and Simulacra},
+  author    = {Beker, Ozgur and Dumitrascu, Bianca},
+  journal   = {bioRxiv},
+  year      = {2026},
+  publisher = {Cold Spring Harbor Laboratory},
+  doi       = {10.64898/2026.07.02.736195},
+  url       = {https://www.biorxiv.org/content/10.64898/2026.07.02.736195v1},
 }
 ```
