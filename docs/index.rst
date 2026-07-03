@@ -24,7 +24,7 @@ waxMorph
        <a class="wm-btn wm-btn-primary" href="installation.html">Install</a>
        <a class="wm-btn wm-btn-ghost" href="tutorials/index.html">Tutorials</a>
        <a class="wm-btn wm-btn-ghost"
-          href="https://github.com/waxmorph/waxmorph">GitHub</a>
+          href="https://github.com/Computational-Morphogenomics-Group/waxmorph">GitHub</a>
      </div>
    </div>
 
