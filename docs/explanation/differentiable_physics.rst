@@ -1,12 +1,12 @@
 Emulator differentiability
-======================
+==========================
 
 The learned emulator works by making the prescribed biophysics differentiable.
 Gradients of the shape loss flow back through the soft-sphere mechanics and the
 graph diffusion.
 
 Spatial adjacencies within an update step
------------------------------
+-----------------------------------------
 
 Each emulation step applies the learned GNS updates and then the prescribed
 constraints. The constraints run ``n_substeps`` times per learned update and can
@@ -39,7 +39,7 @@ prescribed constraints can be added as a Warp kernel and exposed through the sam
 without rewriting how gradients reach the network.
 
 Simulator differentiability
-======================
+===========================
 
 The forward simulator can obtain its mechanical updates either from
 analytically derived gradients or from Warp's automatic differentiation of the

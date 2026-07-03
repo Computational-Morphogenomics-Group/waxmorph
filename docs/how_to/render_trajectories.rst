@@ -16,7 +16,7 @@ trajectory — a quick static view, an interactive session, or an exported movie
    ``backend="opengl"`` for a headless video file.
 
 Rendering a rollout movie
-------------------------
+-------------------------
 
 The states of spheroids stored in the forward simulator and the learned
 emulator can be fed directly to render the trajectory as follows :

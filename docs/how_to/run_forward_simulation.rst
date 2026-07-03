@@ -1,5 +1,5 @@
 Running forward simulations - Epithelial / Mesenchymal Case Study
-========================
+=================================================================
 
 Reach for the forward simulator when your question concerns a specified
 mechanistic model rather than a learned shape-assembly rule. The current case study integrates
