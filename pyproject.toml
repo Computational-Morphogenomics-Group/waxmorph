@@ -5,7 +5,7 @@ requires = [ "hatchling" ]
 [project]
 name = "waxmorph"
 version = "0.1.0"
-description = "Differentiable morphogenesis and shape-assembly on NVIDIA Warp."
+description = "Spheroid models for tissue assembly."
 readme = "README.md"
 keywords = [ "biology", "gnn", "morphogenesis", "shape-assembly", "simulation", "warp" ]
 license = "MIT"
