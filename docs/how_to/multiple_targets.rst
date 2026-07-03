@@ -2,7 +2,7 @@ Supervise multiple target frames
 ================================
 
 Use multi-target training when you want the rollout to pass through prescribed
-intermediate morphologies, not just land on a final shape. Single-target
+intermediate morphologies. Single-target
 training supervises only the last state; multi-target training adds supervision
 at intermediate frames. Both use the same ``targets`` argument — a final-only
 run simply passes one ``(t_rollout - 1, target_pos)`` pair, as in
@@ -42,10 +42,7 @@ pairs, then pass a list of ``(frame, positions)`` targets to ``train``:
    fifty. With ``TrainConfig(t_rollout=100)``, ``(99, target_pos)`` therefore
    supervises the state after 100 learned updates.
 
-Two ``TrainConfig`` knobs shape the rollout between target frames:
-``D_emu`` sets the differentiable graph-Laplacian diffusion of the
-signaling-molecule concentrations, and ``lambda_reg`` weights the
-squared-displacement regularization that discourages trajectories which satisfy
-the goals only at the supervised frames. The training log records the per-epoch
+``lambda_reg`` weights the squared-displacement regularization that discourages trajectories 
+which encourages smoother deformations. The training log records the per-epoch
 ``losses_total``, ``losses_shape``, and ``losses_l2``, together with the best
 rollout trajectories ``best_traj_pos``, ``best_traj_pol``, and ``best_traj_c``.
