@@ -16,7 +16,7 @@ makes the governing mechanochemical dynamics differentiable, so the same model
 can be run forward to simulate prescribed shape programs and inverse to
 reconstruct continuous morphogenetic trajectories from static tissue volumes.
 
-📖 **[Documentation](https://waxmorph.readthedocs.io)** ·
+📖 **[Documentation](https://waxmorph.readthedocs.io/en/latest)** ·
 [Tutorials](https://waxmorph.readthedocs.io/en/latest/tutorials/index.html) ·
 [Gallery](https://waxmorph.readthedocs.io/en/latest/gallery.html) ·
 [Explanation](https://waxmorph.readthedocs.io/en/latest/explanation/index.html) ·
