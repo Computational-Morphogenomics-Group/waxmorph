@@ -1,6 +1,6 @@
 .. _mesh-to-emulator:
 
-Train a non-growing emulator from a mesh
+Train the emulator from meshes
 ========================================
 
 Take this path when your question is shape assembly with a fixed number of
@@ -15,16 +15,13 @@ The workflow has six steps.
 3. Initialize radii, polarity vectors, and signaling-molecule concentrations.
 4. Build a :class:`waxmorph.gnn.GNS` whose output heads match the state
    variables you want to update.
-5. Train with :func:`waxmorph.train.train` under a point-cloud loss.
+5. Train with :func:`waxmorph.train.train` under a density-based loss.
 6. Inspect ``TrainResult.log["best_traj_pos"]`` and render the trajectory.
 
 .. _gns-primer:
 
 The build_graph → GNS → train primer
 ------------------------------------
-
-This three-step primer is the core of every learned-emulation workflow; the
-other how-to guides refer back to it rather than repeat it.
 
 Sample the source and target shapes. ``sample_mesh_pair`` normalizes each mesh
 and returns matched-size point clouds together with a uniform radius:
@@ -60,7 +57,7 @@ as the fifth argument:
    )
 
 Construct the GNS with one output head per updated state variable. For
-non-growing shape assembly the heads predict position, polarity, and
+shape assembly the heads predict position, polarity, and
 signaling-molecule increments, and the node- and edge-feature dimensions come
 straight from the graph:
 
@@ -119,7 +116,3 @@ Where to go next
   :doc:`multiple_targets`.
 * Run the same workflow on JAX: :doc:`choose_backend`.
 * Turn ``best_traj_pos`` into a movie: :doc:`render_trajectories`.
-
-The top-level :mod:`waxmorph.train`, :mod:`waxmorph.graph`, and
-:mod:`waxmorph.gnn` modules are PyTorch-compatible convenience exports.
-Importing from :mod:`waxmorph.torch` makes the backend choice explicit in code.
