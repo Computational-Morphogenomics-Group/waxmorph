@@ -1,6 +1,6 @@
 # waxMorph
 
-[![CI](https://github.com/Computational-Morphogenomics-Group/waxmorph/actions/workflows/ci.yml/badge.svg)](https:/Computational-Morphogenomics-Group/github.com//waxmorph/actions/workflows/ci.yml)
+[![CI](https://github.com/Computational-Morphogenomics-Group/waxmorph/actions/workflows/ci.yml/badge.svg)](https:/Computational-Morphogenomics-Group/waxmorph/actions/workflows/ci.yml)
 [![Documentation](https://readthedocs.org/projects/waxmorph/badge/?version=latest)](https://waxmorph.readthedocs.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](https://opensource.org/licenses/MIT)
 <a href="https://github.com/psf/black"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
