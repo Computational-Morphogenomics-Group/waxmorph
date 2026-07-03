@@ -5,7 +5,7 @@ requires = [ "hatchling" ]
 [project]
 name = "waxmorph"
 version = "0.1.0"
-description = "Spheroid models for tissue assembly."
+description = "Spheroids simulating biophysical phenomena, built on a differentiable spatial computing framework."
 readme = "README.md"
 keywords = [ "biology", "gnn", "morphogenesis", "shape-assembly", "simulation", "warp" ]
 license = "MIT"
