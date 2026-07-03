@@ -32,6 +32,8 @@ htmlcov/
 # Documentation builds
 docs/_build/
 docs/generated/
+# Reference PDFs dropped into docs/ (e.g. the methods manuscript) never ship.
+docs/*.pdf
 
 # Local outputs and large generated media
 Output/
@@ -56,6 +58,8 @@ trace.clay
 # Files
 meshes/*
 *.html
+# ...but keep the Sphinx layout override (favicon/manifest head links).
+!docs/_templates/layout.html
 *.usd
 *.pkl
 *.ipynb

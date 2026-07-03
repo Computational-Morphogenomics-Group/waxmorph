@@ -1,10 +1,30 @@
-"""JAX autodiff bridge for Warp physics kernels.
+"""JAX autodiff bridge that makes Warp physics steps differentiable.
 
-The PyTorch backend can hand tensors to Warp through ``torch.autograd.Function``
-and replay a ``wp.Tape`` in backward.  JAX cannot use that mechanism directly,
-so this module wraps small, shape-regular Warp kernels with Warp's experimental
-JAX FFI bridge.  Topology stays frozen outside autodiff, while the per-pair
-physics math runs through Warp and has a JAX VJP.
+Mental model: Warp owns the per-pair physics math, JAX owns the gradient
+graph and the scatter aggregation back to particles. The PyTorch backend
+hands tensors to Warp through a :class:`torch.autograd.Function` and replays a
+:class:`warp.Tape` in backward; JAX has no equivalent tape mechanism, so this
+module instead wraps small, shape-regular Warp kernels with Warp's
+experimental JAX FFI (``jax_kernel(..., enable_backward=True)``). That wrapper
+makes each kernel a JAX primitive with a custom VJP: the forward pass records
+the kernel as the primitive's forward rule and the custom VJP supplies the
+backward rule, so ``jax.grad``/``jax.vjp`` differentiate straight through the
+Warp math. Neighbor topology is frozen outside autodiff (precomputed
+``pair_i`` / ``pair_j`` edge lists); only the per-edge physics is
+differentiated, and JAX performs the scatter-add aggregation onto particles.
+
+This is the JAX parity backend, reached only via explicit imports; it keeps
+gradient flow equivalent to the PyTorch default.
+
+Notes:
+    Backend divergence: this path hard-requires a CUDA Warp/JAX device (see
+    :func:`_device_requires_cuda`) and raises :class:`RuntimeError` otherwise.
+    The PyTorch twin imposes no such restriction.
+
+See Also:
+    :mod:`waxmorph.torch.warp_autograd`: PyTorch default backend, which reaches
+        the same Warp physics through a :class:`torch.autograd.Function` that
+        records and replays a :class:`warp.Tape`.
 """
 
 from functools import cache
@@ -22,7 +42,23 @@ K_ATT = 0.5
 
 
 def _device_requires_cuda(device: str | wp.Device | None) -> str:
-    """Validate that the Warp/JAX bridge can run on a CUDA-backed JAX device."""
+    """Validate that the Warp/JAX bridge can run on a CUDA-backed JAX device.
+
+    The FFI bridge only differentiates Warp kernels on CUDA, so this guards
+    every public step against silently running on a CPU device.
+
+    Args:
+        device: Target device. ``None`` is treated as ``"cuda"``. A string is
+            matched by prefix (must start with ``"cuda"``); a
+            :class:`warp.Device` is resolved and checked for CUDA support.
+
+    Returns:
+        The validated device name (e.g. ``"cuda"`` or ``"cuda:0"``).
+
+    Raises:
+        RuntimeError: If the requested device is not CUDA, the Warp CUDA device
+            cannot be resolved, or JAX has no initialized GPU backend.
+    """
     device_name = "cuda" if device is None else str(device)
     if not device_name.startswith("cuda"):
         raise RuntimeError(
@@ -129,11 +165,67 @@ def warp_mech_step(
     num_pairs: jax.Array | int | None = None,
     device: str | wp.Device | None = "cuda",
 ) -> jax.Array:
-    """Apply one differentiable sticky-sphere mechanics step.
+    r"""Apply one differentiable sticky-sphere mechanics step.
 
-    ``pair_i`` and ``pair_j`` are frozen unordered neighbor pairs.  The force
-    law itself runs as a Warp kernel wrapped in a JAX custom VJP; JAX performs
-    the scatter aggregation back to particles.
+    Warp implementation of overdamped sticky-sphere mechanics: a short-range
+    repulsion keeps particles from interpenetrating and a slightly longer-range
+    adhesion holds contacting neighbors together. The per-edge force law runs
+    as a Warp kernel wrapped in a JAX custom VJP (see the module docstring),
+    while JAX scatter-adds the edge forces onto particles and applies the
+    explicit Euler position update.
+
+    For an edge between particles :math:`i` and :math:`j` with separation
+    :math:`\mathbf{d} = \mathbf{x}_i - \mathbf{x}_j`, distance
+    :math:`r = \lVert\mathbf{d}\rVert + \epsilon_n`, unit direction
+    :math:`\hat{\mathbf{u}} = \mathbf{d}/r`, and summed radii
+    :math:`s = R_i + R_j`:
+
+    .. math::
+
+        f_{rep} &= k_{rep}\,\max(s - \epsilon_d - r,\; 0) \\
+        f_{att} &= k_{att}\,\max(s + \epsilon_d - r,\; 0)
+                   \cdot \mathbb{1}[r > s - \epsilon_d] \\
+        \mathbf{F}_{i} &= (f_{rep} - f_{att})\,\hat{\mathbf{u}},
+        \quad \mathbf{F}_{j} = -\mathbf{F}_{i}
+
+    where :math:`k_{rep}` is ``K_REP``, :math:`k_{att}` is ``K_ATT``,
+    :math:`\epsilon_d` is ``EPS_DIST``, :math:`\epsilon_n` is ``EPS_NORM``,
+    and :math:`\mathbb{1}[\cdot]` gates adhesion off while still overlapping.
+    The net force is summed over edges and integrated as
+    :math:`\mathbf{x}_i \leftarrow \mathbf{x}_i + \mathrm{dt}\,\mathbf{F}_i`.
+
+    Gradient convention (the law is non-smooth): each ``max(., 0)`` contributes
+    zero gradient on its clamped (inactive) branch, and the
+    :math:`\mathbb{1}[r > s - \epsilon_d]` adhesion gate is treated as a
+    constant indicator, so no gradient flows through the gate switch itself.
+
+    Args:
+        X: Particle positions, shape ``[N, 3]``.
+        R: Particle radii, shape ``[N]``.
+        pair_i: First endpoint index of each frozen neighbor edge, shape
+            ``[P]``. Edges are unordered; ``(pair_i, pair_j)`` is precomputed
+            outside autodiff and held fixed for the step.
+        pair_j: Second endpoint index of each edge, shape ``[P]``.
+        dt: Mechanics Euler step size.
+        num_pairs: Number of *real* edges when the edge buffers are
+            statically over-allocated to ``P`` for JIT shape stability. Edges
+            at index ``>= num_pairs`` are padding and are masked to zero force
+            so they do not perturb the update. Defaults to all ``P`` edges
+            being real.
+        device: Target device; validated to be CUDA-backed.
+
+    Returns:
+        Updated positions, shape ``[N, 3]``. Returned unchanged if there are
+        no edges (``P == 0``).
+
+    Raises:
+        RuntimeError: If ``device`` is not a CUDA-backed Warp/JAX device.
+
+    See Also:
+        :class:`waxmorph.torch.warp_autograd.WarpMechStep`: PyTorch twin using
+            a :class:`warp.Tape` instead of a JAX custom VJP.
+        :func:`waxmorph.emulator.mech_step_sticky_differentiable`: the Warp
+            tape-recording mechanics step underlying the PyTorch path.
     """
     _device_requires_cuda(device)
 
@@ -176,7 +268,62 @@ def warp_diffusion_step(
     num_pairs: jax.Array | int | None = None,
     device: str | wp.Device | None = "cuda",
 ) -> jax.Array:
-    """Apply one differentiable graph-Laplacian signaling-molecule diffusion step."""
+    r"""Apply one differentiable graph-Laplacian signaling-molecule diffusion step.
+
+    Warp implementation of explicit (forward-Euler) diffusion on the contact
+    graph: signaling-molecule concentrations relax toward those of contacting
+    neighbors. The per-edge concentration difference runs as a Warp kernel
+    wrapped in a JAX custom VJP (see the module docstring), while JAX
+    scatter-adds those differences to form the graph Laplacian per particle and
+    applies the Euler update.
+
+    For an edge between particles :math:`i` and :math:`j` and molecule channel
+    :math:`g`, the antisymmetric flux is
+    :math:`\phi_{ij,g} = c_{j,g} - c_{i,g}`. Summing incident edge fluxes gives
+    the graph Laplacian :math:`(L c)_{i,g} = \sum_{j \in \mathcal{N}(i)}
+    (c_{j,g} - c_{i,g})`, and the update is:
+
+    .. math::
+
+        c_{i,g} \leftarrow \max\!\big(c_{i,g}
+            + \mathrm{dt}\,D\,(L c)_{i,g},\; 0\big)
+
+    where :math:`D` is ``D_emu``. The final :math:`\max(\cdot, 0)` clamps
+    concentrations non-negative.
+
+    Gradient convention (the clamp is non-smooth): the non-negativity
+    :math:`\max(\cdot, 0)` contributes zero gradient wherever it is active
+    (i.e. where the pre-clamp concentration is negative), passing gradient
+    through unchanged otherwise.
+
+    Args:
+        c: Per-particle concentrations, shape ``[N, num_molecules]``.
+        pair_i: First endpoint index of each frozen neighbor edge, shape
+            ``[P]``. Edges are unordered; ``(pair_i, pair_j)`` is precomputed
+            outside autodiff and held fixed for the step.
+        pair_j: Second endpoint index of each edge, shape ``[P]``.
+        D_emu: Diffusion coefficient :math:`D`.
+        dt: Diffusion Euler step size.
+        num_pairs: Number of *real* edges when the edge buffers are
+            statically over-allocated to ``P`` for JIT shape stability. Edges
+            at index ``>= num_pairs`` are padding and are masked to zero flux
+            so they do not perturb the Laplacian. Defaults to all ``P`` edges
+            being real.
+        device: Target device; validated to be CUDA-backed.
+
+    Returns:
+        Updated concentrations, shape ``[N, num_molecules]``. Returned
+        unchanged if there are no edges (``P == 0``).
+
+    Raises:
+        RuntimeError: If ``device`` is not a CUDA-backed Warp/JAX device.
+
+    See Also:
+        :class:`waxmorph.torch.warp_autograd.WarpDiffusionStep`: PyTorch twin
+            using a :class:`warp.Tape` instead of a JAX custom VJP.
+        :func:`waxmorph.emulator.diffusion_step_differentiable`: the Warp
+            tape-recording diffusion step underlying the PyTorch path.
+    """
     _device_requires_cuda(device)
 
     pair_count = int(pair_i.shape[0])

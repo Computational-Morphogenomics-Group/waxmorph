@@ -120,6 +120,25 @@ def build_edge_index(
     intentionally snapshots detached CPU copies of positions and radii, so
     edge construction is frozen for the current rollout step.
 
+    Args:
+        X: Position array with shape ``[N, 3]``.
+        R: Radius array with shape ``[N]``.
+        particle_count: Number of active particles. Non-positive values use
+            the full arrays.
+        eps_dist: Contact buffer matching ``simulator.EPS_DIST``.
+        device: Output device for the edge tensor. Defaults to the device of
+            the first non-``None`` input array.
+
+    Returns:
+        Directed COO edge tensor with shape ``[2, E]``, where ``E`` is the
+        number of real contact edges (no padding; the JAX twin returns a
+        padded ``[2, max_edges]`` tensor plus an explicit ``num_edges`` count).
+
+    See Also:
+        :func:`waxmorph.jax.graph.build_edge_index`: JAX twin that pads to a
+        static ``max_edges`` capacity and returns ``(edge_index, num_edges)``
+        for compile-time array sizes.
+
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
         >>> R = torch.tensor([0.6, 0.6, 0.6])
@@ -146,13 +165,26 @@ def build_node_features(
     particle_count: int,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Assemble per-node feature tensor from Warp state arrays or Torch tensors.
+    """Assemble per-node signaling-molecule features from Warp or Torch arrays.
 
     Feature layout per node::
 
-        [c_0, c_1, ..., c_{num_molecules-1}]
+        [c_0, c_1, ..., c_{C-1}]
 
-    Dimensions: ``num_molecules`` (number of signaling molecules).
+    Args:
+        c: Signaling-molecule concentration array. One-dimensional arrays are
+            promoted to shape ``[N, 1]``.
+        particle_count: Number of active particles. Non-positive values use
+            the full array.
+        device: Output device for the feature tensor. Defaults to the device
+            of the input array.
+
+    Returns:
+        Float feature tensor with shape ``[N, C]``, where ``C`` is the number
+        of signaling molecules.
+
+    See Also:
+        :func:`waxmorph.jax.graph.build_node_features`: JAX twin.
 
     Examples:
         >>> c = torch.tensor([0.2, 0.4, 0.8])
@@ -172,13 +204,42 @@ def build_edge_features(
     particle_count: int,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Compute per-edge feature tensor.
+    r"""Compute per-edge feature tensor.
 
     Feature layout per edge ``(i -> j)``::
 
-        [dist(X_i, X_j), angle(P_i, P_j)]
+        [dist, angle(P_i, P_j)]
 
-    Dimensions: ``1 + 1 = 2``.
+    The two features encode the mechanical relationship of a neighbor pair:
+
+    .. math::
+
+        d_{ij} = \lVert x_i - x_j \rVert_2, \qquad
+        \theta_{ij} = \arccos\!\left( p_i^\top p_j \right).
+
+    The polarity angle is used in place of the raw polarity vectors because it
+    is a rotation-invariant relative-orientation signal between neighbors:
+    rotating the whole tissue leaves every pairwise angle unchanged, so the
+    learned update rule sees the geometry of how two cells' polarities relate
+    rather than their absolute frame. ``cos`` is clamped to
+    ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` before :func:`torch.acos` to keep the
+    gradient finite at the antiparallel/parallel endpoints.
+
+    Args:
+        X: Position array with shape ``[N, 3]``.
+        P: Polarity array with shape ``[N, 3]``.
+        edge_index: Directed COO edge tensor with shape ``[2, E]``.
+        particle_count: Number of active particles. Non-positive values use
+            the full arrays.
+        device: Output device for the feature tensor. Defaults to the device
+            of the first non-``None`` input array.
+
+    Returns:
+        Float edge feature tensor with shape ``[E, 2]`` whose columns are
+        ``[d_ij, theta_ij]``.
+
+    See Also:
+        :func:`waxmorph.jax.graph.build_edge_features`: JAX twin.
 
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -222,6 +283,28 @@ def build_graph(
     ``edge_features`` back to the live state tensors. ``edge_index`` is
     intentionally built from a detached snapshot of ``X`` and ``R`` and
     should be treated as frozen for that rollout step.
+
+    Args:
+        X: Position array with shape ``[N, 3]``.
+        P: Polarity array with shape ``[N, 3]``.
+        R: Radius array with shape ``[N]``.
+        particle_count: Number of active particles. Non-positive values use
+            the full arrays.
+        c: Signaling-molecule concentration array.
+        eps_dist: Contact buffer distance.
+        device: Output device for all returned tensors. Defaults to the device
+            of the first non-``None`` input array.
+
+    Returns:
+        Tuple ``(node_features, edge_index, edge_features)`` with shapes
+        ``[N, C]``, ``[2, E]``, and ``[E, 2]``. This is a 3-tuple; the JAX twin
+        returns a 4-tuple with a trailing ``num_edges`` count because its
+        ``edge_index`` is padded to a static ``max_edges`` capacity for
+        compile-time array sizes.
+
+    See Also:
+        :func:`waxmorph.jax.graph.build_graph`: JAX twin returning the extra
+        ``num_edges`` count for static-shape compilation.
 
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])

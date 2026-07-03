@@ -1,47 +1,116 @@
-waxmorph
+:sd_hide_title: true
+
+waxMorph
 ========
 
-waxMorph is a joint framework for forward simulation and inverse design of
-biophysical shape assembly. Tissues are represented as populations of
-interacting three-dimensional spheroidal agents, spatial adjacency graphs
-encode which agents may exert mechanical or biochemical influence on one
-another, and graph-network-based emulators are trained to reproduce target
-morphologies or target morphology sequences.
+.. raw:: html
 
-The framework supports two connected modes of use:
+   <div class="wm-hero">
+     <img class="wm-hero-logo wm-logo-light dark-light" src="_static/logo-1024w.png"
+          alt="waxMorph — interacting cells resolving into a learned graph network">
+     <img class="wm-hero-logo wm-logo-dark dark-light" src="_static/logo-dark.png"
+          alt="waxMorph — interacting cells resolving into a learned graph network">
+     <p class="wm-tagline">A differentiable cell-based framework for three-dimensional morphogenesis.</p>
+     <p class="wm-sub">
+       Cells build tissues through local exchanges of force and information, yet
+       the rules governing these interactions are difficult to infer from sparse
+       observations. waxMorph represents tissue as interacting spheroidal cells
+       and makes the governing mechanochemical dynamics differentiable, so the
+       same model can be run forward to simulate prescribed shape programs and
+       inverse to reconstruct continuous morphogenetic trajectories from static
+       tissue volumes.
+     </p>
+     <div class="wm-cta">
+       <a class="wm-btn wm-btn-primary" href="installation.html">Install</a>
+       <a class="wm-btn wm-btn-ghost" href="tutorials/index.html">Tutorials</a>
+       <a class="wm-btn wm-btn-ghost"
+          href="https://github.com/waxmorph/waxmorph">GitHub</a>
+     </div>
+   </div>
 
-* **Forward simulation**: mechanochemical trajectories are generated from
-  explicit rules for adhesion, volume exclusion, polarity, reaction-diffusion,
-  and division.
-* **Inverse design / learned emulation**: a graph-network-based simulator
-  (GNS) learns local, neighbor-dependent update rules that transform an initial
-  spheroidal cell population into one or more target morphologies, while
-  differentiable physical constraints guide tissue-scale assembly.
+   <figure class="wm-showcase">
+     <img src="_static/images/fig1.png"
+          alt="waxMorph pipeline: forward simulation and inverse learning of shape assembly">
+     <figcaption>
+       waxMorph represents tissue as interacting polarized spheroids, couples
+       forward and inverse models of morphogenesis over that representation, and
+       recovers spatially organized latent signals.
+     </figcaption>
+   </figure>
 
-The central modelling assumption is locality. Each cellular agent carries a
-position, volume, polarity vector, signaling molecule concentrations, and an
-optional cell type; interactions are evaluated over contact neighborhoods
-rather than over a global image grid. Local neighborhoods are induced by
-spatial proximity and rebuilt as tissues deform. The same representation
-therefore applies both to morphologies obtained from segmented shapes or meshes
-and to mechanistic models in which local rules of tissue organization are
-specified or learned.
+Explore
+-------
 
-Where to start
---------------
+.. grid:: 1 2 2 3
+   :gutter: 3
+   :class-container: wm-cards
 
-A first introduction is provided in :doc:`getting_started`, followed by
-:doc:`concepts` for the vocabulary used throughout the framework. Adapting the
-framework to a new biological system typically requires :doc:`workflows`
-together with the :doc:`api` reference.
+   .. grid-item-card:: Installation
+      :link: installation
+      :link-type: doc
+      :class-card: wm-card
+
+      Install the package and pick the ``simulation``, ``learning``, or ``jax``
+      extras for your workflow.
+
+   .. grid-item-card:: Tutorials
+      :link: tutorials/index
+      :link-type: doc
+      :class-card: wm-card
+
+      End-to-end notebooks: run a forward simulation and train a learned
+      emulator from a mesh pair.
+
+   .. grid-item-card:: Gallery
+      :link: gallery
+      :link-type: doc
+      :class-card: wm-card
+
+      Play reconstructed morphogenesis trajectories in an interactive 3D
+      viewer, with a timeline and a free-flying camera.
+
+   .. grid-item-card:: How-to guides
+      :link: how_to/index
+      :link-type: doc
+      :class-card: wm-card
+
+      Task-focused recipes for people who already know waxMorph and want to get
+      something specific done.
+
+   .. grid-item-card:: Explanation
+      :link: explanation/index
+      :link-type: doc
+      :class-card: wm-card
+
+      The modelling choices &mdash; cell state, locality, differentiable
+      physics, forward and inverse modes.
+
+   .. grid-item-card:: API reference
+      :link: reference/index
+      :link-type: doc
+      :class-card: wm-card
+
+      The public modules, with PyTorch defaults and JAX/Equinox parity
+      variants.
+
+   .. grid-item-card:: Contributing
+      :link: contributing
+      :link-type: doc
+      :class-card: wm-card
+
+      Development setup, testing across both backends, and the conventions
+      changes should follow.
 
 .. toctree::
-   :maxdepth: 2
+   :hidden:
+   :maxdepth: 1
 
-   getting_started
-   concepts
-   workflows
-   api
+   installation
+   tutorials/index
+   gallery
+   how_to/index
+   explanation/index
+   reference/index
    contributing
    changelog
    references

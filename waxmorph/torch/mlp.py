@@ -1,4 +1,10 @@
-"""Configurable :mod:`torch.nn` MLP building block for GNS modules."""
+"""PyTorch MLP building block for the graph-network simulator.
+
+Encoder, processor, and decoder sub-networks of the GNS are all instances of
+this small feed-forward block, so depth, width, activation, and normalization
+are exposed as constructor arguments. This is the default backend; the
+JAX/Equinox twin in :mod:`waxmorph.jax.mlp` mirrors the same interface.
+"""
 
 import torch.nn as nn
 
@@ -11,23 +17,38 @@ _ACTIVATIONS = {
 
 
 class MLP(nn.Module):
-    """Multi-layer perceptron with configurable depth, width, activation, and normalization.
+    """Feed-forward block with configurable depth, width, activation, and normalization.
 
-    The layer stack is implemented as :class:`torch.nn.Sequential`.
+    Linear layers are interleaved with the chosen activation; the
+    sigmoid-weighted linear unit (SiLU) is used throughout by default. Hidden
+    layers inherit PyTorch's Kaiming-uniform weight initialization (the
+    ``torch.nn.Linear`` default). An optional final LayerNorm stabilizes the
+    output scale of GNS encoder/decoder blocks. A single-layer block is a plain
+    linear map with no activation, used where the GNS needs an unbounded affine
+    projection.
 
     Args:
-        input_dim: Dimensionality of the final axis of the input tensor.
-        output_dim: Dimensionality of the final axis of the output tensor.
+        input_dim: Width of the trailing input axis.
+        output_dim: Width of the trailing output axis.
         hidden_dim: Width of each hidden linear layer.
         num_layers: Total number of linear layers, including the output
             projection. ``num_layers=1`` creates a single linear map.
-        activation: Activation name: ``"relu"``, ``"silu"``, ``"gelu"``, or
-            ``"tanh"``. These names map to :mod:`torch.nn` activation modules.
-        layer_norm: Whether to append :class:`torch.nn.LayerNorm` over
-            ``output_dim``.
+        activation: Activation name; one of ``"relu"``, ``"silu"``, ``"gelu"``,
+            or ``"tanh"``. Defaults to ``"silu"``.
+        layer_norm: Whether to append a LayerNorm over the output features.
 
     Raises:
-        ValueError: If ``activation`` is not supported.
+        ValueError: If ``activation`` is not one of the supported names.
+
+    See Also:
+        waxmorph.jax.mlp.MLP: JAX/Equinox twin with the same interface. Both
+            backends initialize linear weights and biases from the same
+            distribution ``U(-1/sqrt(fan_in), 1/sqrt(fan_in))`` -- PyTorch via
+            ``kaiming_uniform_(a=sqrt(5))`` (the ``nn.Linear`` default) and
+            Equinox via its ``lim = 1/sqrt(fan_in)`` uniform init, which reduce
+            to the same bound -- so initial weight scales match across backends.
+            Only the sampled values differ, because the two frameworks draw from
+            independent RNGs.
 
     Examples:
         >>> import torch
@@ -75,13 +96,14 @@ class MLP(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
-        """Apply the MLP to the final axis of ``x``.
+        """Map the trailing axis of ``x`` from ``input_dim`` to ``output_dim``.
 
         Args:
-            x: :class:`torch.Tensor` with trailing dimension ``input_dim``.
+            x: Input with trailing axis of width ``input_dim``; any number of
+                leading (batch) axes is allowed.
 
         Returns:
-            :class:`torch.Tensor` with the same leading dimensions and
-            trailing dimension ``output_dim``.
+            Output with the same leading axes as ``x`` and trailing axis of
+            width ``output_dim``.
         """
         return self.net(x)

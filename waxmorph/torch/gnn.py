@@ -1,8 +1,14 @@
 """Graph Network-based Simulator (GNS) for morphogenesis emulation.
 
-Implements the Encode-Process-Decode architecture from Sanchez-Gonzalez et al.
-"Learning to Simulate Complex Physics with Graph Networks" (ICML 2020),
-adapted for the WaxMorph cell state representation.
+A cell aggregate is a graph: cells are nodes carrying signaling state, contacts
+are edges carrying mechanical features, and one emulation step is a learned,
+neighbor-dependent update to each cell. The architecture is the
+Encode-Process-Decode graph network of Sanchez-Gonzalez et al. "Learning to
+Simulate Complex Physics with Graph Networks" (ICML 2020), adapted to the
+waxMorph cell-state representation.
+
+This is the default PyTorch backend; :mod:`waxmorph.jax.gnn` is the Equinox
+parity twin and must be kept architecturally identical.
 """
 
 from __future__ import annotations
@@ -19,10 +25,11 @@ from .mlp import MLP
 class GraphNetworkBlock(nn.Module):
     """Single message-passing step: edge update -> aggregation -> node update.
 
-    Both edge and node latents use residual connections. The module subclasses
-    :class:`torch.nn.Module`.
+    Both edge and node latents use residual connections, which stabilize deep
+    message passing by letting each block learn a correction to the running
+    embedding rather than rebuilding it from scratch.
 
-    Paper correspondence:
+    Notation:
         edge_mlp=f_psi (message fn), node_mlp=f_pi (node-update fn);
         node_latent=u, edge_latent=w, message=eta, node-update=zeta.
 
@@ -35,6 +42,9 @@ class GraphNetworkBlock(nn.Module):
             :class:`waxmorph.torch.mlp.MLP`.
         layer_norm: Whether to apply :class:`torch.nn.LayerNorm` in internal
             MLPs.
+
+    See Also:
+        :class:`waxmorph.jax.gnn.GraphNetworkBlock`: JAX/Equinox parity twin.
     """
 
     def __init__(
@@ -86,7 +96,9 @@ class GraphNetworkBlock(nn.Module):
         """
         senders, receivers = edge_index[0], edge_index[1]
 
-        # Edge update (f_psi): message eta from [sender u, receiver u, edge w], residual
+        # Edge update (f_psi): message eta from [sender u, receiver u, edge w], residual.
+        # Directed COO keeps i->j and j->i as separate rows, so the message MLP can
+        # emit distinct directional latents for each orientation of a contact.
         edge_input = torch.cat(
             [node_latent[senders], node_latent[receivers], edge_latent],
             dim=-1,
@@ -115,7 +127,11 @@ class GraphNetworkBlock(nn.Module):
 class GNS(nn.Module):
     """Full Encode-Process-Decode Graph Network Simulator.
 
-    Paper correspondence:
+    Encode raw per-cell and per-contact features into latents, process them with
+    M message-passing blocks over the spatial-adjacency graph, then decode the
+    final node latents into Euler updates for the learned cell state.
+
+    Notation:
         node_encoder=f_phi, edge_encoder=f_rho; processor runs M=num_mp_steps
         GraphNetworkBlock steps; decoders {dX:f_omega, dP:f_mu, dc:f_nu}.
 
@@ -136,6 +152,9 @@ class GNS(nn.Module):
             and processor MLPs.
         checkpoint_processor: If ``True``, checkpoint processor blocks to
             trade additional compute for lower activation memory.
+
+    See Also:
+        :class:`waxmorph.jax.gnn.GNS`: JAX/Equinox parity twin.
 
     Examples:
         >>> model = GNS(1, 2, hidden_dim=4, num_mp_steps=1, output_dims={"dX": 3})
@@ -214,7 +233,21 @@ class GNS(nn.Module):
         )
 
     def save(self, path: str | Path) -> None:
-        """Save model config and weights to a single file with :func:`torch.save`."""
+        """Save model config and weights to a single file with :func:`torch.save`.
+
+        The constructor config is not stored on the instance; it is reconstructed
+        here by introspecting the encoder/processor/decoder layer widths (input and
+        output features, block count, presence of LayerNorm). This keeps the
+        checkpoint self-describing so :meth:`load` can rebuild the architecture
+        without the original keyword arguments.
+
+        Args:
+            path: Destination file path for the combined config + state-dict blob.
+
+        See Also:
+            :meth:`waxmorph.jax.gnn.GNS.save`: JAX/Equinox parity twin (writes
+            weights plus a sidecar ``path.json`` config instead of one file).
+        """
         torch.save(
             {
                 "config": {
@@ -256,8 +289,23 @@ class GNS(nn.Module):
     def load(cls, path: str | Path, **kwargs) -> GNS:
         """Load model from a file saved with :meth:`save`.
 
-        Extra *kwargs* are forwarded to :func:`torch.load`
-        (e.g. ``map_location="cpu"``).
+        Reads the embedded config, instantiates a fresh model, and loads the
+        state dict.
+
+        Args:
+            path: Path to a checkpoint written by :meth:`save`.
+            **kwargs: Forwarded to :func:`torch.load` (e.g. ``map_location="cpu"``).
+
+        Returns:
+            A :class:`GNS` rebuilt from the checkpoint's config and weights.
+
+        Warning:
+            Uses ``weights_only=False``, which unpickles arbitrary Python objects.
+            Only load checkpoints from trusted sources; a malicious file can
+            execute code during deserialization.
+
+        See Also:
+            :meth:`waxmorph.jax.gnn.GNS.load`: JAX/Equinox parity twin.
         """
         data = torch.load(path, weights_only=False, **kwargs)
         model = cls(**data["config"])
@@ -273,14 +321,15 @@ class GNS(nn.Module):
         """Run full encode-process-decode.
 
         Args:
-            node_features: :class:`torch.Tensor` node features with shape
+            node_features: Per-cell signaling features with shape
                 ``[N, node_feature_dim]``.
-            edge_index: Directed COO edge tensor with shape ``[2, E]``.
-            edge_features: :class:`torch.Tensor` edge features with shape
+            edge_index: Directed COO edges with shape ``[2, E]``; row ``0`` holds
+                senders and row ``1`` holds receivers.
+            edge_features: Per-contact mechanical features with shape
                 ``[E, edge_feature_dim]``.
 
         Returns:
-            Dictionary mapping each output head name to a tensor with shape
+            Each output head name mapped to its decoded update with shape
             ``[N, output_dim]``.
         """
         # Encode: raw features -> latents (f_phi nodes, f_rho edges)

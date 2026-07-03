@@ -15,6 +15,7 @@ import numpy as np
 import optax
 from tqdm import trange
 
+from waxmorph.constants import EPS_POLARITY
 from waxmorph.jax.gnn import GNS as JaxGNS
 from waxmorph.jax.graph import (
     build_edge_features,
@@ -28,22 +29,67 @@ _CAPACITY_BUCKET = 1024
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
-    """Hyperparameters for JAX non-growing shape assembly training.
+    r"""Hyperparameters for JAX non-growing shape assembly training.
+
+    Mirrors :class:`waxmorph.torch.train.TrainConfig`; shared fields carry the
+    same meaning across backends. This backend adds ``max_edges_factor``
+    because JAX compiles to static shapes and so needs a compile-time
+    upper bound on the number of edges/pairs.
 
     Attributes:
-        n_epochs: Number of optimization epochs.
-        t_rollout: Number of rollout steps per epoch.
-        mech_steps: Number of sticky-sphere mechanics corrections per rollout.
-        diff_steps: Number of signaling-molecule diffusion corrections per rollout.
-        dt_mech: Euler step size for mechanics corrections.
-        dt_diff: Euler step size for diffusion corrections.
-        dt_gns: Scale applied to model-predicted deltas.
-        D_emu: Signaling-molecule diffusion coefficient.
-        lambda_reg: Weight applied to squared model displacement regularization.
-        grad_clip_norm: Optional maximum gradient norm.
+        n_epochs: Number of optimization epochs (AdamW updates). Each epoch
+            replays a full ``t_rollout``-step trajectory. Convergence typically
+            occurs near 200-300 epochs; the default 2000 is a generous ceiling.
+        t_rollout: Number of emulation (Euler) steps unrolled per epoch, i.e.
+            the trajectory length ``T``. The reference configuration uses
+            ``T = 100`` (the default here).
+        mech_steps: Soft-sphere mechanics substeps applied after each learned
+            update, run on a faster time scale so the trajectory stays
+            biophysically coherent. Typically a handful (default 5); ``0``
+            disables the mechanics constraint.
+        diff_steps: Graph-Laplacian diffusion substeps applied after each
+            learned update, analogous to ``mech_steps``. Default 5; ``0``
+            disables the diffusion constraint.
+        dt_mech: Forward-Euler step :math:`\Delta t` for the soft-sphere
+            mechanics correction. Small (default 1e-2) to keep the explicit
+            integration stable; the effective per-rollout displacement is
+            ``mech_steps * dt_mech``.
+        dt_diff: Forward-Euler step :math:`\Delta t` for the graph-Laplacian
+            diffusion correction (default 1e-2). Larger values approach the
+            CFL-style stability limit of explicit diffusion and can blow up.
+        dt_gns: Multiplier on the raw GNS deltas before they are added to the
+            state, i.e. the learned-update Euler step ``dt`` (default 1e-2).
+            Keeps initial (near-random) network outputs from moving particles
+            far in a single step.
+        D_emu: Signaling-molecule diffusion coefficient ``D_emu`` in the
+            graph-diffusion update ``c -= D_emu * (L_G c) * dt_diff`` (default
+            0.1). With ``dt_diff`` it sets how fast latent fields homogenize;
+            ``D_emu * dt_diff`` near/above the inverse max node degree risks
+            instability.
+        lambda_reg: Strength :math:`\lambda` of the squared-displacement
+            regularizer that penalizes large frame-to-frame motion,
+
+            .. math::
+
+                L_{reg} = \lambda \sum_{t} \lVert X_t - X_{t+1} \rVert_F^2,
+
+            with :math:`\lVert \cdot \rVert_F` the Frobenius norm (summed over
+            the per-step ``dX`` deltas). It discourages trajectories that satisfy
+            the goals only at the supervised target frames by spreading motion
+            smoothly across the rollout. Small (default 1e-3): too large
+            over-smooths and prevents reaching the target, too small permits
+            erratic jumps.
+        grad_clip_norm: Maximum global gradient L2 norm; gradients are rescaled
+            when they exceed it. ``None`` disables clipping. Default 1.0.
         log_every: Epoch interval used for progress logging.
-        max_edges_factor: Edge and pair capacity multiplier per active
-            particle.
+        max_edges_factor: Per-particle capacity multiplier setting the static
+            upper bound on edges and neighbor pairs (capacity ``= N *
+            max_edges_factor``). JAX-only: it sizes the fixed-shape buffers the
+            compiled rollout replays into, so it must exceed the densest graph
+            ever seen or training raises. Larger is safer but uses more memory.
+
+    See Also:
+        waxmorph.torch.train.TrainConfig: PyTorch parity backend (the default).
 
     Examples:
         >>> cfg = TrainConfig(n_epochs=3, t_rollout=2)
@@ -69,11 +115,41 @@ class TrainConfig:
 class TrainResult:
     """Result returned by :func:`waxmorph.jax.train.train`.
 
+    Mirrors :class:`waxmorph.torch.train.TrainResult`; the ``log`` keys are
+    identical across backends.
+
     Attributes:
         model: Best :class:`equinox.Module` found during training, or the
             latest model if no finite improvement was recorded.
-        log: Dictionary containing loss histories, best-epoch metadata, and
-            the best trajectory.
+        log: Diagnostics for the run. Per-epoch loss histories (each a 1-D
+            array of length ``n_epochs``):
+
+            - ``losses_total``: total loss ``L_shape + lambda_reg * L_reg``.
+            - ``losses_shape``: shape (distributional) loss at the target
+              frames only.
+            - ``losses_l2``: unweighted squared-displacement term
+              ``sum||dX||^2`` (multiply by ``lambda_reg`` for its loss
+              contribution).
+
+            Best trajectory (the rollout from the best-loss epoch; leading axis
+            is ``t_rollout + 1`` because frame 0 is the source state):
+
+            - ``best_traj_pos``: positions, shape ``[t_rollout+1, N, 3]``.
+            - ``best_traj_pol``: polarities, shape ``[t_rollout+1, N, 3]``.
+            - ``best_traj_c``: concentrations, shape
+              ``[t_rollout+1, N, num_molecules]``.
+
+            Metadata:
+
+            - ``best_epoch``: zero-based index of the best epoch.
+            - ``best_loss``: total loss at that epoch.
+            - ``target_frames``: sorted supervised frame indices.
+            - ``config_<field>``: one entry per :class:`TrainConfig` field
+              (e.g. ``config_n_epochs``, ``config_lambda_reg``), recording the
+              hyperparameters used.
+
+    See Also:
+        waxmorph.torch.train.TrainResult: PyTorch parity backend.
     """
 
     model: Any
@@ -209,10 +285,26 @@ def _tree_all_finite(tree) -> jax.Array:
 
 
 def _tree_global_norm(tree) -> jax.Array:
+    """Global L2 norm over all array leaves, computed overflow-safely.
+
+    The torch backend accumulates this norm in float64 to avoid float32 overflow
+    on large / ill-conditioned gradients (see
+    :func:`waxmorph.torch.train._clip_grad_norm_stable`). JAX defaults to float32
+    and enabling its 64-bit mode is a global, library-wide side effect, so instead
+    we factor out the largest-magnitude element before squaring:
+    ``||g|| = m * sqrt(sum (g / m)^2)`` with ``m = max|g|``. The rescaled squares
+    lie in ``[0, 1]`` and cannot overflow float32, so this matches the torch
+    backend's overflow robustness (and its value to float32 round-off) without
+    touching global precision.
+    """
     leaves = _array_leaves(tree)
     if not leaves:
         return jnp.asarray(0.0, dtype=jnp.float32)
-    return jnp.sqrt(sum(jnp.sum(jnp.square(leaf)) for leaf in leaves))
+    abs_max = jnp.max(jnp.stack([jnp.max(jnp.abs(leaf)) for leaf in leaves]))
+    # Guard the all-zero gradient case so the rescaling divisor is never 0.
+    scale = jnp.where(abs_max > 0, abs_max, jnp.asarray(1.0, dtype=abs_max.dtype))
+    sq_sum = sum(jnp.sum(jnp.square(leaf / scale)) for leaf in leaves)
+    return abs_max * jnp.sqrt(sq_sum)
 
 
 def _clip_grads(grads, max_norm: float):
@@ -236,6 +328,29 @@ def _scalar_int(value: jax.Array | int) -> int:
 
 
 def _bucketed_capacity(observed_max: int, max_capacity: int, *, name: str) -> int:
+    """Round an observed edge/pair count up to a stable static buffer size.
+
+    The differentiable replay (phase 2) needs fixed array shapes, but the
+    densest observed graph changes from epoch to epoch. Sizing buffers to the
+    exact per-epoch maximum would retrigger XLA compilation every time that
+    maximum moves. Instead, the observed maximum is inflated by
+    ``_CAPACITY_HEADROOM`` and rounded up to a multiple of ``_CAPACITY_BUCKET``
+    so the chosen capacity is stable across nearby epochs, then capped at
+    ``max_capacity`` (the ``max_edges_factor`` budget). Trades a little wasted
+    memory for far fewer recompilations.
+
+    Args:
+        observed_max: Largest edge or pair count seen this epoch.
+        max_capacity: Hard ceiling from ``max_edges_factor``.
+        name: Human-readable label used in the error message.
+
+    Returns:
+        Bucketed capacity in ``[1, max_capacity]``.
+
+    Raises:
+        ValueError: If ``max_capacity`` is non-positive or ``observed_max``
+            exceeds it (the graph is denser than ``max_edges_factor`` allows).
+    """
     if max_capacity <= 0:
         raise ValueError(f"{name} capacity must be positive.")
     if observed_max > max_capacity:
@@ -522,7 +637,7 @@ def _apply_rollout_step(
 
     X = X + dX
     P = P + dP
-    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), 1e-9)
+    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), EPS_POLARITY)
     c = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
 
     if topology.mech_pairs or topology.diff_pairs:
@@ -578,7 +693,7 @@ def _collection_gns_step(
 
     X_next = X + dX
     P_next = P + dP
-    P_next = P_next / jnp.maximum(jnp.linalg.norm(P_next, axis=-1, keepdims=True), 1e-9)
+    P_next = P_next / jnp.maximum(jnp.linalg.norm(P_next, axis=-1, keepdims=True), EPS_POLARITY)
     c_next = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
     return X_next, P_next, c_next, dX, dP, dc
 
@@ -594,6 +709,42 @@ def _collect_topologies_and_trajectory(
     particle_count: int,
     device: str,
 ) -> tuple[tuple[_StepTopology, ...], list[dict[str, np.ndarray]]]:
+    """Collect frozen per-step topology while rolling the state forward (phase 1).
+
+    This is the first half of the JAX backend's two-phase design that gives it
+    parity with the single-pass torch path. Neighbor graphs are rebuilt from
+    the live positions as the tissue deforms, so the adjacency at each rollout
+    step is dynamic and data-dependent. JAX, however, compiles to *static*
+    shapes: it cannot trace a loop whose array sizes change step to step. So we
+    split the rollout in two:
+
+    1. **Collect (here).** Run the rollout once under ``stop_gradient`` (no tape
+       kept), and for every step record the exact neighbor topology used: the
+       edge index, the mechanics neighbor pairs (one set per ``mech_steps``
+       substep), and the diffusion neighbor pairs. This produces a list of
+       :class:`_StepTopology`, one per rollout step.
+    2. **Batched differentiable replay.** :func:`_stack_topologies` pads those
+       frozen topologies up to a common, bucketed capacity (bounded by
+       ``max_edges_factor``; see :class:`TrainConfig`), and
+       :func:`_epoch_loss_with_topology_batch` replays them through a
+       ``jax.lax.scan`` with gradients on, treating topology as fixed input.
+
+    Because the replay buffers are sized to a worst-case edge/pair count rather
+    than the actual per-step count, this backend uses more memory than the
+    torch path, which keeps the dynamic-shape tape live and needs no capacity
+    bound. On CUDA with ``mech_steps``/``diff_steps`` set, pairs are gathered
+    with native Warp kernels; otherwise the framework-agnostic pair builder is
+    used.
+
+    Returns:
+        Tuple ``(topologies, trajectory)`` where ``topologies`` has one
+        :class:`_StepTopology` per rollout step, and ``trajectory`` is a list of
+        ``t_rollout + 1`` detached host snapshots (``pos``/``pol``/``c``),
+        starting with the source frame.
+
+    See Also:
+        waxmorph.torch.train._run_epoch: single-pass torch counterpart.
+    """
     topologies: list[_StepTopology] = []
     trajectory = [{"pos": _as_numpy(X), "pol": _as_numpy(P), "c": _as_numpy(c)}]
     max_edges = _max_edges_for_config(config, particle_count)
@@ -829,6 +980,26 @@ def _stack_topologies(
     config: TrainConfig,
     max_pairs: int,
 ) -> _TopologyBatch:
+    """Pad per-step topologies into one fixed-shape batch for scanned replay.
+
+    Bridges phase 1 (collect) and phase 2 (differentiable replay): the variable
+    per-step edge/pair lists are zero-padded to a common bucketed capacity (via
+    :func:`_bucketed_capacity`) and stacked along a leading rollout axis, with
+    companion ``num_edges``/``num_pairs`` arrays recording the true counts so
+    padded slots can be masked. The result feeds ``jax.lax.scan`` in
+    :func:`_epoch_loss_with_topology_batch`, which requires every per-step leaf
+    to share a shape.
+
+    Args:
+        topologies: One :class:`_StepTopology` per rollout step from phase 1.
+        config: Training config; ``mech_steps``/``diff_steps`` fix the substep
+            axis length.
+        max_pairs: Capacity ceiling from ``max_edges_factor``.
+
+    Returns:
+        A :class:`_TopologyBatch` with edge/pair indices and counts stacked over
+        the rollout, ready to scan over.
+    """
     edge_capacity = _bucketed_capacity(
         _max_edge_count(topologies),
         max_pairs,
@@ -905,7 +1076,7 @@ def _apply_rollout_step_from_batch(
 
     X = X + dX
     P = P + dP
-    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), 1e-9)
+    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), EPS_POLARITY)
     c = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
 
     if config.mech_steps > 0 or config.diff_steps > 0:
@@ -1030,7 +1201,29 @@ def _run_epoch(
     device: str,
     jax_device: jax.Device | None = None,
 ) -> tuple[jax.Array, jax.Array, list[dict[str, np.ndarray]]]:
-    """Run one rollout forward with frozen topology and differentiable physics."""
+    """Run one rollout forward with frozen topology and differentiable physics.
+
+    Drives the JAX two-phase epoch: first collect the per-step neighbor topology
+    and a host trajectory under ``stop_gradient``
+    (:func:`_collect_topologies_and_trajectory`), then replay those frozen
+    topologies with gradients on to accumulate the loss
+    (:func:`_epoch_loss_with_topologies`).
+
+    A shape loss is accumulated at every rollout step tagged in
+    ``targets_by_frame``, where frame indices are zero-based steps measured
+    *after* the per-step updates; frame ``0`` therefore supervises the state
+    after the first rollout update, not the initial source state -- the same
+    convention as the torch backend.
+
+    Returns:
+        Tuple ``(loss_shape, loss_l2, trajectory)``: the summed shape loss over
+        supervised frames, the unweighted ``sum||dX||^2`` regularizer term, and
+        a list of ``t_rollout + 1`` host snapshots starting with the source
+        frame.
+
+    See Also:
+        waxmorph.torch.train._run_epoch: single-pass torch counterpart.
+    """
     if jax_device is None:
         jax_device = _resolve_jax_device(device, require_cuda=_uses_warp_bridge(config))
 
@@ -1144,7 +1337,16 @@ def train(
     save_path: str | Path | None = None,
     device: str = "cuda",
 ) -> TrainResult:
-    """Train a GNS model for non-growing shape assembly.
+    """Train a GNS model for non-growing shape assembly (JAX backend).
+
+    Learns neighbor-dependent updates that assemble an initial particle cloud
+    into the supervised target morphologies, then composes the prescribed
+    soft-sphere mechanics and graph diffusion on top so the trajectory stays
+    biophysically coherent. Optimizes ``L = L_shape + lambda_reg * L_reg`` with
+    Optax, tracking the best-loss epoch. Each epoch uses the two-phase
+    collect-then-replay design (see
+    :func:`_collect_topologies_and_trajectory`) so the dynamic neighbor graph
+    fits JAX's static-shape compilation.
 
     Args:
         model: Equinox Graph Network Simulator model.
@@ -1156,25 +1358,42 @@ def train(
         polarities: Initial polarity vectors with shape ``[N, 3]``.
         c: Initial signaling-molecule concentrations with shape ``[N, num_molecules]``.
         radii: Particle radii with shape ``[N]``.
-        targets: ``(frame, positions)`` supervision pairs. Frame ``0`` supervises
-            the state after the first rollout update. Frames must lie in
-            ``[0, t_rollout)`` and must be unique.
+        targets: ``(frame, positions)`` supervision pairs. Frame indices are
+            zero-based rollout steps measured *after* the per-step updates, so
+            frame ``0`` supervises the state after the first rollout update, not
+            the initial source state, and the highest usable index is
+            ``t_rollout - 1``. Frames must lie in ``[0, t_rollout)`` and must be
+            unique.
         config: Training hyperparameters. Defaults to
             :class:`waxmorph.jax.train.TrainConfig`.
-        save_path: Optional path where the best model and log are saved.
+        save_path: Optional path where the best model and log are saved. If the
+            path already exists it is treated as a checkpoint to resume from:
+            the model is loaded and ``config.n_epochs`` is forced to ``1`` (a
+            single refinement/inference pass), and no file is overwritten on
+            exit. Saving happens only when ``save_path`` did not already exist.
         device: Device string such as ``"cuda"``, ``"cuda:0"``, or ``"cpu"``.
 
     Returns:
-        Best model and full training log.
+        Best model and full training log; see :class:`TrainResult` for the
+        ``log`` keys.
 
     Raises:
         RuntimeError: If Warp-backed differentiable physics is requested on a
             device where JAX cannot provide a GPU backend.
         ValueError: If targets are missing, duplicated, out of range, or contain
             non-finite values.
+
+    See Also:
+        waxmorph.torch.train.train: PyTorch parity backend, which is the default
+            because Warp autodiff integrates through
+            :class:`torch.autograd.Function`; this JAX path requires
+            compile-time shapes and an edge-count upper bound (more memory).
     """
     if config is None:
         config = TrainConfig()
+
+    if config.n_epochs < 1:
+        raise ValueError(f"config.n_epochs must be >= 1, got {config.n_epochs}.")
 
     if targets is None:
         raise ValueError("train() requires `targets`.")
@@ -1242,6 +1461,8 @@ def train(
         )
         topology_batch = _stack_topologies(topologies, config=config, max_pairs=max_pairs)
 
+        pre_update_model = model
+
         (
             model,
             opt_state,
@@ -1289,7 +1510,7 @@ def train(
             best_loss = epoch_loss
             best_shape_loss = epoch_shape_loss
             best_l2_loss = epoch_l2_loss
-            best_model = model
+            best_model = pre_update_model
             best_trajectory = epoch_trajectory
             best_epoch = epoch
 

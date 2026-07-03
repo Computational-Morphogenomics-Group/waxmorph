@@ -13,7 +13,7 @@ import numpy as np
 import warp as wp
 
 from .._graph_core import build_edge_index_np
-from ..constants import EPS_DIST
+from ..constants import EPS_DIST, EPS_NORM
 
 ANGLE_EPS = 1e-6
 
@@ -80,12 +80,19 @@ def build_edge_index(
             calls.
 
     Returns:
-        Pair ``(edge_index, num_edges)`` where ``edge_index`` has shape
-        ``[2, E]`` or ``[2, max_edges]`` and ``num_edges`` is a
-        :class:`jax.Array` scalar count of real, non-padding directed edges.
+        Pair ``(edge_index, num_edges)``. When ``max_edges`` is ``None`` the
+        edge tensor has shape ``[2, E]`` and ``num_edges == E``. When
+        ``max_edges`` is given the tensor is padded to ``[2, max_edges]`` with
+        ``(0, 0)`` entries past index ``num_edges`` so shapes stay static under
+        JIT; the trailing ``max_edges - num_edges`` columns are padding and
+        must be ignored by reading only the first ``num_edges`` columns.
 
     Raises:
         ValueError: If the observed edge count exceeds ``max_edges``.
+
+    See Also:
+        :func:`waxmorph.torch.graph.build_edge_index`: PyTorch twin that
+        returns an unpadded ``[2, E]`` tensor and no separate ``num_edges``.
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -138,6 +145,9 @@ def build_node_features(
     Returns:
         Float :class:`jax.Array` with shape ``[N, C]``.
 
+    See Also:
+        :func:`waxmorph.torch.graph.build_node_features`: PyTorch twin.
+
     Examples:
         >>> c = jnp.array([0.2, 0.4, 0.8])
         >>> print(build_node_features(c, 3).tolist())
@@ -155,11 +165,26 @@ def build_edge_features(
     edge_index: jax.Array,
     particle_count: int,
 ) -> jax.Array:
-    """Compute per-edge feature tensor.
+    r"""Compute per-edge feature tensor.
 
     Feature layout per edge ``(i -> j)``::
 
         [dist, angle(P_i, P_j)]
+
+    The two features encode the mechanical relationship of a neighbor pair:
+
+    .. math::
+
+        d_{ij} = \lVert x_i - x_j \rVert_2, \qquad
+        \theta_{ij} = \arccos\!\left( p_i^\top p_j \right).
+
+    The polarity angle is used in place of the raw polarity vectors because it
+    is a rotation-invariant relative-orientation signal between neighbors:
+    rotating the whole tissue leaves every pairwise angle unchanged, so the
+    learned update rule sees the geometry of how two cells' polarities relate
+    rather than their absolute frame. ``cos`` is clamped to
+    ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` before :func:`jax.numpy.arccos` to keep
+    the gradient finite at the antiparallel/parallel endpoints.
 
     Args:
         X: Position array with shape ``[N, 3]``.
@@ -169,7 +194,11 @@ def build_edge_features(
             the full arrays.
 
     Returns:
-        Float :class:`jax.Array` edge feature array with shape ``[E, 2]``.
+        Float :class:`jax.Array` edge feature array with shape ``[E, 2]`` whose
+        columns are ``[d_ij, theta_ij]``.
+
+    See Also:
+        :func:`waxmorph.torch.graph.build_edge_features`: PyTorch twin.
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -191,7 +220,7 @@ def build_edge_features(
         jnp.array([EPS_DIST, 0.0, 0.0], dtype=pos.dtype),
         rel_pos,
     )
-    dist = jnp.linalg.norm(rel_pos, axis=-1, keepdims=True)
+    dist = jnp.sqrt(jnp.sum(rel_pos * rel_pos, axis=-1, keepdims=True) + EPS_NORM**2)
 
     p_s = pol[senders]
     p_r = pol[receivers]
@@ -228,7 +257,16 @@ def build_graph(
         max_edges: Optional capacity passed to :func:`build_edge_index`.
 
     Returns:
-        Tuple ``(node_features, edge_index, edge_features, num_edges)``.
+        Tuple ``(node_features, edge_index, edge_features, num_edges)`` with
+        shapes ``[N, C]``, ``[2, E]`` (or ``[2, max_edges]`` when padded),
+        ``[E, 2]``, and a scalar ``num_edges``. The trailing ``num_edges`` is
+        the parity divergence from the PyTorch twin's 3-tuple: it reports how
+        many of the (possibly padded) ``edge_index`` columns are real edges,
+        which callers need under static-shape compilation.
+
+    See Also:
+        :func:`waxmorph.torch.graph.build_graph`: PyTorch twin returning an
+        unpadded 3-tuple ``(node_features, edge_index, edge_features)``.
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])

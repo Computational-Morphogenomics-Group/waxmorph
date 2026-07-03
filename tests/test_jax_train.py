@@ -53,6 +53,33 @@ def _make_model(num_molecules):
     )
 
 
+class TestTreeGlobalNorm:
+    """Overflow-safe global gradient norm; parity with the torch float64 clip path."""
+
+    def test_matches_naive_on_normal_values(self):
+        tree = {
+            "a": jnp.array([3.0, 4.0], dtype=jnp.float32),
+            "b": jnp.array([[0.0, 12.0]], dtype=jnp.float32),
+        }
+        # sqrt(3^2 + 4^2 + 12^2) = 13
+        assert float(jax_train_module._tree_global_norm(tree)) == pytest.approx(13.0, rel=1e-6)
+
+    def test_overflow_safe_on_huge_values(self):
+        """A naive float32 sum-of-squares overflows to inf; the rescaled norm stays finite."""
+        big = jnp.full((4,), 1e20, dtype=jnp.float32)
+        naive = float(jnp.sqrt(jnp.sum(jnp.square(big))))
+        assert not np.isfinite(naive)  # confirms the hazard the rescaling guards against
+        got = float(jax_train_module._tree_global_norm({"g": big}))
+        assert np.isfinite(got)
+        assert got == pytest.approx(2e20, rel=1e-5)  # ||[1e20]*4|| = 2e20
+
+    def test_zero_tree_is_zero(self):
+        assert float(jax_train_module._tree_global_norm({"a": jnp.zeros((3,), jnp.float32)})) == 0.0
+
+    def test_empty_tree_is_zero(self):
+        assert float(jax_train_module._tree_global_norm({})) == 0.0
+
+
 def test_run_epoch_accumulates_loss_across_tagged_frames():
     source_pos, polarities, c, radii = _minimal_inputs()
     config = jax_train_module.TrainConfig(

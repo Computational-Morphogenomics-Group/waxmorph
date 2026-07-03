@@ -1,8 +1,14 @@
-"""Framework-agnostic graph topology from :mod:`numpy` arrays.
+"""Framework-agnostic contact-adjacency topology from :mod:`numpy` arrays.
 
-Extracts the :class:`scipy.spatial.cKDTree`-based contact adjacency
-computation so that both the PyTorch and JAX graph builders can share the
-same logic.
+The neighborhood graph is induced by spheroidal-agent geometry alone: two
+cells are neighbors when their spheres touch within a contact buffer. Sharing
+one :class:`scipy.spatial.cKDTree` implementation here keeps that topology
+identical across backends -- the PyTorch and JAX graph builders both call
+:func:`build_edge_index_np`, so an edge that exists in one backend exists in
+the other for the same positions and radii.
+
+This module is pure NumPy/SciPy and depends on neither Torch nor JAX, so it
+can run on detached host snapshots without pulling in either framework.
 """
 
 import numpy as np
@@ -19,7 +25,11 @@ def build_edge_index_np(
     """Compute bidirectional contact-adjacency edges from positions and radii.
 
     An edge ``(i, j)`` exists when ``dist(pos[i], pos[j]) <= rad[i] + rad[j] + eps_dist``
-    and ``i != j``.
+    and ``i != j``. A single :class:`scipy.spatial.cKDTree` first finds all
+    pairs within ``2 * max(rad) + eps_dist`` (an upper bound on any pair's
+    contact threshold) in O(N log N), then the per-pair radius-sum threshold is
+    applied exactly. This is the one place contact adjacency is computed for
+    both backends, so topology stays identical across PyTorch and JAX.
 
     Args:
         pos: Particle positions with shape ``[N, 3]``.
@@ -29,6 +39,10 @@ def build_edge_index_np(
     Returns:
         Pair ``(senders, receivers)`` of ``int64`` arrays with shape ``[E]``.
         Edges are directed and include both directions for every contact pair.
+
+    See Also:
+        :func:`waxmorph.torch.graph.build_edge_index`: PyTorch caller.
+        :func:`waxmorph.jax.graph.build_edge_index`: JAX caller.
 
     Examples:
         >>> pos = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])

@@ -1,15 +1,43 @@
-"""Sphinx configuration for the waxmorph documentation."""
+"""Sphinx configuration for the waxMorph documentation."""
 
+import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC if SRC.exists() else ROOT))
 
-project = "waxmorph"
-copyright = "2026, WaxMorph Contributors"
-author = "WaxMorph Contributors"
+# Force-tracked root notebooks rendered as tutorials. The copies land under
+# docs/tutorials/ and are picked up by the existing *.ipynb gitignore rule, so
+# they never enter version control. The source notebooks are left untouched.
+TUTORIAL_NOTEBOOKS = {
+    "simulation_with_autodiff.ipynb": "forward_simulator.ipynb",
+    "shape_assembly.ipynb": "learned_emulator.ipynb",
+    "shape_assembly_jax.ipynb": "learned_emulator_jax.ipynb",
+}
+
+
+def _copy_tutorial_notebooks(app):
+    """Copy the tracked root notebooks into docs/tutorials/ before the build."""
+    dest_dir = HERE / "tutorials"
+    dest_dir.mkdir(exist_ok=True)
+    for source_name, dest_name in TUTORIAL_NOTEBOOKS.items():
+        source = ROOT / source_name
+        if source.exists():
+            shutil.copy(source, dest_dir / dest_name)
+
+
+def setup(app):
+    """Register the notebook-copy hook on builder startup."""
+    app.connect("builder-inited", _copy_tutorial_notebooks)
+
+project = "waxMorph"
+copyright = "2026, waxMorph Contributors"
+author = "waxMorph Contributors"
+# Sidebar/tab title: just the brand, not "waxMorph <version> documentation".
+html_title = "waxMorph"
 
 extensions = [
     "myst_nb",
@@ -20,6 +48,7 @@ extensions = [
     "sphinx.ext.mathjax",
     "sphinx.ext.viewcode",
     "sphinxcontrib.bibtex",
+    "sphinx_design",
 ]
 
 autosummary_generate = True
@@ -88,7 +117,8 @@ intersphinx_mapping = {
     "pyvista": ("https://docs.pyvista.org/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
     "imageio": ("https://imageio.readthedocs.io/en/stable/", None),
-    "warp": ("https://nvidia.github.io/warp/", None),
+    # NVIDIA Warp publishes no intersphinx inventory (objects.inv); omit it so the
+    # build does not emit a fetch warning. ``warp.*`` cross-refs stay unlinked.
     "geomloss": ("https://www.kernel-operations.io/geomloss/", None),
 }
 
@@ -102,4 +132,27 @@ html_theme = "sphinx_book_theme"
 html_theme_options = {
     "repository_url": "https://github.com/waxmorph/waxmorph",
     "use_repository_button": True,
+    # Brand mark at the top of the left sidebar in place of the text title.
+    # The theme swaps the light/dark variant with the color mode (the dark
+    # file is shadow-lifted so the navy ribbon separates from near-black pages).
+    "logo": {
+        "image_light": "_static/logo-512w.png",
+        "image_dark": "_static/logo-dark-512w.png",
+        "alt_text": "waxMorph",
+        "text": "",
+    },
 }
+
+# Browser favicon from the logo-icon package. ``html_title`` still names the
+# browser tab. The extra icon links (svg/apple-touch/manifest) are wired in
+# ``_templates/layout.html``.
+html_favicon = "_static/favicon.ico"
+
+# Landing-page hero, card grid, and sidebar-logo styling.
+html_css_files = ["css/waxmorph.css", "css/gallery.css"]
+
+# Static assets (images, CSS, JS) live here and are copied verbatim into the
+# built site under ``_build/html/_static/``. Drop documentation images in
+# ``_static/images/`` and reference them with a source-root-relative path,
+# e.g. ``.. figure:: /_static/images/example.png``.
+html_static_path = ["_static"]

@@ -38,9 +38,8 @@ def _make_cluster(positions, radii, num_molecules=2):
     c = wp.from_numpy(c_init, dtype=wp.float32, device=DEVICE)
 
     f_net = wp.zeros(max_p, dtype=wp.vec3f, device=DEVICE)
-    lap_c = wp.zeros_like(c)
 
-    return X, R, P, c, f_net, lap_c, n
+    return X, R, P, c, f_net, n
 
 
 class TestDifferentiableNeighborPairOverflow:
@@ -48,7 +47,7 @@ class TestDifferentiableNeighborPairOverflow:
         """Dense contact graphs should resize pair buffers instead of indexing past them."""
         positions = np.zeros((50, 3), dtype=np.float32)
         radii = np.full(50, 0.5, dtype=np.float32)
-        X, R, _P, _c, f_net, _lap_c, n = _make_cluster(positions, radii)
+        X, R, _P, _c, f_net, n = _make_cluster(positions, radii)
 
         tape = wp.Tape()
         X_out = mech_step_sticky_differentiable(tape, X, R, n, dt=0.01, f_net=f_net)
@@ -61,7 +60,7 @@ class TestDifferentiableNeighborPairOverflow:
         """Dense contact graphs should resize diffusion pair buffers instead of overflowing."""
         positions = np.zeros((50, 3), dtype=np.float32)
         radii = np.full(50, 0.5, dtype=np.float32)
-        X, R, _P, c, _f_net, lap_c, n = _make_cluster(positions, radii, num_molecules=2)
+        X, R, _P, c, _f_net, n = _make_cluster(positions, radii, num_molecules=2)
 
         tape = wp.Tape()
         c_out = diffusion_step_differentiable(
@@ -69,7 +68,6 @@ class TestDifferentiableNeighborPairOverflow:
             X,
             R,
             c,
-            lap_c,
             n,
             D_emu=0.1,
             dt=0.01,
