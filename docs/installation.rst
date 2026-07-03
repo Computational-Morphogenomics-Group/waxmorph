@@ -59,6 +59,9 @@ Hardware notes
 
 The simulation kernels and the OpenGL and USD movie renderers run on NVIDIA
 Warp and target CUDA. The graph and data utilities run on CPU, but the worked
-examples are GPU-oriented. USD export uses Warp's USD renderer; where that
-backend is unavailable, install a USD Python package such as ``usd-core`` or
-``usd-exchange``.
+examples are GPU-oriented.
+
+.. note::
+
+   USD export uses Warp's USD renderer; where that backend is unavailable,
+   install a USD Python package such as ``usd-core`` or ``usd-exchange``.

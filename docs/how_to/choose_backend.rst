@@ -42,7 +42,10 @@ the observed edge count as a fourth value:
    )
 
 The JAX training call takes an Optax optimizer and its optimizer state rather
-than a PyTorch optimizer. Because the JAX path requires an upper bound on the
-number of edges, it uses more memory than the PyTorch path; see
-:doc:`../explanation/architecture` for the design rationale behind the
-two-backend split.
+than a PyTorch optimizer.
+
+.. note::
+
+   Because the JAX path requires an upper bound on the number of edges, it uses
+   more memory than the PyTorch path; see :doc:`../explanation/architecture` for
+   the design rationale behind the two-backend split.

@@ -1,0 +1,296 @@
+/* waxMorph documentation — brand hero, card grid, sidebar logo.
+   Colours track the logo mark (navy #111521, warm gold glow) and fall back to
+   pydata-sphinx-theme CSS variables so light and dark modes both hold up. */
+
+:root {
+  --wm-navy: #111521;
+  --wm-gold: #e6a63c;
+  --wm-gold-strong: #f2b450;
+}
+
+/* ------------------------------------------------------------------ sidebar */
+
+/* Show only the banner mark at the top of the sidebar — drop the text title
+   the theme would otherwise render beside/under it. */
+.navbar-brand.logo .logo__title,
+.sidebar-brand-text,
+a.navbar-brand p.title {
+  display: none !important;
+}
+
+.navbar-brand.logo,
+a.navbar-brand.logo {
+  padding: 0.25rem 0.5rem;
+}
+
+img.logo__image,
+.navbar-brand img {
+  width: 100%;
+  max-width: 220px;
+  height: auto;
+}
+
+/* --------------------------------------------------------------------- hero */
+
+.wm-hero {
+  text-align: center;
+  padding: 1.5rem 1rem 0.5rem;
+}
+
+.wm-hero-logo {
+  display: block;
+  margin: 0 auto 1.25rem;
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+  filter: drop-shadow(0 6px 24px rgba(17, 21, 33, 0.18));
+}
+
+/* Theme-aware hero logo. Default (no explicit theme) shows the light mark;
+   the OS dark preference swaps it, and the site's own light/dark toggle
+   (``data-theme`` on <html>) overrides the preference in both directions. */
+.wm-logo-dark {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  .wm-logo-light {
+    display: none;
+  }
+  .wm-logo-dark {
+    display: block;
+  }
+}
+html[data-theme="light"] .wm-logo-light {
+  display: block;
+}
+html[data-theme="light"] .wm-logo-dark {
+  display: none;
+}
+html[data-theme="dark"] .wm-logo-light {
+  display: none;
+}
+html[data-theme="dark"] .wm-logo-dark {
+  display: block;
+}
+
+.wm-tagline {
+  font-size: clamp(1.5rem, 2.6vw, 2.1rem);
+  font-weight: 700;
+  line-height: 1.15;
+  margin: 0.25rem 0 0.75rem;
+  color: var(--pst-color-text-base);
+}
+
+.wm-sub {
+  max-width: 46rem;
+  margin: 0 auto;
+  font-size: 1.05rem;
+  line-height: 1.65;
+  color: var(--pst-color-text-muted);
+}
+
+.wm-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+  margin: 1.6rem 0 0.5rem;
+}
+
+.wm-btn {
+  display: inline-block;
+  padding: 0.6rem 1.35rem;
+  border-radius: 9px;
+  font-weight: 600;
+  font-size: 0.98rem;
+  text-decoration: none !important;
+  border: 1px solid transparent;
+  transition: transform 0.12s ease, box-shadow 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease, background 0.15s ease;
+}
+
+.wm-btn-primary {
+  background: linear-gradient(135deg, var(--wm-gold) 0%, var(--wm-gold-strong) 100%);
+  color: var(--wm-navy) !important;
+  box-shadow: 0 3px 12px rgba(230, 166, 60, 0.35);
+}
+
+.wm-btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(230, 166, 60, 0.45);
+}
+
+.wm-btn-ghost {
+  color: var(--pst-color-text-base) !important;
+  border-color: var(--pst-color-border);
+  background: transparent;
+}
+
+.wm-btn-ghost:hover {
+  transform: translateY(-2px);
+  border-color: var(--wm-gold);
+  color: var(--wm-gold-strong) !important;
+}
+
+/* ---------------------------------------------------------------- showcase */
+
+.wm-showcase {
+  margin: 2.5rem auto 1rem;
+  max-width: 62rem;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--pst-color-border);
+  box-shadow: 0 8px 30px rgba(17, 21, 33, 0.12);
+}
+
+.wm-showcase img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.wm-showcase figcaption {
+  text-align: center;
+  padding: 0.7rem 1rem;
+  font-size: 0.9rem;
+  color: var(--pst-color-text-muted);
+  border-top: 1px solid var(--pst-color-border);
+}
+
+/* ------------------------------------------------------------------- cards */
+
+.wm-cards {
+  margin-top: 1rem;
+}
+
+.wm-cards .sd-card.wm-card {
+  border: 1px solid var(--pst-color-border);
+  border-radius: 12px;
+  transition: transform 0.14s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.wm-cards .sd-card.wm-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--wm-gold);
+  box-shadow: 0 10px 28px rgba(17, 21, 33, 0.14);
+}
+
+.wm-cards .sd-card.wm-card .sd-card-title {
+  font-weight: 700;
+  color: var(--pst-color-text-base);
+}
+
+/* Gold arrow affordance appended to each card title on hover. */
+.wm-cards .sd-card.wm-card .sd-card-title::after {
+  content: " \2192";
+  color: var(--wm-gold);
+  opacity: 0;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.wm-cards .sd-card.wm-card:hover .sd-card-title::after {
+  opacity: 1;
+}
+
+/* ==================================================================
+   Site-wide components — JAX-style admonitions, code, tables, tabs.
+   Applies on every page (loaded via html_css_files). Semantic per-type
+   colours are left to the theme's ``--pst-color-*`` variables; only the
+   shape/polish (radius, accent border, soft shadow, title weight) is set
+   here so notes/warnings/tips read like the JAX docs.
+   ================================================================== */
+
+div.admonition,
+.admonition {
+  border-radius: 0.5rem;
+  border-left-width: 0.35rem;
+  box-shadow: 0 2px 10px rgba(17, 21, 33, 0.07);
+  overflow: hidden;
+}
+
+div.admonition > .admonition-title,
+.admonition > .admonition-title {
+  font-weight: 700;
+  letter-spacing: 0.005em;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+/* Subtle body tint in the type colour, layered over the theme background so
+   both light and dark modes keep contrast. color-mix degrades gracefully to
+   the theme default on browsers that lack it. */
+div.admonition {
+  background-color: color-mix(
+    in srgb,
+    var(--pst-color-surface, transparent) 100%,
+    transparent
+  );
+}
+/* Tint groups mirror the theme's per-type border colours so the wash and the
+   accent border agree (note→info, tip/hint/seealso→success, warning/caution→
+   warning, important/attention→attention, danger/error→danger, todo→secondary). */
+div.admonition.note {
+  background-color: color-mix(in srgb, var(--pst-color-info) 7%, var(--pst-color-surface));
+}
+div.admonition.tip,
+div.admonition.hint,
+div.admonition.seealso {
+  background-color: color-mix(in srgb, var(--pst-color-success) 7%, var(--pst-color-surface));
+}
+div.admonition.caution,
+div.admonition.warning {
+  background-color: color-mix(in srgb, var(--pst-color-warning) 8%, var(--pst-color-surface));
+}
+div.admonition.important,
+div.admonition.attention {
+  background-color: color-mix(in srgb, var(--pst-color-attention) 8%, var(--pst-color-surface));
+}
+div.admonition.danger,
+div.admonition.error {
+  background-color: color-mix(in srgb, var(--pst-color-danger) 8%, var(--pst-color-surface));
+}
+div.admonition.admonition-todo {
+  background-color: color-mix(in srgb, var(--pst-color-secondary) 7%, var(--pst-color-surface));
+}
+
+/* Rounded code blocks with a hairline border, like the JAX docs. */
+div.highlight,
+.highlight pre,
+div.literal-block-wrapper {
+  border-radius: 0.5rem;
+}
+div.highlight {
+  border: 1px solid var(--pst-color-border);
+}
+div.literal-block-wrapper div.highlight {
+  border-radius: 0 0 0.5rem 0.5rem;
+}
+
+/* Inline literals: soft pill, matching the code-block surface. */
+code.literal {
+  border-radius: 0.3rem;
+  padding: 0.1em 0.35em;
+}
+
+/* Clean, rounded tables. */
+table.docutils {
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--pst-color-border);
+  box-shadow: 0 1px 6px rgba(17, 21, 33, 0.05);
+}
+table.docutils th {
+  font-weight: 700;
+}
+
+/* sphinx-design dropdowns/tabs rounded to match cards and code blocks. */
+details.sd-dropdown {
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+details.sd-dropdown summary.sd-summary-title {
+  font-weight: 600;
+}
+.sd-tab-set > label {
+  border-radius: 0.4rem 0.4rem 0 0;
+}

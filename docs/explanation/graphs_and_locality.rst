@@ -33,10 +33,13 @@ Why the topology is frozen within a step
 ----------------------------------------
 
 For PyTorch inputs, feature construction stays differentiable, but the edge
-topology is built from a *detached* snapshot of positions and radii. Gradients
-therefore flow through distances, angles, signaling-molecule concentrations, and
-model parameters — but not through the discrete event of an edge appearing or
-disappearing within a single step.
+topology is built from a *detached* snapshot of positions and radii.
+
+.. note::
+
+   Gradients therefore flow through distances, angles, signaling-molecule
+   concentrations, and model parameters — but not through the discrete event of
+   an edge appearing or disappearing within a single step.
 
 This is the standard approximation in differentiable particle systems: optimize
 the continuous state while treating the contact graph as fixed over the current

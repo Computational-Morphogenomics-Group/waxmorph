@@ -1,4 +1,4 @@
-"""Sphinx configuration for the waxmorph documentation."""
+"""Sphinx configuration for the waxMorph documentation."""
 
 import shutil
 import sys
@@ -33,9 +33,11 @@ def setup(app):
     """Register the notebook-copy hook on builder startup."""
     app.connect("builder-inited", _copy_tutorial_notebooks)
 
-project = "waxmorph"
-copyright = "2026, WaxMorph Contributors"
-author = "WaxMorph Contributors"
+project = "waxMorph"
+copyright = "2026, waxMorph Contributors"
+author = "waxMorph Contributors"
+# Sidebar/tab title: just the brand, not "waxMorph <version> documentation".
+html_title = "waxMorph"
 
 extensions = [
     "myst_nb",
@@ -46,6 +48,7 @@ extensions = [
     "sphinx.ext.mathjax",
     "sphinx.ext.viewcode",
     "sphinxcontrib.bibtex",
+    "sphinx_design",
 ]
 
 autosummary_generate = True
@@ -129,4 +132,27 @@ html_theme = "sphinx_book_theme"
 html_theme_options = {
     "repository_url": "https://github.com/waxmorph/waxmorph",
     "use_repository_button": True,
+    # Brand mark at the top of the left sidebar in place of the text title.
+    # The theme swaps the light/dark variant with the color mode (the dark
+    # file is shadow-lifted so the navy ribbon separates from near-black pages).
+    "logo": {
+        "image_light": "_static/logo-512w.png",
+        "image_dark": "_static/logo-dark-512w.png",
+        "alt_text": "waxMorph",
+        "text": "",
+    },
 }
+
+# Browser favicon from the logo-icon package. ``html_title`` still names the
+# browser tab. The extra icon links (svg/apple-touch/manifest) are wired in
+# ``_templates/layout.html``.
+html_favicon = "_static/favicon.ico"
+
+# Landing-page hero, card grid, and sidebar-logo styling.
+html_css_files = ["css/waxmorph.css", "css/gallery.css"]
+
+# Static assets (images, CSS, JS) live here and are copied verbatim into the
+# built site under ``_build/html/_static/``. Drop documentation images in
+# ``_static/images/`` and reference them with a source-root-relative path,
+# e.g. ``.. figure:: /_static/images/example.png``.
+html_static_path = ["_static"]

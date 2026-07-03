@@ -9,15 +9,15 @@ Spatial adjacencies within an update step
 -----------------------------
 
 Each emulation step applies the learned GNS updates and then the prescribed
-constraints. The constraints run ``n_substeps`` times per learned update and can 
+constraints. The constraints run ``n_substeps`` times per learned update and can
 be ran on a faster time scale, keeping the trajectory biophysically coherent.
 
 The differentiable path in :mod:`waxmorph.emulator` records these pairwise
-kernels while *freezing the neighbor topology for the step*. This is feasible for small enough step sizes 
-:math:`\Delta t` and large enough trajectory length :math:`T` as deformations induced by mechanics will be smooth. The edge set :math:`E^{t+1}` 
+kernels while *freezing the neighbor topology for the step*. This is feasible for small enough step sizes
+:math:`\Delta t` and large enough trajectory length :math:`T` as deformations induced by mechanics will be smooth. The edge set :math:`E^{t+1}`
 is rebuilt from the provisional positions, then held fixed while the constraint forces and diffusion are computed and differentiated. As in
 :doc:`graphs_and_locality`, gradients flow through the cell states, but not through the discrete appearance or
-disappearance of an edge. This choice stems from using the spatial adjacency graph as opposed to 
+disappearance of an edge. This choice stems from using the spatial adjacency graph as opposed to
 a fully connected graph, reducing computational complexity drastically.
 
 
@@ -43,7 +43,11 @@ Simulator differentiability
 
 The forward simulator can obtain its mechanical updates either from
 analytically derived gradients or from Warp's automatic differentiation of the
-same scalar potentials. The two routes agree up to the baseline variation
-caused by nondeterministic GPU execution — floating-point atomic reductions and
-random memory-access order — which is why waxMorph offers both and treats
-autodiff as a drop-in alternative to the closed-form forces.
+same scalar potentials.
+
+.. note::
+
+   The two routes agree up to the baseline variation caused by nondeterministic
+   GPU execution — floating-point atomic reductions and random memory-access
+   order — which is why waxMorph offers both and treats autodiff as a drop-in
+   alternative to the closed-form forces.

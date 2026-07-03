@@ -30,8 +30,12 @@ constants, and division thresholds. Outputs are the state arrays, updated
 in place, and any rendered frames you request.
 
 The tutorial includes long runs with tens of thousands of particles over many
-steps. Drop the particle count and the number of steps when you are validating
-a new environment.
+steps.
+
+.. tip::
+
+   Drop the particle count and the number of steps when you are validating
+   a new environment.
 
 For the equations behind these kernels — the soft-sphere force, the graph
 Laplacian, the activator-inhibitor reaction-diffusion system, the growth Hill

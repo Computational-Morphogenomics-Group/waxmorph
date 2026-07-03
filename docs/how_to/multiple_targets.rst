@@ -35,10 +35,12 @@ pairs, then pass a list of ``(frame, positions)`` targets to ``train``:
        device="cuda",
    )
 
-Frame indices are zero-based rollout steps *after* updates, so frame ``9``
-constrains the state after ten learned updates and frame ``49`` the state after
-fifty. With ``TrainConfig(t_rollout=100)``, ``(99, target_pos)`` therefore
-supervises the state after 100 learned updates.
+.. important::
+
+   Frame indices are zero-based rollout steps *after* updates, so frame ``9``
+   constrains the state after ten learned updates and frame ``49`` the state after
+   fifty. With ``TrainConfig(t_rollout=100)``, ``(99, target_pos)`` therefore
+   supervises the state after 100 learned updates.
 
 Two ``TrainConfig`` knobs shape the rollout between target frames:
 ``D_emu`` sets the differentiable graph-Laplacian diffusion of the

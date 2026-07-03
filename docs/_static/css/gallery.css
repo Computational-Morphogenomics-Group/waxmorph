@@ -1,0 +1,230 @@
+/* waxMorph docs — gallery grid + 3D viewer overlay.
+   Brand colours + pydata --pst-color-* variables so light/dark both hold up.
+   Pairs with _static/js/gallery-viewer.js. */
+
+:root {
+  --wm-navy: #111521;
+  --wm-gold: #e6a63c;
+}
+
+/* ------------------------------------------------------------ grid ------- */
+
+.wm-gallery-section {
+  margin: 2.2rem 0;
+}
+.wm-gallery-h {
+  margin: 0 0 0.25rem;
+  font-weight: 700;
+}
+.wm-gallery-blurb {
+  margin: 0 0 1rem;
+  color: var(--pst-color-text-muted);
+  max-width: 46rem;
+}
+.wm-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 1rem;
+}
+.wm-gallery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 12px;
+  background: var(--pst-color-surface, transparent);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  transition: transform 0.14s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.wm-gallery-card:hover,
+.wm-gallery-card:focus-visible {
+  transform: translateY(-4px);
+  border-color: var(--wm-gold);
+  box-shadow: 0 10px 26px rgba(17, 21, 33, 0.16);
+  outline: none;
+}
+.wm-gallery-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 50% 40%, rgba(230, 166, 60, 0.08), transparent 70%),
+    var(--pst-color-on-background, rgba(127, 127, 127, 0.06));
+}
+.wm-gallery-cap {
+  font-weight: 650;
+  line-height: 1.2;
+}
+.wm-gallery-meta {
+  font-size: 0.8rem;
+  color: var(--pst-color-text-muted);
+}
+.wm-gallery-error {
+  color: var(--pst-color-danger);
+}
+.wm-gallery-notice {
+  padding: 1.1rem 1.3rem;
+  border: 1px solid var(--pst-color-border);
+  border-left: 0.35rem solid var(--wm-gold);
+  border-radius: 0.5rem;
+  background: var(--pst-color-surface, transparent);
+}
+.wm-gallery-notice p {
+  margin: 0 0 0.5rem;
+}
+.wm-gallery-notice p:last-child {
+  margin-bottom: 0;
+  color: var(--pst-color-text-muted);
+}
+.wm-gallery-notice code {
+  padding: 0.1em 0.35em;
+  border-radius: 0.3rem;
+}
+
+/* --------------------------------------------------------- viewer -------- */
+
+.wm-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.5rem, 3vw, 2.5rem);
+  background: rgba(8, 10, 16, 0.72);
+  backdrop-filter: blur(3px);
+}
+.wm-viewer-overlay[hidden] {
+  display: none;
+}
+.wm-viewer-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(1200px, 100%);
+  height: min(82vh, 900px);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--pst-color-background, #fff);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+}
+.wm-viewer-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.wm-viewer-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.wm-viewer-title {
+  position: absolute;
+  top: 0.75rem;
+  left: 1rem;
+  padding: 0.2rem 0.6rem;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(17, 21, 33, 0.55);
+  border-radius: 7px;
+  pointer-events: none;
+}
+.wm-viewer-hint {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+  color: #fff;
+  background: rgba(17, 21, 33, 0.6);
+  border-radius: 7px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.wm-viewer-hint b {
+  color: var(--wm-gold);
+}
+.wm-viewer-close {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: 50%;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: #fff;
+  background: rgba(17, 21, 33, 0.55);
+  cursor: pointer;
+}
+.wm-viewer-close:hover {
+  background: var(--wm-gold);
+  color: var(--wm-navy);
+}
+.wm-viewer-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.9rem;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--pst-color-border);
+  background: var(--pst-color-surface, var(--pst-color-background));
+}
+.wm-viewer-controls button {
+  border: 1px solid var(--pst-color-border);
+  background: transparent;
+  color: inherit;
+  border-radius: 7px;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+  font: inherit;
+}
+.wm-viewer-controls button:hover {
+  border-color: var(--wm-gold);
+  color: var(--wm-gold);
+}
+.wm-viewer-controls .wm-btn-play {
+  min-width: 2.4rem;
+  font-size: 0.95rem;
+}
+.wm-scrub {
+  flex: 1 1 180px;
+  accent-color: var(--wm-gold);
+}
+.wm-frame-readout {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: var(--pst-color-text-muted);
+  min-width: 5.5rem;
+  text-align: center;
+}
+.wm-viewer-controls .wm-speed,
+.wm-viewer-controls .wm-loop {
+  font-size: 0.85rem;
+  color: var(--pst-color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.wm-viewer-controls select {
+  font: inherit;
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 6px;
+  padding: 0.1rem 0.3rem;
+}
+
+@media (max-width: 600px) {
+  .wm-frame-readout,
+  .wm-viewer-controls .wm-speed { display: none; }
+  .wm-viewer-panel { height: 88vh; }
+}
