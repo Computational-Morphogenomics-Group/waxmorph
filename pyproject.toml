@@ -80,8 +80,8 @@ optional-dependencies.simulation = [
   "warp-lang>=1.5",
 ]
 urls.Documentation = "https://waxmorph.readthedocs.io"
-urls.Issues = "https://github.com/waxmorph/waxmorph/issues"
-urls.Source = "https://github.com/waxmorph/waxmorph"
+urls.Issues = "https://github.com/Computational-Morphogenomics-Group/waxmorph/issues"
+urls.Source = "https://github.com/Computational-Morphogenomics-Group/waxmorph"
 
 [tool.hatch]
 build.targets.wheel.packages = [ "waxmorph" ]
