@@ -112,8 +112,9 @@ def probs(p: wp.float32, ref: wp.float32):
 @wp.func
 def softmax2d(p: wp.vec2f):
     """Two-logit softmax helper used by Gumbel-Softmax sampling."""
-    ex = wp.exp(p.x)
-    ey = wp.exp(p.y)
+    m = wp.max(p.x, p.y)
+    ex = wp.exp(p.x - m)
+    ey = wp.exp(p.y - m)
     inv_sum = 1.0 / (ex + ey)
     return wp.vec2f(ex * inv_sum, ey * inv_sum)
 

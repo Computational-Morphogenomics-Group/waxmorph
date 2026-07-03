@@ -126,7 +126,6 @@ class WarpDiffusionStep(torch.autograd.Function):
         c_torch: torch.Tensor,
         X_wp: wp.array,
         R_wp: wp.array,
-        lap_c_wp: wp.array,
         particle_count: int,
         D_emu: float,
         dt: float,
@@ -139,7 +138,6 @@ class WarpDiffusionStep(torch.autograd.Function):
             c_torch: Concentration tensor with shape ``[N, num_molecules]``.
             X_wp: Warp position array used for neighbor topology.
             R_wp: Warp radius array.
-            lap_c_wp: Scratch Warp Laplacian buffer.
             particle_count: Number of active particles.
             D_emu: Diffusion coefficient.
             dt: Diffusion Euler step size.
@@ -157,7 +155,7 @@ class WarpDiffusionStep(torch.autograd.Function):
         # record graph-Laplacian diffusion kernels on the tape
         tape = wp.Tape()
         c_out = diffusion_step_differentiable(
-            tape, X_wp, R_wp, c_wp, lap_c_wp, particle_count, D_emu, dt, grid
+            tape, X_wp, R_wp, c_wp, particle_count, D_emu, dt, grid
         )
 
         ctx.tape = tape
@@ -179,4 +177,4 @@ class WarpDiffusionStep(torch.autograd.Function):
         # clone before zeroing: grad buffer is reused once the tape is cleared
         grad_input = wp.to_torch(ctx.c_wp.grad).view(n, num_molecules).clone()
         ctx.tape.zero()
-        return grad_input, None, None, None, None, None, None, None
+        return grad_input, None, None, None, None, None, None

@@ -156,14 +156,16 @@ def make_sinkhorn_loss(
     This ensures :math:`S_\\varepsilon(\\alpha, \\alpha) \\approx 0`.
 
     Args:
-        blur: Entropic regularization parameter, passed to OTT as ``epsilon``
-            (the analogue of the geomloss ``blur`` knob).
+        blur: Entropic regularization knob (the analogue of the geomloss
+            ``blur``), passed to OTT as ``epsilon = blur ** p`` to match
+            geomloss's temperature convention.
         p: Ground-cost exponent selecting the OTT cost when ``cost_fn`` is not
-            given: ``p=2`` uses squared Euclidean cost
-            (:class:`ott.geometry.costs.SqEuclidean`, the OTT default and the
-            torch-side default) and ``p=1`` uses Euclidean cost
-            (:class:`ott.geometry.costs.Euclidean`). Other exponents require an
-            explicit ``cost_fn``.
+            given: ``p=2`` uses the half-squared-Euclidean cost
+            (:class:`ott.geometry.costs.PNormP` with ``p=2``, i.e. ``½‖x-y‖²``,
+            matching geomloss's ``p=2`` ground cost) and ``p=1`` uses Euclidean
+            cost (:class:`ott.geometry.costs.Euclidean`). Other exponents require
+            an explicit ``cost_fn``. ``p`` also sets the entropic temperature
+            exponent ``epsilon = blur ** p``.
         cost_fn: Optional explicit OTT :class:`~ott.geometry.costs.CostFn`. When
             given it overrides ``p``.
         **solve_kwargs: Additional Sinkhorn solver options forwarded to OTT as
@@ -174,7 +176,10 @@ def make_sinkhorn_loss(
         torch default ``geomloss.SamplesLoss(debias=True)``; this backend does
         not expose a debias toggle. The geomloss ``scaling`` (multiscale
         annealing) and ``reach`` (unbalanced OT) knobs have no direct OTT mapping
-        here and are not exposed.
+        here and are not exposed. Because OTT solves at the single temperature
+        ``epsilon = blur ** p`` while geomloss anneals it, the returned value
+        matches ``geomloss.SamplesLoss`` only approximately (within a few percent
+        for typical clouds), not exactly.
 
     Returns:
         Callable ``loss_fn(X_pred, X_target)`` returning a scalar
@@ -197,7 +202,7 @@ def make_sinkhorn_loss(
         if p == 1:
             cost_fn = costs.Euclidean()
         elif p == 2:
-            cost_fn = costs.SqEuclidean()
+            cost_fn = costs.PNormP(2)
         else:
             raise ValueError(
                 f"make_sinkhorn_loss maps only p in {{1, 2}} to a built-in OTT "
@@ -212,7 +217,7 @@ def make_sinkhorn_loss(
             X_pred,
             X_target,
             cost_fn=cost_fn,
-            epsilon=blur,
+            epsilon=blur**p,
             solve_kwargs=solve_kwargs if solve_kwargs else {},
         )
         return divergence

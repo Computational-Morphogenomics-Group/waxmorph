@@ -1392,6 +1392,9 @@ def train(
     if config is None:
         config = TrainConfig()
 
+    if config.n_epochs < 1:
+        raise ValueError(f"config.n_epochs must be >= 1, got {config.n_epochs}.")
+
     if targets is None:
         raise ValueError("train() requires `targets`.")
 
@@ -1458,6 +1461,8 @@ def train(
         )
         topology_batch = _stack_topologies(topologies, config=config, max_pairs=max_pairs)
 
+        pre_update_model = model
+
         (
             model,
             opt_state,
@@ -1505,7 +1510,7 @@ def train(
             best_loss = epoch_loss
             best_shape_loss = epoch_shape_loss
             best_l2_loss = epoch_l2_loss
-            best_model = model
+            best_model = pre_update_model
             best_trajectory = epoch_trajectory
             best_epoch = epoch
 

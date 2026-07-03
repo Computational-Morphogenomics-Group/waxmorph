@@ -9,6 +9,8 @@ constructor interface but requires an explicit PRNG ``key`` for initialization.
 
 from __future__ import annotations
 
+from functools import partial
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -16,7 +18,7 @@ import jax.numpy as jnp
 _ACTIVATIONS = {
     "relu": jax.nn.relu,
     "silu": jax.nn.silu,
-    "gelu": jax.nn.gelu,
+    "gelu": partial(jax.nn.gelu, approximate=False),
     "tanh": jnp.tanh,
 }
 
@@ -99,25 +101,26 @@ class MLP(eqx.Module):
     def __call__(self, x: jax.Array) -> jax.Array:
         """Map the trailing axis of ``x`` from ``input_dim`` to ``output_dim``.
 
-        Equinox builds single-vector networks, so a batched input (more than one
-        axis) is vectorized over its leading axis with :func:`jax.vmap` to match
-        the batched behavior of the PyTorch twin.
+        Equinox builds single-vector networks, so batched inputs are flattened
+        over all leading axes, vectorized with :func:`jax.vmap`, and reshaped
+        back, matching the PyTorch twin's arbitrary-leading-axis behavior.
 
         Args:
-            x: Input with trailing axis of width ``input_dim``; a single leading
-                batch axis is supported via vectorization.
+            x: Input with trailing axis of width ``input_dim``; any number of
+                leading (batch) axes is allowed.
 
         Returns:
-            Output with trailing axis of width ``output_dim`` and the same
-            leading axis as ``x`` when batched.
+            Output with the same leading axes as ``x`` and trailing axis of
+            width ``output_dim``.
         """
-        # eqx.nn.MLP is single-vector; vmap over the leading axis for batched input
-        if x.ndim > 1:
-            out = jax.vmap(self.net)(x)
-            if self.norm is not None:
-                out = jax.vmap(self.norm)(out)
-        else:
+        if x.ndim == 1:
             out = self.net(x)
             if self.norm is not None:
                 out = self.norm(out)
-        return out
+            return out
+        lead = x.shape[:-1]
+        flat = x.reshape(-1, x.shape[-1])
+        out = jax.vmap(self.net)(flat)
+        if self.norm is not None:
+            out = jax.vmap(self.norm)(out)
+        return out.reshape(*lead, out.shape[-1])

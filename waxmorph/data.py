@@ -331,14 +331,14 @@ def _voxel_fill_candidates(
     # Fallback for leaky surfaces: close gaps with binary dilation, fill the now-sealed interior,
     # then erode by the same dilate_iters to restore the true boundary (morphological closing
     # of the hole-filled volume).
-    matrix = vox.matrix.copy()
+    matrix = np.pad(vox.matrix, dilate_iters)
     dilated = ndimage.binary_dilation(matrix, iterations=dilate_iters)
     filled_arr = ndimage.binary_fill_holes(dilated)
     interior = ndimage.binary_erosion(filled_arr, iterations=dilate_iters)
 
     # Same >20% (x1.2) interior-vs-surface guard before trusting the morphological fill.
     if int(interior.sum()) > n_surface * 1.2:
-        ijk = np.argwhere(interior).astype(np.float32)
+        ijk = (np.argwhere(interior) - dilate_iters).astype(np.float32)
         origin = np.array(vox.transform[:3, 3], dtype=np.float32)
         scale = np.asarray(vox.pitch, dtype=np.float32).ravel()
         return (origin + ijk * scale).astype(np.float32)

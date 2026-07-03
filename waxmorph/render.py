@@ -629,7 +629,8 @@ class _OpenGLVideoBackend(_BaseBackend):
         self.renderer.clear()
 
         # drop instancers so a fresh point count rebuilds geometry each frame
-        self.renderer._shape_instancers = {}
+        if self.reset_instancers_each_frame:
+            self.renderer._shape_instancers = {}
 
         self.renderer.begin_frame(float(t))
         self.renderer.render_points(

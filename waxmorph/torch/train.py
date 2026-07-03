@@ -288,7 +288,6 @@ def _run_epoch(
     R_t,
     R_wp,
     f_net,
-    lap_c,
     grid,
     N,
     targets_by_frame,
@@ -322,8 +321,6 @@ def _run_epoch(
         R_t: Particle radii on the torch device, shape ``[N]``.
         R_wp: Particle radii as a Warp array, consumed by the mechanics step.
         f_net: Preallocated Warp net-force scratch buffer, shape ``[N]``.
-        lap_c: Preallocated Warp graph-Laplacian scratch buffer, shape
-            ``[N, num_molecules]``.
         grid: Reused Warp ``HashGrid`` for neighbor queries.
         N: Active particle count.
         targets_by_frame: Map from zero-based post-update rollout step to the
@@ -395,7 +392,7 @@ def _run_epoch(
         for _ in range(config.diff_steps):
             X_wp_diff = wp.from_torch(X_t.detach().contiguous(), dtype=wp.vec3f)
             c_t = WarpDiffusionStep.apply(
-                c_t, X_wp_diff, R_wp, lap_c, N, config.D_emu, config.dt_diff, grid
+                c_t, X_wp_diff, R_wp, N, config.D_emu, config.dt_diff, grid
             )
         _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="post-diffusion")
 
@@ -478,6 +475,9 @@ def train(
     if config is None:
         config = TrainConfig()
 
+    if config.n_epochs < 1:
+        raise ValueError(f"config.n_epochs must be >= 1, got {config.n_epochs}.")
+
     if targets is None:
         raise ValueError("train() requires `targets`.")
 
@@ -493,7 +493,6 @@ def train(
 
     N = len(source_pos)
     max_particles = N
-    num_molecules = c.shape[1]
 
     # Checkpoint detection
     if save_path is not None and os.path.exists(save_path):
@@ -504,7 +503,6 @@ def train(
     f_net = wp.zeros(max_particles, dtype=wp.vec3f, device=wp_device)
     R_t = torch.from_numpy(radii.copy()).to(torch_device)
     R_wp = wp.from_numpy(radii.copy(), dtype=wp.float32, device=wp_device)
-    lap_c = wp.zeros((max_particles, num_molecules), dtype=wp.float32, device=wp_device)
 
     # Per-frame target tensors (device-resident)
     targets_by_frame: dict[int, torch.Tensor] = {}
@@ -547,7 +545,6 @@ def train(
             R_t=R_t,
             R_wp=R_wp,
             f_net=f_net,
-            lap_c=lap_c,
             grid=grid,
             N=N,
             targets_by_frame=targets_by_frame,
@@ -576,6 +573,12 @@ def train(
                     f"Non-finite gradient norm after clipping at epoch {epoch}: "
                     f"grad_norm={grad_norm.detach().cpu().item()!r}"
                 )
+        epoch_loss = loss.item()
+        epoch_shape_loss = loss_shape.item()
+        epoch_l2_loss = loss_l2.item()
+        is_best = epoch_loss < best_loss
+        candidate_state = copy.deepcopy(model.state_dict()) if is_best else None
+
         optimizer.step()
         _raise_on_nonfinite_named_tensors(
             "parameters",
@@ -585,19 +588,15 @@ def train(
         )
         optimizer.zero_grad(set_to_none=True)
 
-        epoch_loss = loss.item()
-        epoch_shape_loss = loss_shape.item()
-        epoch_l2_loss = loss_l2.item()
-
         losses_total.append(epoch_loss)
         losses_shape.append(epoch_shape_loss)
         losses_l2.append(epoch_l2_loss)
 
-        if epoch_loss < best_loss:
+        if is_best:
             best_loss = epoch_loss
             best_shape_loss = epoch_shape_loss
             best_l2_loss = epoch_l2_loss
-            best_model_state = copy.deepcopy(model.state_dict())
+            best_model_state = candidate_state
             best_trajectory = epoch_trajectory
             best_epoch = epoch
 

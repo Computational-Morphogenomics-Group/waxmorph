@@ -521,7 +521,6 @@ def diffusion_step_differentiable(
     X: wp.array,
     R: wp.array,
     c: wp.array,
-    lap_c: wp.array,
     particle_count: int,
     D_emu: float = 0.1,
     dt: float = 1e-2,
@@ -551,7 +550,6 @@ def diffusion_step_differentiable(
         R: Radius array, length ``N`` (constant; defines contact range).
         c: Concentration array, shape ``[N, num_molecules]``; the
             differentiated input.
-        lap_c: Scratch Laplacian buffer, zeroed and grad-enabled here.
         particle_count: Number of active particles.
         D_emu: Diffusion coefficient :math:`D_{\\mathrm{emu}}`.
         dt: Diffusion Euler step size.
@@ -569,10 +567,9 @@ def diffusion_step_differentiable(
         :func:`mech_step_sticky_differentiable`: the mechanics counterpart with
             the same frozen-topology, tape-recording structure.
     """
-    lap_c.zero_()
-    lap_c.requires_grad = True
-
     device = X.device
+    lap_c = wp.zeros_like(c, device=device, requires_grad=True)
+
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + EPS_DIST
     if grid is None:

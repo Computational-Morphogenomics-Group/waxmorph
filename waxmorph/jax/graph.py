@@ -13,7 +13,7 @@ import numpy as np
 import warp as wp
 
 from .._graph_core import build_edge_index_np
-from ..constants import EPS_DIST
+from ..constants import EPS_DIST, EPS_NORM
 
 ANGLE_EPS = 1e-6
 
@@ -220,7 +220,7 @@ def build_edge_features(
         jnp.array([EPS_DIST, 0.0, 0.0], dtype=pos.dtype),
         rel_pos,
     )
-    dist = jnp.linalg.norm(rel_pos, axis=-1, keepdims=True)
+    dist = jnp.sqrt(jnp.sum(rel_pos * rel_pos, axis=-1, keepdims=True) + EPS_NORM**2)
 
     p_s = pol[senders]
     p_r = pol[receivers]
