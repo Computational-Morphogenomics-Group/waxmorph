@@ -1,10 +1,9 @@
 Training APIs
 =============
 
-Training in waxMorph means optimizing a local emulator against one or more
-target shapes. The current training APIs implement non-growing shape assembly:
-the number of active spheroidal agents stays fixed during the rollout, while
-positions, polarities, and signaling-molecule concentrations are updated.
+Starting from an initial volumetric sample, training a learned emulator optimizes 
+learning neighbor-dependent local updates per agent across a rollout
+to reach target shape volumes throughout the trajectory.
 
 The top-level :mod:`waxmorph.train` module is a convenience alias for the
 default PyTorch training API. The backend-specific entry points remain available
