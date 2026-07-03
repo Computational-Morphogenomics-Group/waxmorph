@@ -130,7 +130,7 @@ bibtex_bibfiles = ["references.bib"]
 
 html_theme = "sphinx_book_theme"
 html_theme_options = {
-    "repository_url": "https://github.com/waxmorph/waxmorph",
+    "repository_url": "https://github.com/Computational-Morphogenomics-Group/waxmorph",
     "use_repository_button": True,
     # Brand mark at the top of the left sidebar in place of the text title.
     # The theme swaps the light/dark variant with the color mode (the dark
