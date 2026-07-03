@@ -32,7 +32,7 @@ Set up a development checkout with every extra and the style hooks:
 
 .. code-block:: bash
 
-   git clone https://github.com/waxmorph/waxmorph.git
+   git clone https://github.com/Computational-Morphogenomics-Group/waxmorph.git
    cd waxmorph
    pip install -e ".[all]"
    pre-commit install
