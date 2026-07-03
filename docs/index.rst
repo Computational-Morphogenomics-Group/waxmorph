@@ -82,7 +82,7 @@ Explore
       :link-type: doc
       :class-card: wm-card
 
-      The modelling choices &mdash; cell state, locality, differentiable
+      The modelling choices: cell state, locality, differentiable
       physics, forward and inverse modes.
 
    .. grid-item-card:: API reference
