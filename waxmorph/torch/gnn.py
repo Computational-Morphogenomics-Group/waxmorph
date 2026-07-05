@@ -34,8 +34,6 @@ class GraphNetworkBlock(nn.Module):
         node_latent=u, edge_latent=w, message=eta, node-update=zeta.
 
     Args:
-        node_latent_dim: Width of node latent vectors.
-        edge_latent_dim: Width of edge latent vectors.
         hidden_dim: Hidden layer width for internal MLPs.
         num_mlp_layers: Number of linear layers in each internal MLP.
         activation: Activation function name accepted by
@@ -288,9 +286,6 @@ class GNS(nn.Module):
     @classmethod
     def load(cls, path: str | Path, **kwargs) -> GNS:
         """Load model from a file saved with :meth:`save`.
-
-        Reads the embedded config, instantiates a fresh model, and loads the
-        state dict.
 
         Args:
             path: Path to a checkpoint written by :meth:`save`.

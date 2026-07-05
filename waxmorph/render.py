@@ -1,4 +1,4 @@
-"""Includes renderer interfaces for displaying 3D spheroids with morphogens."""
+"""Renderer interfaces for displaying 3D spheroids with morphogens."""
 
 from __future__ import annotations
 
@@ -87,12 +87,9 @@ class MPLInterface(RenderInterface):
         phi_res=12,
         antialiased=True,
     ):
-        """
-        Draw a 3D sphere (surface) at 'center' with 'radius'.
-        - facecolor = fill color (blue by default)
-        - edgecolor = mesh edge color (red by default)
-        - alpha     = transparency for the surface & edges
-        - theta_res, phi_res control mesh resolution (longitude/latitude)
+        """Draw a translucent parametric sphere surface at ``center`` with ``radius``.
+
+        ``theta_res``/``phi_res`` set longitude/latitude mesh resolution.
         """
         cx, cy, cz = center
         # parametric sphere: theta=longitude, phi=latitude, gridded then mapped to xyz
@@ -431,13 +428,6 @@ class PyVistaInterface(RenderInterface):
             theta_res: Sphere glyph longitude resolution.
             phi_res: Sphere glyph latitude resolution.
             alpha: Sphere opacity.
-            show_polarities: Whether to render polarity arrows.
-            polarity_length: Polarity arrow length.
-            polarity_color: Polarity arrow color.
-            polarity_opacity: Polarity arrow opacity.
-            polarity_shaft_radius: Polarity arrow shaft radius.
-            polarity_tip_length: Polarity arrow tip length.
-            polarity_tip_radius: Polarity arrow tip radius.
             cell_types: Optional integer category labels used for stable
                 categorical colors.
 
@@ -1200,10 +1190,8 @@ class WarpMovieRenderer:
         self._backend.close()
 
     def __enter__(self):
-        """Enter a context manager and return this renderer."""
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        """Close the renderer when leaving a context manager."""
         self.close()
         return False

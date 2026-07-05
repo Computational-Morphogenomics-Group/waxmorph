@@ -79,12 +79,6 @@ def _sticky_sphere_forces(
     differentiates them with the one-sided (subgradient) convention, taking the
     derivative as zero on the inactive side of each branch.
 
-    Args:
-        x_i: Center of agent ``i``.
-        x_j: Center of agent ``j``.
-        r_i: Radius of agent ``i``.
-        r_j: Radius of agent ``j``.
-
     Returns:
         Pair ``(f_ij, f_ji)`` of equal-and-opposite forces on agents ``i`` and
         ``j``, each a ``vec3f`` with ``f_ji == -f_ij``.

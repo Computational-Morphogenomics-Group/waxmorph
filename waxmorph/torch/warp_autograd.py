@@ -65,7 +65,6 @@ class WarpMechStep(torch.autograd.Function):
         """Apply a Warp mechanics step during the PyTorch forward pass.
 
         Args:
-            ctx: PyTorch :class:`torch.autograd.Function` context.
             X_torch: Position tensor with shape ``[N, 3]``.
             R_wp: Warp radius array.
             particle_count: Number of active particles.
@@ -134,7 +133,6 @@ class WarpDiffusionStep(torch.autograd.Function):
         """Apply a Warp diffusion step during the PyTorch forward pass.
 
         Args:
-            ctx: PyTorch :class:`torch.autograd.Function` context.
             c_torch: Concentration tensor with shape ``[N, num_molecules]``.
             X_wp: Warp position array used for neighbor topology.
             R_wp: Warp radius array.

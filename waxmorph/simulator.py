@@ -67,7 +67,7 @@ H_THICK_EE = 0.08  # h_thk: epithelial-thickness offset / slack
 
 @wp.func
 def safe_div(num: wp.float32, den: wp.float32) -> wp.float32:
-    """Numerically stable divide used across kernels."""
+    """Numerically stable divide."""
     return num / (den + EPS_DEN)
 
 
@@ -86,8 +86,6 @@ def adj_weight(dist: wp.float32, ri: wp.float32, rj: wp.float32) -> wp.bool:
 @wp.func
 def probs(p: wp.float32, ref: wp.float32):
     r"""Per-step division probability for a size-driven mesenchymal cell.
-
-    Warp implementation of the mesenchymal division rule.
 
     .. math::
         p^{\mathrm{Div\text{-}Mes}}_i = \frac{r_i^{\alpha_{\mathrm{div}}}}
@@ -111,7 +109,7 @@ def probs(p: wp.float32, ref: wp.float32):
 
 @wp.func
 def softmax2d(p: wp.vec2f):
-    """Two-logit softmax helper used by Gumbel-Softmax sampling."""
+    """Two-logit softmax used by Gumbel-Softmax sampling."""
     m = wp.max(p.x, p.y)
     ex = wp.exp(p.x - m)
     ey = wp.exp(p.y - m)
@@ -167,9 +165,8 @@ def sticky_sphere_forces(
 ):
     r"""Soft-sphere pairwise force with cell-type-dependent adhesion.
 
-    Warp implementation of the soft-sphere force, specialized to three
-    cell-type pairings. The repulsive branch is always a linear spring in
-    compression; the attractive branch differs by pairing.
+    Specialized to three cell-type pairings. The repulsive branch is always a
+    linear spring in compression; the attractive branch differs by pairing.
 
     .. math::
         f^{\mathrm{soft}}_{ij} = \Big[
@@ -1104,8 +1101,7 @@ def reaction_step(
 ):
     r"""Advance the activator-inhibitor (Turing) reaction-diffusion by one step.
 
-    Warp implementation of the two-component activator-inhibitor system. For
-    cell :math:`i` the abundances evolve as
+    For cell :math:`i` the abundances evolve as
 
     .. math::
         \dot{A}_i = \gamma\Big[-\chi D_{\mathrm{inhib}}(L_G c_A)_i

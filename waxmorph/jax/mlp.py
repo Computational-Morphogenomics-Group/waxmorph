@@ -41,8 +41,8 @@ class MLP(eqx.Module):
         activation: Activation name; one of ``"relu"``, ``"silu"``, ``"gelu"``,
             or ``"tanh"``. Defaults to ``"silu"``.
         layer_norm: Whether to append a LayerNorm over the output features.
-        key: PRNG key that seeds the linear-layer weight initialization;
-            keyword-only, with no default, so callers must pass a fresh key.
+        key: PRNG key seeding the linear-layer weight initialization; callers
+            must pass a fresh key.
 
     Raises:
         ValueError: If ``activation`` is not one of the supported names.

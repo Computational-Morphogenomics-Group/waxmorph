@@ -1,10 +1,10 @@
 """JAX/Equinox (parity) backend for the waxMorph GNS learning pipeline.
 
-This is the parity backend, reached only via explicit ``from waxmorph.jax import ...``; the
-default top-level imports resolve to :mod:`waxmorph.torch`. It mirrors that backend's
-public surface using Equinox modules, an Optax optimiser, and static-shape compilation,
-and trains the graph-network simulator over the same shared Warp physics core (gradients
-flow through :mod:`waxmorph.jax.warp_autograd` via a custom VJP).
+Reached only via explicit ``from waxmorph.jax import ...``; the default top-level imports
+resolve to :mod:`waxmorph.torch`. Mirrors that backend's public surface using Equinox
+modules, an Optax optimiser, and static-shape compilation, and trains the graph-network
+simulator over the same shared Warp physics core (gradients flow through
+:mod:`waxmorph.jax.warp_autograd` via a custom VJP).
 
 Parity: :mod:`waxmorph.torch` is the template -- keep the two in sync when changing graph
 construction, losses, or training, and do not weaken the Torch<->JAX parity assertions.

@@ -7,8 +7,7 @@ identical across backends -- the PyTorch and JAX graph builders both call
 :func:`build_edge_index_np`, so an edge that exists in one backend exists in
 the other for the same positions and radii.
 
-This module is pure NumPy/SciPy and depends on neither Torch nor JAX, so it
-can run on detached host snapshots without pulling in either framework.
+Runs on detached host snapshots without pulling in Torch or JAX.
 """
 
 import numpy as np

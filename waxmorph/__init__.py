@@ -16,8 +16,7 @@ explicit ``from waxmorph.jax import ...`` (Optax optimiser, static-shape compila
 Topology construction is shared (:mod:`waxmorph._graph_core`) so both backends build
 identical graphs; rendering lives in :mod:`waxmorph.render`.
 
-This module is a thin convenience layer: every name it binds is a re-export of the
-corresponding :mod:`waxmorph.torch` symbol (the modules ``waxmorph.{gnn,graph,losses,mlp,
+Every name bound here re-exports the corresponding :mod:`waxmorph.torch` symbol (the modules ``waxmorph.{gnn,graph,losses,mlp,
 train}`` are themselves backward-compat shims forwarding into ``torch/``). To change
 learning behaviour, edit :mod:`waxmorph.torch` and mirror it in :mod:`waxmorph.jax`; do
 not add logic here.

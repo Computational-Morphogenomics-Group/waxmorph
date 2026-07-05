@@ -88,7 +88,7 @@ def _snapshot_numpy(arr: torch.Tensor | wp.array, particle_count: int) -> np.nda
 
 
 def _validate_finite_numpy(name: str, arr: np.ndarray) -> None:
-    """Raise a clear error before passing invalid data into scipy/spatial ops."""
+    """Raise before passing non-finite data into scipy/spatial ops."""
     finite_mask = np.isfinite(arr)
     if finite_mask.all():
         return

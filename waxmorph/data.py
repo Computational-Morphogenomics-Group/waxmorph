@@ -39,8 +39,7 @@ def load_mesh(path: str | Path) -> trimesh.Trimesh:
     interior and a positive signed volume. ``force="mesh"`` collapses any scene/multi-part file
     into a single :class:`trimesh.Trimesh`; ``fix_normals`` reorients faces so normals point
     outward (correct sign of the volume) and ``fill_holes`` patches small gaps left by the scan
-    or by reorientation. This is the load/repair/reorient step of initial-state sampling;
-    downstream normalization is applied separately by :func:`normalize_mesh`.
+    or by reorientation. Normalization is applied separately by :func:`normalize_mesh`.
 
     Args:
         path: Filesystem path to the mesh, in any format accepted by :func:`trimesh.load`.
@@ -183,8 +182,8 @@ def normalize_mesh(mesh: trimesh.Trimesh, target_extent: float = 10.0) -> trimes
     radius ``r = (3V / 4 pi N)^(1/3)`` are only comparable across volumes once each mesh is
     centered and rescaled the same way. The bounding-box center is moved to the origin (removing
     translation) and all vertices are scaled isotropically so the longest bounding-box side
-    equals ``target_extent`` (aspect ratio preserved). This is the reorient/normalize step of
-    initial-state sampling. The input :class:`trimesh.Trimesh` is mutated in place.
+    equals ``target_extent`` (aspect ratio preserved). The input :class:`trimesh.Trimesh` is
+    mutated in place.
 
     Args:
         mesh: Mesh whose vertex coordinates are recentered and rescaled in place.
@@ -301,8 +300,7 @@ def _voxel_fill_candidates(
     surface. The mesh is voxelized at ``pitch``, then the hollow shell is solidified: first via
     trimesh's own ``fill``, and if that fails (a leaky surface lets the flood fill escape), via a
     SciPy morphological close-then-erode that seals small gaps before filling. Candidates are the
-    centers of the filled voxels, returned in world coordinates. This is the voxelization plus
-    binary-dilation, hole-filling, and erosion path implemented with SciPy.
+    centers of the filled voxels, returned in world coordinates.
 
     Args:
         mesh: Watertight-ish, normalized mesh to fill.

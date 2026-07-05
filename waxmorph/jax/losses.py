@@ -50,7 +50,7 @@ def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
         X_target: Target positions with shape ``[N, 3]`` in the same row order.
 
     Returns:
-        Scalar JAX array containing the squared Frobenius norm.
+        Scalar squared Frobenius norm.
 
     See Also:
         waxmorph.torch.losses.squared_loss: PyTorch twin with identical
@@ -93,8 +93,7 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
             from ``N``.
 
     Returns:
-        Scalar JAX array containing the two-sided Chamfer distance normalized
-        by ``N``.
+        Scalar two-sided Chamfer distance normalized by ``N``.
 
     See Also:
         waxmorph.torch.losses.chamfer_distance: PyTorch twin with identical
@@ -110,7 +109,8 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
     """
     # [N, M]
     diff = X_pred[:, None, :] - X_target[None, :, :]
-    dist = jnp.linalg.norm(diff, axis=-1)
+    sq = jnp.sum(diff * diff, axis=-1)
+    dist = jnp.where(sq > 0.0, jnp.sqrt(jnp.where(sq > 0.0, sq, 1.0)), 0.0)
 
     # pred -> target: for each predicted point, nearest target
     min_pred_to_target = dist.min(axis=1).sum()

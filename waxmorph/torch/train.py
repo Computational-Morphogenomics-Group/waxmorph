@@ -435,7 +435,6 @@ def train(
 
     Args:
         model: Graph Network Simulator model.
-        optimizer: :class:`torch.optim.Optimizer`.
         loss_fn: Shape loss function mapping predicted positions with shape
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.

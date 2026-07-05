@@ -1,9 +1,8 @@
-"""Backward-compatible PyTorch MLP exports.
+"""Backward-compatible re-exports of :class:`waxmorph.torch.mlp.MLP` and its
+``_ACTIVATIONS`` registry for callers importing from ``waxmorph.mlp``.
 
-This module re-exports :class:`waxmorph.torch.mlp.MLP` and its
-``_ACTIVATIONS`` registry for callers that import from ``waxmorph.mlp``. The
-``_ACTIVATIONS`` mapping is re-exported so tests and callers can introspect the
-supported activation names without reaching into the backend module.
+``_ACTIVATIONS`` is re-exported so callers can introspect supported activation
+names without reaching into the backend module.
 """
 
 from .torch.mlp import _ACTIVATIONS, MLP

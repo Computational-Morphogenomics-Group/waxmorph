@@ -2,10 +2,9 @@
 
 These values are baked into ``@wp.kernel`` / ``@wp.func`` source at compile time, so
 defining them once here keeps the simulator, emulator, and graph construction bit-for-bit
-consistent: the same contact slack that decides which agents are neighbours during a
-simulation step is the same one that builds the GNS contact graph, and the same HashGrid
-resolution accelerates every pairwise kernel. Centralising them is what makes the
-torch and jax backends agree numerically rather than only structurally.
+consistent across the torch and jax backends: the same contact slack that decides which
+agents are neighbours during a simulation step is the same one that builds the GNS contact
+graph, and the same HashGrid resolution accelerates every pairwise kernel.
 
 Force-law constants (``K_REP``, ``K_ATT_*``, adhesion cutoffs, growth/division rates)
 are intentionally *not* here: they are physics, not numerics, and differ between the full
