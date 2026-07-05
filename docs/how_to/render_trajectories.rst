@@ -18,8 +18,7 @@ trajectory — a quick static view, an interactive session, or an exported movie
 Rendering a rollout movie
 -------------------------
 
-The states of spheroids stored in the forward simulator and the learned
-emulator can be fed directly to render the trajectory as follows :
+Feed simulator or emulator states directly to a renderer:
 
 .. code-block:: python
 

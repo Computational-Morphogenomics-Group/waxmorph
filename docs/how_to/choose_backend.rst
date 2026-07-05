@@ -7,9 +7,8 @@ surrounding stack calls for it.
 Use PyTorch (the default)
 -------------------------
 
-The PyTorch backend is the default unless you have a specific reason to switch.
-The top-level imports resolve to it, giving you the most direct path from
-``build_graph`` to ``GNS`` to ``train`` shown in :ref:`gns-primer`. Warp's
+The top-level imports resolve to the PyTorch backend, giving you the most direct
+path from ``build_graph`` to ``GNS`` to ``train`` shown in :ref:`gns-primer`. Warp's
 automatic differentiation integrates through
 :class:`torch.autograd.Function`, so the physics gradients flow without extra
 plumbing.

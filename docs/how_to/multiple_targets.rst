@@ -2,11 +2,9 @@ Supervise multiple target frames
 ================================
 
 Use multi-target training when you want the rollout to pass through prescribed
-intermediate morphologies. Single-target
-training supervises only the last state; multi-target training adds supervision
-at intermediate frames. Both use the same ``targets`` argument — a final-only
-run simply passes one ``(t_rollout - 1, target_pos)`` pair, as in
-:ref:`mesh-to-emulator`.
+intermediate morphologies. Both single- and multi-target runs use the same
+``targets`` argument — a final-only run passes one ``(t_rollout - 1, target_pos)``
+pair, as in :ref:`mesh-to-emulator`.
 
 Sample the intermediate shapes with
 :func:`waxmorph.data.sample_mesh_sequence`, which accepts ``(frame, path)``
@@ -42,7 +40,7 @@ pairs, then pass a list of ``(frame, positions)`` targets to ``train``:
    fifty. With ``TrainConfig(t_rollout=100)``, ``(99, target_pos)`` therefore
    supervises the state after 100 learned updates.
 
-``lambda_reg`` weights the squared-displacement regularization that discourages trajectories 
-which encourages smoother deformations. The training log records the per-epoch
-``losses_total``, ``losses_shape``, and ``losses_l2``, together with the best
-rollout trajectories ``best_traj_pos``, ``best_traj_pol``, and ``best_traj_c``.
+``lambda_reg`` weights the squared-displacement regularization that penalizes
+large inter-frame displacement, encouraging smoother deformations. The training
+log carries the per-epoch losses and best rollout trajectories described in
+:ref:`mesh-to-emulator`.

@@ -16,8 +16,7 @@ When the target is an unordered cloud
 
 For biological shapes sampled from meshes, the rows of the predicted and target
 clouds are unordered, so the loss must be a distributional distance between
-point sets. ``chamfer_distance`` and ``make_samples_loss`` apply here, and they
-are the realistic choice unless you are tracking identities.
+point sets. ``chamfer_distance`` and ``make_samples_loss`` apply here.
 
 The shape loss sums a distributional distance over the supervised goal frames,
 

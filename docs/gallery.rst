@@ -1,7 +1,7 @@
 Gallery
 =======
 
-Each scene below is a learned waxMorph trajectory — a population of spheroidal
+Each scene is a learned waxMorph trajectory — a population of spheroidal
 cells assembling a target morphology — rendered live in your browser from the
 reconstructed per-frame cell positions and colours. Click a scene to open the
 player: use the timeline to play, pause, or scrub; **drag to orbit**, or switch

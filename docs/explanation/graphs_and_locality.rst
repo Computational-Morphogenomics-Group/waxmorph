@@ -13,9 +13,8 @@ How the contact graph is built
 Graph construction lives in :mod:`waxmorph.graph`, :mod:`waxmorph.torch.graph`,
 and :mod:`waxmorph.jax.graph`, all sharing the contact-adjacency core in
 :mod:`waxmorph._graph_core` so the topology is identical across backends. The
-graph induces a neighborhood from spatial proximity: it places one node per
-cell and connects cells :math:`i` and :math:`j` when their centers fall within
-the sum of their radii plus a small contact buffer,
+graph places one node per cell and connects cells :math:`i` and :math:`j` when
+their centers fall within the sum of their radii plus a small contact buffer,
 
 .. math::
 

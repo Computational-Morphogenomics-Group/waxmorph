@@ -49,9 +49,8 @@ Forward mode case study - Epithelial / Mesenchymal Turing Spheroids
 
 The forward simulator (:mod:`waxmorph.simulator`) is appropriate when the
 scientific question concerns a specified mechanistic model rather than a learned
-shape-assembly rule. It answers the mechanistic question directly: given an
-explicit biophysical rule set and a set of initial conditions, which tissue
-trajectory results?
+shape-assembly rule. Given an explicit biophysical rule set and initial
+conditions, it integrates the resulting tissue trajectory.
 
 The implemented case study is a polarized epithelial-mesenchymal aggregate
 coupled to a two-component activator-inhibitor reaction-diffusion system. On top
@@ -76,10 +75,8 @@ the active particle count grows up to the preallocated capacity.
 The inverse mode - Learned emulator for volumetric deformations
 ---------------------------------------------------------------
 
-The learned emulator is appropriate when you have source and target
-morphologies and want to infer a local rollout rule. It answers the
-inverse-design question: which local update rule moves an initial spheroidal
-tissue toward a set of target morphologies? It prescribes the known
+The learned emulator is appropriate when the question concerns inferring a
+local rollout rule from given source and target morphologies. It prescribes the known
 physics — soft-sphere mechanics and graph-based diffusion — and learns the
 neighbor-dependent updates to position, polarity, and latent molecular state so
 that an initial population assembles the prescribed target volumes.
@@ -95,5 +92,3 @@ implementation under :mod:`waxmorph.jax`. Each rollout step proceeds as:
 4. Apply the differentiable Warp mechanics and graph-Laplacian diffusion
    corrections.
 5. Accumulate a shape loss at one or more supervised target frames.
-
-.

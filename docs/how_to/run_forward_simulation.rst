@@ -5,7 +5,7 @@ Reach for the forward simulator when your question concerns a specified
 mechanistic model rather than a learned shape-assembly rule. The current case study integrates
 prescribed mechanochemical dynamics and can grow the active particle count up
 to a preallocated ``max_particles`` capacity. The ``simulation_with_autodiff``
-tutorial walks through a complete run; the steps below are the recipe.
+tutorial walks through a complete run.
 
 1. Allocate fixed-capacity Warp arrays for centers ``X``, radii ``R``,
    equilibrium radii ``R_eq``, polarities ``P``, activator ``A``, inhibitor

@@ -1,10 +1,9 @@
 Reference
 =========
 
-This section enumerates the public modules of waxMorph. The top-level modules
-default to the PyTorch backend, exposing the graph-network-based simulator,
-contact-graph construction, shape losses, and the training entry point. The JAX
-parity variants live under :mod:`waxmorph.jax`.
+waxMorph's top-level modules default to the PyTorch backend, exposing the
+graph-network-based simulator, contact-graph construction, shape losses, and the
+training entry point. The JAX parity variants live under :mod:`waxmorph.jax`.
 
 Module map
 ----------
@@ -33,7 +32,7 @@ Module map
 
 ``waxmorph.simulator`` and ``waxmorph.emulator``
    Warp kernels for explicit mechanochemical forward simulation and for the
-   differentiable non-growing physics corrections. The simulator case study integrates
+   differentiable non-growing physics corrections. The simulator integrates
    soft-sphere mechanics, reaction-diffusion, growth, and division; the
    emulator freezes neighbor topology within a step so gradients propagate
    through the physics.
@@ -48,26 +47,16 @@ The backend-specific APIs live under :mod:`waxmorph.torch` and
 State and notation
 ------------------
 
-A tissue is a population of three-dimensional spheroidal agents. Each agent
-carries a position ``X`` (shape ``[N, 3]``), a polarity ``P`` (shape
-``[N, 3]``), a radius ``R`` (shape ``[N]``), and a vector of signaling-molecule
-concentrations ``c`` (shape ``[N, num_molecules]``). The graph-network
-processor predicts increments ``dX``, ``dP``, and ``dc`` over these fields,
-while differentiable mechanical and diffusive corrections enforce the
-biophysical constraints.
+waxMorph represents a tissue as spheroidal agents carrying positions ``X``,
+polarities ``P``, radii ``R``, and signaling-molecule concentrations ``c``; the
+graph-network processor predicts increments ``dX``, ``dP``, and ``dc`` over these
+fields. See :doc:`../explanation/cell_state` for the field shapes and index
+conventions.
 
 For a worked, runnable version of the ``build_graph`` → ``GNS`` → ``train``
-flow, see :ref:`gns-primer`. The JAX parity backend mirrors that interface; its
-``build_graph`` additionally returns the active edge count to support
-static-shape compilation:
-
-.. code-block:: python
-
-   from waxmorph.jax import build_graph as build_graph_jax
-
-   node_features, edge_index, edge_features, num_edges = build_graph_jax(
-       X_jax, P_jax, R_jax, particle_count=N, c=c_jax
-   )
+flow, see :ref:`gns-primer`. The JAX parity backend mirrors that interface,
+except its ``build_graph`` returns a fourth value, the active edge count
+``num_edges``, for static-shape compilation; see :doc:`../how_to/choose_backend`.
 
 Training and external APIs
 --------------------------

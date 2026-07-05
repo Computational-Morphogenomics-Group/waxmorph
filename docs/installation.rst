@@ -7,8 +7,7 @@ Install the base package with pip:
 
    pip install waxmorph
 
-The extras gate the heavier dependencies, so pick the combination that matches
-your workflow.
+Extras gate the heavier dependencies; pick the combination for your workflow.
 
 Run the forward simulator and the PyTorch learning stack:
 
@@ -52,7 +51,7 @@ What each extra pulls in
    JAX, Equinox, Optax, and ott-jax — the parity backend.
 
 ``all``
-   Everything above, for a full development environment.
+   Everything above.
 
 Hardware notes
 --------------

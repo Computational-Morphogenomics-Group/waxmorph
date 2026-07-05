@@ -41,12 +41,10 @@ and returns matched-size point clouds together with a uniform radius:
    target_pos = pair["target_pos"]
    radii = pair["radius"]
 
-Build the contact graph from the live state. ``build_graph`` connects two cells
-when their center distance falls within the sum of their radii plus a small
-contact buffer, so the adjacency reflects spatial proximity. Node features carry
-the signaling-molecule concentrations ``c``; edge features carry the
-intercellular distance and the angle between polarity vectors. ``c`` is passed
-as the fifth argument:
+Build the contact graph from the live state;
+:doc:`../explanation/graphs_and_locality` derives the contact-adjacency rule.
+Node features carry the signaling-molecule concentrations ``c``; edge features
+carry the intercellular distance and the angle between polarity vectors:
 
 .. code-block:: python
 
@@ -79,8 +77,8 @@ The GNS does not displace cells directly — it predicts per-cell update fields.
 interleaves the differentiable mechanics and diffusion corrections described in
 :doc:`../explanation/differentiable_physics`.
 
-Train and read back the result. A final-only run passes a single
-``(t_rollout - 1, target_pos)`` target:
+Train and read back the result. Supervising only the endpoint passes a single
+target:
 
 .. code-block:: python
 

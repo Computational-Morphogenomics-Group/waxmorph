@@ -12,13 +12,11 @@ waxMorph
           alt="waxMorph — interacting cells resolving into a learned graph network">
      <p class="wm-tagline">A differentiable cell-based framework for three-dimensional morphogenesis.</p>
      <p class="wm-sub">
-       Cells build tissues through local exchanges of force and information, yet
-       the rules governing these interactions are difficult to infer from sparse
-       observations. waxMorph represents tissue as interacting spheroidal cells
-       and makes the governing mechanochemical dynamics differentiable, so the
-       same model can be run forward to simulate prescribed shape programs and
-       inverse to reconstruct continuous morphogenetic trajectories from static
-       tissue volumes.
+       Cells build tissues through local exchanges of force and information.
+       waxMorph represents tissue as interacting spheroidal cells and makes the
+       governing mechanochemical dynamics differentiable, so the same model runs
+       forward to simulate prescribed shape programs and inverse to reconstruct
+       continuous morphogenetic trajectories from static tissue volumes.
      </p>
      <div class="wm-cta">
        <a class="wm-btn wm-btn-primary" href="installation.html">Install</a>

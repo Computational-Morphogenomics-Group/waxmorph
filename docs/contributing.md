@@ -1,10 +1,8 @@
 # Contributing
 
-waxMorph is a scientific package, so contributions should keep both the code
-and the underlying modelling assumptions open to inspection. A well-formed
-pull request answers three questions clearly: which biological or computational
-behavior is changed, where that behavior resides in the package, and how the
-change can be verified.
+A well-formed pull request answers three questions: which biological or
+computational behavior changes, where that behavior resides in the package, and
+how the change is verified.
 
 ## Development setup
 
@@ -54,11 +52,10 @@ Public functions should state the biological object being represented, the
 array shapes expected by the implementation, and whether gradients are intended
 to flow through the operation. Vague phrasing such as "processes data" or
 "handles simulation" should be avoided in favor of naming the concrete state
-variables: positions `X` (shape `[N, 3]`), polarities `P` (shape `[N, 3]`),
-radii `R` (shape `[N]`), signaling-molecule concentrations `c`
-(shape `[N, num_molecules]`), cell types `CT`, and the contact edges induced by
-spatial proximity. By convention, the per-cell molecular state is denoted `c`
-and the predicted increments are `dX`, `dP`, and `dc`.
+variables and shapes catalogued in {doc}`explanation/cell_state`, together with
+the contact edges induced by spatial proximity. By convention, the per-cell
+molecular state is denoted `c` and the predicted increments are `dX`, `dP`, and
+`dc`.
 
 When a modelling choice is an approximation, it should be stated directly. For
 example, the contact graph is rebuilt from a detached state snapshot and treated
