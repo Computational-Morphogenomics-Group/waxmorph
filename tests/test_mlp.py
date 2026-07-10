@@ -1,5 +1,6 @@
 """Tests for the MLP building block."""
 
+import numpy as np
 import pytest
 import torch
 
@@ -40,6 +41,23 @@ def test_mlp_batched_input():
 def test_mlp_invalid_activation():
     with pytest.raises(ValueError, match="Unknown activation"):
         MLP(input_dim=5, output_dim=3, activation="invalid")
+
+
+@pytest.mark.parametrize("num_layers", [True, False, 1.0, 2.5, "2", None])
+def test_mlp_rejects_non_integer_depth(num_layers):
+    with pytest.raises(TypeError, match="non-boolean integer"):
+        MLP(input_dim=5, output_dim=3, num_layers=num_layers)
+
+
+@pytest.mark.parametrize("num_layers", [0, -1])
+def test_mlp_rejects_nonpositive_depth(num_layers):
+    with pytest.raises(ValueError, match="at least 1"):
+        MLP(input_dim=5, output_dim=3, num_layers=num_layers)
+
+
+def test_mlp_accepts_numpy_integer_depth():
+    mlp = MLP(input_dim=5, output_dim=3, num_layers=np.int64(2), layer_norm=False)
+    assert sum(isinstance(layer, torch.nn.Linear) for layer in mlp.net) == 2
 
 
 @pytest.mark.parametrize("activation", ["relu", "silu", "gelu", "tanh"])

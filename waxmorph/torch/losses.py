@@ -54,6 +54,9 @@ def squared_loss(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
     Returns:
         Scalar :class:`torch.Tensor` containing the squared Frobenius norm.
 
+    Raises:
+        ValueError: If the input shapes differ.
+
     See Also:
         waxmorph.jax.losses.squared_loss: JAX twin with identical semantics.
 
@@ -63,7 +66,29 @@ def squared_loss(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
         >>> print(squared_loss(x, y))
         tensor(1.)
     """
+    if X_pred.shape != X_target.shape:
+        raise ValueError(
+            f"squared_loss requires the same shape, got "
+            f"{tuple(X_pred.shape)} and {tuple(X_target.shape)}"
+        )
     return (X_pred - X_target).pow(2).sum()
+
+
+def _validate_chamfer_inputs(X_pred: torch.Tensor, X_target: torch.Tensor) -> None:
+    pred_shape = tuple(X_pred.shape)
+    target_shape = tuple(X_target.shape)
+    if len(pred_shape) != 2 or len(target_shape) != 2:
+        raise ValueError(
+            f"chamfer_distance requires rank-2 inputs, got {pred_shape} and {target_shape}"
+        )
+    if X_pred.numel() == 0 or X_target.numel() == 0:
+        raise ValueError(
+            f"chamfer_distance requires nonempty inputs, got {pred_shape} and {target_shape}"
+        )
+    if pred_shape[1] != target_shape[1]:
+        raise ValueError(
+            f"chamfer_distance requires equal feature width, got {pred_shape} and {target_shape}"
+        )
 
 
 def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
@@ -83,10 +108,8 @@ def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tens
 
     .. math::
 
-        \mathcal{L} = \frac{1}{N} \left[
-        \sum_i \min_j \lVert X^f_i - X^T_j \rVert
-        + \sum_j \min_i \lVert X^f_i - X^T_j \rVert
-        \right]
+        \mathcal{L} = \frac{1}{N}\sum_i \min_j \lVert X^f_i - X^T_j \rVert
+        + \frac{1}{M}\sum_j \min_i \lVert X^f_i - X^T_j \rVert
 
     Args:
         X_pred: Predicted positions with shape ``[N, 3]``.
@@ -94,8 +117,10 @@ def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tens
             from ``N``.
 
     Returns:
-        Scalar :class:`torch.Tensor` containing the two-sided Chamfer distance
-        normalized by ``N``.
+        Sum of the two directional mean nearest-neighbor distances.
+
+    Raises:
+        ValueError: If either cloud is empty or not rank 2, or feature widths differ.
 
     See Also:
         waxmorph.jax.losses.chamfer_distance
@@ -110,18 +135,10 @@ def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tens
         >>> print(chamfer_distance(x, y))
         tensor(1.)
     """
-    # [N, M]
+    _validate_chamfer_inputs(X_pred, X_target)
     diff = X_pred.unsqueeze(1) - X_target.unsqueeze(0)
     dist = diff.norm(dim=-1)
-
-    # pred -> target: for each predicted point, nearest target
-    min_pred_to_target = dist.min(dim=1).values.sum()
-
-    # target -> pred: for each target point, nearest predicted
-    min_target_to_pred = dist.min(dim=0).values.sum()
-
-    n = X_pred.size(0)
-    return (min_pred_to_target + min_target_to_pred) / n
+    return dist.min(dim=1).values.mean() + dist.min(dim=0).values.mean()
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +154,7 @@ SAMPLES_LOSS_DEFAULTS: dict[str, Any] = {
     "reach": None,
     "diameter": None,
     "scaling": 0.5,
-    "truncate": None,
+    "truncate": 5,
     "cost": None,
     "kernel": None,
     "cluster_scale": None,
@@ -168,7 +185,7 @@ def make_samples_loss(params: dict[str, Any] | None = None, **kwargs: Any) -> Sa
     Args:
         params: Optional :class:`geomloss.SamplesLoss` keyword arguments.
             Missing keys fall back to geomloss defaults listed in
-            ``SAMPLES_LOSS_DEFAULTS``.
+            ``SAMPLES_LOSS_DEFAULTS``. Explicit ``None`` values are forwarded.
         **kwargs: Additional overrides merged on top of ``params``.
 
     Returns:
@@ -177,6 +194,7 @@ def make_samples_loss(params: dict[str, Any] | None = None, **kwargs: Any) -> Sa
 
     Raises:
         ImportError: If ``geomloss`` is not installed.
+        TypeError: If an option is not accepted by :class:`geomloss.SamplesLoss`.
 
     See Also:
         waxmorph.jax.losses.make_sinkhorn_loss
@@ -185,23 +203,23 @@ def make_samples_loss(params: dict[str, Any] | None = None, **kwargs: Any) -> Sa
         chamfer_distance
             Lightweight unordered-cloud loss with no extra dependencies.
     """
-    from geomloss import SamplesLoss
-
     merged: dict[str, Any] = {}
     if params is not None:
         merged.update(params)
     merged.update(kwargs)
 
-    # Only forward keys that SamplesLoss actually accepts
-    filtered = {k: v for k, v in merged.items() if k in SAMPLES_LOSS_DEFAULTS and v is not None}
+    unknown = sorted(str(key) for key in merged if key not in SAMPLES_LOSS_DEFAULTS)
+    if unknown:
+        raise TypeError(f"Unknown SamplesLoss parameters: {', '.join(unknown)}")
 
-    # hausdorff requires an explicit kernel function; default to energy_kernel
-    if filtered.get("loss") == "hausdorff" and filtered.get("kernel") is None:
+    from geomloss import SamplesLoss
+
+    if merged.get("loss") == "hausdorff" and merged.get("kernel") is None:
         try:
             from geomloss.kernel_samples import energy_kernel
         except ImportError:
             from geomloss._legacy.kernel_samples import energy_kernel
 
-        filtered["kernel"] = energy_kernel
+        merged["kernel"] = energy_kernel
 
-    return SamplesLoss(**filtered)
+    return SamplesLoss(**merged)

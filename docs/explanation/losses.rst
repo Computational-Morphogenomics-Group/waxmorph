@@ -18,6 +18,16 @@ For biological shapes sampled from meshes, the rows of the predicted and target
 clouds are unordered, so the loss must be a distributional distance between
 point sets. ``chamfer_distance`` and ``make_samples_loss`` apply here.
 
+``chamfer_distance`` sums the mean nearest-neighbor distance in each direction,
+so exchanging clouds with different point counts does not change the value:
+
+.. math::
+
+   d_{\mathrm{Ch}}(X,Y) = \frac{1}{|X|}\sum_{x\in X}\min_{y\in Y}\lVert x-y\rVert_2
+   + \frac{1}{|Y|}\sum_{y\in Y}\min_{x\in X}\lVert x-y\rVert_2.
+
+Both clouds must be nonempty rank-2 arrays with the same feature width.
+
 The shape loss sums a distributional distance over the supervised goal frames,
 
 .. math::
@@ -25,10 +35,10 @@ The shape loss sums a distributional distance over the supervised goal frames,
    L_{\text{shape}} = \sum_{k=1}^{K} d\big(X_{\tau_k}, \tilde{X}_{\tau_k}\big),
 
 reducing to :math:`d(X_T, \tilde{X}_T)` for a single terminal target. The
-GeomLoss-backed ``make_samples_loss`` exposes the Chamfer distance, maximum mean
-discrepancy, Hausdorff divergence, and the debiased Sinkhorn divergence. The
-default is the Sinkhorn divergence, a fast approximation of the 2-Wasserstein
-distance between the empirical measures of the two clouds.
+GeomLoss-backed ``make_samples_loss`` exposes maximum mean discrepancy,
+Hausdorff divergence, and debiased Sinkhorn divergence. The default is the
+Sinkhorn divergence, a fast approximation of the 2-Wasserstein distance between
+the empirical measures of the two clouds.
 
 Regularizing the trajectory
 ---------------------------

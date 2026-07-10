@@ -6,6 +6,8 @@ are exposed as constructor arguments. This is the default backend; the
 JAX/Equinox twin in :mod:`waxmorph.jax.mlp` mirrors the same interface.
 """
 
+from numbers import Integral as _Integral
+
 import torch.nn as nn
 
 _ACTIVATIONS = {
@@ -72,6 +74,11 @@ class MLP(nn.Module):
             raise ValueError(
                 f"Unknown activation '{activation}'. Choose from {list(_ACTIVATIONS)}."
             )
+        if isinstance(num_layers, bool) or not isinstance(num_layers, _Integral):
+            raise TypeError("num_layers must be a non-boolean integer")
+        if num_layers < 1:
+            raise ValueError("num_layers must be at least 1")
+        num_layers = int(num_layers)
 
         self.activation_name = activation
         act_cls = _ACTIVATIONS[activation]

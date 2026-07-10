@@ -32,6 +32,10 @@ class TestSquaredLoss:
         grad = jax.grad(lambda p: squared_loss(p, target))(pred)
         assert jnp.abs(grad).sum() > 0
 
+    def test_rejects_broadcasting(self):
+        with pytest.raises(ValueError, match="same shape"):
+            squared_loss(jnp.zeros((1, 3)), jnp.zeros((4, 3)))
+
     def test_gradient_through_gns(self, key):
         """Squared loss gradients flow through GNS to all parameters."""
         gns = GNS(
@@ -66,12 +70,11 @@ class TestChamferDistance:
         x = jax.random.normal(key, (20, 3))
         assert float(chamfer_distance(x, x)) == pytest.approx(0.0, abs=1e-6)
 
-    def test_symmetric(self, key):
-        a = jax.random.normal(key, (15, 3))
-        b = jax.random.normal(jax.random.PRNGKey(1), (15, 3))
-        assert float(chamfer_distance(a, b)) == pytest.approx(
-            float(chamfer_distance(b, a)), abs=1e-5
-        )
+    def test_symmetric_with_different_counts(self):
+        a = jnp.array([[0.0, 0.0, 0.0]])
+        b = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        assert float(chamfer_distance(a, b)) == pytest.approx(1.0)
+        assert float(chamfer_distance(b, a)) == pytest.approx(1.0)
 
     def test_different_counts(self, key):
         """Chamfer distance works with different N and M."""
@@ -120,6 +123,20 @@ class TestChamferDistance:
         target = jnp.array([[3.0, 4.0, 0.0]])
         # dist = 5.0, chamfer = (5 + 5) / 1 = 10.0
         assert float(chamfer_distance(pred, target)) == pytest.approx(10.0, abs=1e-5)
+
+    @pytest.mark.parametrize(
+        "pred_shape,target_shape,message",
+        [
+            ((3,), (3,), "rank-2"),
+            ((0, 3), (2, 3), "nonempty"),
+            ((2, 3), (0, 3), "nonempty"),
+            ((2, 0), (2, 0), "nonempty"),
+            ((2, 2), (2, 3), "feature width"),
+        ],
+    )
+    def test_rejects_invalid_cloud_shapes(self, pred_shape, target_shape, message):
+        with pytest.raises(ValueError, match=message):
+            chamfer_distance(jnp.zeros(pred_shape), jnp.zeros(target_shape))
 
 
 class TestMakeSinkhornLoss:

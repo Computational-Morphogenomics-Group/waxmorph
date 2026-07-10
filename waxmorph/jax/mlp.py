@@ -10,6 +10,7 @@ constructor interface but requires an explicit PRNG ``key`` for initialization.
 from __future__ import annotations
 
 from functools import partial
+from numbers import Integral as _Integral
 
 import equinox as eqx
 import jax
@@ -82,11 +83,16 @@ class MLP(eqx.Module):
             raise ValueError(
                 f"Unknown activation '{activation}'. Choose from {list(_ACTIVATIONS)}."
             )
+        if isinstance(num_layers, bool) or not isinstance(num_layers, _Integral):
+            raise TypeError("num_layers must be a non-boolean integer")
+        if num_layers < 1:
+            raise ValueError("num_layers must be at least 1")
+        num_layers = int(num_layers)
 
         self.activation_name = activation
 
         # eqx depth = hidden layers; our num_layers = total linear layers = depth + 1
-        depth = max(num_layers - 1, 0)
+        depth = num_layers - 1
         self.net = eqx.nn.MLP(
             in_size=input_dim,
             out_size=output_dim,

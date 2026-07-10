@@ -110,10 +110,10 @@ class TestLossGradientOracle:
     def test_squared_loss_gradcheck(self):
         torch.manual_seed(0)
         pred = torch.randn(8, 3, dtype=torch.float64, requires_grad=True)
-        target = torch.randn(8, 3, dtype=torch.float64)
+        target = torch.randn(8, 3, dtype=torch.float64, requires_grad=True)
         assert gradcheck(
-            lambda p: squared_loss(p, target),
-            (pred,),
+            squared_loss,
+            (pred, target),
             eps=1e-6,
             atol=1e-6,
             rtol=1e-4,
@@ -134,14 +134,16 @@ class TestLossGradientOracle:
 
         # Guard against a near-tie that would make the subgradient ambiguous.
         d = np.linalg.norm(pred_np[:, None, :] - target_np[None, :, :], axis=-1)
-        d_sorted = np.sort(d, axis=1)
-        assert (d_sorted[:, 1] - d_sorted[:, 0]).min() > 1e-2, "near-tie: pick another seed"
+        by_target = np.sort(d, axis=1)
+        by_pred = np.sort(d, axis=0)
+        assert (by_target[:, 1] - by_target[:, 0]).min() > 1e-2
+        assert (by_pred[1] - by_pred[0]).min() > 1e-2
 
         pred = torch.tensor(pred_np, dtype=torch.float64, requires_grad=True)
-        target = torch.tensor(target_np, dtype=torch.float64)
+        target = torch.tensor(target_np, dtype=torch.float64, requires_grad=True)
         assert gradcheck(
-            lambda p: chamfer_distance(p, target),
-            (pred,),
+            chamfer_distance,
+            (pred, target),
             eps=1e-6,
             atol=1e-5,
             rtol=1e-3,
@@ -152,22 +154,16 @@ class TestLossGradientOracle:
         "loss_fn", [chamfer_distance, squared_loss], ids=["chamfer", "squared"]
     )
     def test_grad_finite_at_coincident_points(self, loss_fn):
-        """pred == target is a boundary (zero pairwise distance) — grad must stay finite.
-
-        ``chamfer`` selects a zero-distance nearest neighbour whose Euclidean
-        ``.norm()`` gradient is the classic 0/0 kink. The torch implementation
-        currently returns a *finite* subgradient here (unlike its JAX twin,
-        which NaNs — see ``TestTorchJaxGradientParity``). This locks that in:
-        a regression to a NaN gradient at coincident clouds fails loudly.
-        """
+        """Both input gradients are finite and zero at coincident clouds."""
         rng = np.random.default_rng(11)
         pred = torch.tensor(
             rng.standard_normal((6, 3)) + 0.3, dtype=torch.float64, requires_grad=True
         )
-        target = pred.detach().clone()  # exactly coincident
-        loss_fn(pred, target).backward()
-        assert pred.grad is not None
-        assert torch.isfinite(pred.grad).all(), "non-finite gradient at pred == target"
+        target = pred.detach().clone().requires_grad_()
+        grads = torch.autograd.grad(loss_fn(pred, target), (pred, target))
+        for grad in grads:
+            assert torch.isfinite(grad).all()
+            torch.testing.assert_close(grad, torch.zeros_like(grad))
 
 
 # ---------------------------------------------------------------------------
@@ -448,13 +444,15 @@ class TestTorchJaxGradientParity:
 
         pred_np, target_np = self._inputs(seed=4)
         pred = torch.tensor(pred_np, requires_grad=True)
-        chamfer_distance(pred, torch.tensor(target_np)).backward()
-        torch_grad = pred.grad.numpy()
-
-        jax_grad = np.asarray(
-            jax.grad(lambda p: jax_chamfer(p, jnp.asarray(target_np)))(jnp.asarray(pred_np))
+        target = torch.tensor(target_np, requires_grad=True)
+        torch_grads = torch.autograd.grad(chamfer_distance(pred, target), (pred, target))
+        jax_grads = jax.grad(jax_chamfer, argnums=(0, 1))(
+            jnp.asarray(pred_np), jnp.asarray(target_np)
         )
-        np.testing.assert_allclose(torch_grad, jax_grad, rtol=2e-4, atol=1e-5)
+        for torch_grad, jax_grad in zip(torch_grads, jax_grads, strict=True):
+            np.testing.assert_allclose(
+                torch_grad.numpy(), np.asarray(jax_grad), rtol=2e-4, atol=1e-5
+            )
 
     def test_squared_loss_gradient_matches_jax(self):
         jax = pytest.importorskip("jax")
@@ -466,13 +464,15 @@ class TestTorchJaxGradientParity:
         pred_np = (rng.standard_normal((6, 3)) + 0.3).astype(np.float32)
         target_np = (rng.standard_normal((6, 3)) - 0.2).astype(np.float32)
         pred = torch.tensor(pred_np, requires_grad=True)
-        squared_loss(pred, torch.tensor(target_np)).backward()
-        torch_grad = pred.grad.numpy()
-
-        jax_grad = np.asarray(
-            jax.grad(lambda p: jax_squared(p, jnp.asarray(target_np)))(jnp.asarray(pred_np))
+        target = torch.tensor(target_np, requires_grad=True)
+        torch_grads = torch.autograd.grad(squared_loss(pred, target), (pred, target))
+        jax_grads = jax.grad(jax_squared, argnums=(0, 1))(
+            jnp.asarray(pred_np), jnp.asarray(target_np)
         )
-        np.testing.assert_allclose(torch_grad, jax_grad, rtol=2e-4, atol=1e-5)
+        for torch_grad, jax_grad in zip(torch_grads, jax_grads, strict=True):
+            np.testing.assert_allclose(
+                torch_grad.numpy(), np.asarray(jax_grad), rtol=2e-4, atol=1e-5
+            )
 
     def test_jax_chamfer_gradient_finite_at_coincident_points(self):
         jax = pytest.importorskip("jax")
@@ -482,7 +482,7 @@ class TestTorchJaxGradientParity:
 
         rng = np.random.default_rng(11)
         pred_np = (rng.standard_normal((6, 3)) + 0.3).astype(np.float32)
-        grad = np.asarray(
-            jax.grad(lambda p: jax_chamfer(p, jnp.asarray(pred_np)))(jnp.asarray(pred_np))
-        )
-        assert np.isfinite(grad).all(), "non-finite JAX chamfer gradient at pred == target"
+        grads = jax.grad(jax_chamfer, argnums=(0, 1))(jnp.asarray(pred_np), jnp.asarray(pred_np))
+        for grad in grads:
+            assert np.isfinite(grad).all()
+            np.testing.assert_array_equal(np.asarray(grad), np.zeros_like(pred_np))

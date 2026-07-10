@@ -27,6 +27,10 @@ class TestSquaredLoss:
         assert pred.grad is not None
         assert pred.grad.abs().sum() > 0
 
+    def test_rejects_broadcasting(self):
+        with pytest.raises(ValueError, match="same shape"):
+            squared_loss(torch.zeros(1, 3), torch.zeros(4, 3))
+
     def test_gradient_through_gns(self):
         """Squared loss gradients flow through GNS to all parameters."""
         gns = GNS(
@@ -58,12 +62,11 @@ class TestChamferDistance:
         x = torch.randn(20, 3)
         assert chamfer_distance(x, x).item() == pytest.approx(0.0, abs=1e-6)
 
-    def test_symmetric(self):
-        a = torch.randn(15, 3)
-        b = torch.randn(15, 3)
-        assert chamfer_distance(a, b).item() == pytest.approx(
-            chamfer_distance(b, a).item(), abs=1e-5
-        )
+    def test_symmetric_with_different_counts(self):
+        a = torch.tensor([[0.0, 0.0, 0.0]])
+        b = torch.tensor([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        assert chamfer_distance(a, b).item() == pytest.approx(1.0)
+        assert chamfer_distance(b, a).item() == pytest.approx(1.0)
 
     def test_different_counts(self):
         """Chamfer distance works with different N and M."""
@@ -113,6 +116,20 @@ class TestChamferDistance:
         # dist = 5.0, chamfer = (5 + 5) / 1 = 10.0
         assert chamfer_distance(pred, target).item() == pytest.approx(10.0, abs=1e-5)
 
+    @pytest.mark.parametrize(
+        "pred_shape,target_shape,message",
+        [
+            ((3,), (3,), "rank-2"),
+            ((0, 3), (2, 3), "nonempty"),
+            ((2, 3), (0, 3), "nonempty"),
+            ((2, 0), (2, 0), "nonempty"),
+            ((2, 2), (2, 3), "feature width"),
+        ],
+    )
+    def test_rejects_invalid_cloud_shapes(self, pred_shape, target_shape, message):
+        with pytest.raises(ValueError, match=message):
+            chamfer_distance(torch.zeros(pred_shape), torch.zeros(target_shape))
+
 
 class TestMakeSamplesLoss:
     def test_default_returns_sinkhorn(self):
@@ -120,6 +137,7 @@ class TestMakeSamplesLoss:
         assert loss_fn.loss == "sinkhorn"
         assert loss_fn.p == 2
         assert loss_fn.blur == pytest.approx(0.05)
+        assert loss_fn.truncate == 5
         assert loss_fn.debias is True
 
     def test_override_via_dict(self):
@@ -135,6 +153,21 @@ class TestMakeSamplesLoss:
     def test_kwargs_override_dict(self):
         loss_fn = make_samples_loss({"blur": 0.1}, blur=0.2)
         assert loss_fn.blur == pytest.approx(0.2)
+
+    @pytest.mark.parametrize(
+        "params,kwargs",
+        [({"truncate": None}, {}), (None, {"truncate": None})],
+    )
+    def test_explicit_none_is_forwarded(self, params, kwargs):
+        assert make_samples_loss(params, **kwargs).truncate is None
+
+    def test_unknown_options_raise(self):
+        with pytest.raises(TypeError) as exc_info:
+            make_samples_loss({"zeta": 1}, alpha=2)
+        assert str(exc_info.value) == "Unknown SamplesLoss parameters: alpha, zeta"
+
+    def test_hausdorff_explicit_none_uses_energy_kernel(self):
+        assert callable(make_samples_loss(loss="hausdorff", kernel=None).kernel)
 
     @pytest.mark.parametrize(
         "loss_name", ["sinkhorn", "hausdorff", "energy", "gaussian", "laplacian"]
@@ -173,3 +206,4 @@ class TestMakeSamplesLoss:
             "backend",
         }
         assert set(SAMPLES_LOSS_DEFAULTS.keys()) == expected_keys
+        assert SAMPLES_LOSS_DEFAULTS["truncate"] == 5

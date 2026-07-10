@@ -3,6 +3,7 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from waxmorph.jax.mlp import MLP
@@ -44,6 +45,23 @@ def test_mlp_batched_input(key):
 def test_mlp_invalid_activation(key):
     with pytest.raises(ValueError, match="Unknown activation"):
         MLP(input_dim=5, output_dim=3, activation="invalid", key=key)
+
+
+@pytest.mark.parametrize("num_layers", [True, False, 1.0, 2.5, "2", None])
+def test_mlp_rejects_non_integer_depth(num_layers, key):
+    with pytest.raises(TypeError, match="non-boolean integer"):
+        MLP(input_dim=5, output_dim=3, num_layers=num_layers, key=key)
+
+
+@pytest.mark.parametrize("num_layers", [0, -1])
+def test_mlp_rejects_nonpositive_depth(num_layers, key):
+    with pytest.raises(ValueError, match="at least 1"):
+        MLP(input_dim=5, output_dim=3, num_layers=num_layers, key=key)
+
+
+def test_mlp_accepts_numpy_integer_depth(key):
+    mlp = MLP(input_dim=5, output_dim=3, num_layers=np.int64(2), layer_norm=False, key=key)
+    assert len(mlp.net.layers) == 2
 
 
 @pytest.mark.parametrize("activation", ["relu", "silu", "gelu", "tanh"])

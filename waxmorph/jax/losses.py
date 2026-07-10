@@ -52,6 +52,9 @@ def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
     Returns:
         Scalar squared Frobenius norm.
 
+    Raises:
+        ValueError: If the input shapes differ.
+
     See Also:
         waxmorph.torch.losses.squared_loss: PyTorch twin with identical
             semantics.
@@ -62,7 +65,29 @@ def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
         >>> print(float(squared_loss(x, y)))
         1.0
     """
+    if X_pred.shape != X_target.shape:
+        raise ValueError(
+            f"squared_loss requires the same shape, got "
+            f"{tuple(X_pred.shape)} and {tuple(X_target.shape)}"
+        )
     return jnp.sum((X_pred - X_target) ** 2)
+
+
+def _validate_chamfer_inputs(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> None:
+    pred_shape = tuple(X_pred.shape)
+    target_shape = tuple(X_target.shape)
+    if len(pred_shape) != 2 or len(target_shape) != 2:
+        raise ValueError(
+            f"chamfer_distance requires rank-2 inputs, got {pred_shape} and {target_shape}"
+        )
+    if X_pred.size == 0 or X_target.size == 0:
+        raise ValueError(
+            f"chamfer_distance requires nonempty inputs, got {pred_shape} and {target_shape}"
+        )
+    if pred_shape[1] != target_shape[1]:
+        raise ValueError(
+            f"chamfer_distance requires equal feature width, got {pred_shape} and {target_shape}"
+        )
 
 
 def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
@@ -82,10 +107,8 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
 
     .. math::
 
-        \mathcal{L} = \frac{1}{N} \left[
-        \sum_i \min_j \lVert X^f_i - X^T_j \rVert
-        + \sum_j \min_i \lVert X^f_i - X^T_j \rVert
-        \right]
+        \mathcal{L} = \frac{1}{N}\sum_i \min_j \lVert X^f_i - X^T_j \rVert
+        + \frac{1}{M}\sum_j \min_i \lVert X^f_i - X^T_j \rVert
 
     Args:
         X_pred: Predicted positions with shape ``[N, 3]``.
@@ -93,7 +116,10 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
             from ``N``.
 
     Returns:
-        Scalar two-sided Chamfer distance normalized by ``N``.
+        Sum of the two directional mean nearest-neighbor distances.
+
+    Raises:
+        ValueError: If either cloud is empty or not rank 2, or feature widths differ.
 
     See Also:
         waxmorph.torch.losses.chamfer_distance: PyTorch twin with identical
@@ -107,19 +133,11 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
         >>> print(float(chamfer_distance(x, y)))
         1.0
     """
-    # [N, M]
+    _validate_chamfer_inputs(X_pred, X_target)
     diff = X_pred[:, None, :] - X_target[None, :, :]
     sq = jnp.sum(diff * diff, axis=-1)
     dist = jnp.where(sq > 0.0, jnp.sqrt(jnp.where(sq > 0.0, sq, 1.0)), 0.0)
-
-    # pred -> target: for each predicted point, nearest target
-    min_pred_to_target = dist.min(axis=1).sum()
-
-    # target -> pred: for each target point, nearest predicted
-    min_target_to_pred = dist.min(axis=0).sum()
-
-    n = X_pred.shape[0]
-    return (min_pred_to_target + min_target_to_pred) / n
+    return dist.min(axis=1).mean() + dist.min(axis=0).mean()
 
 
 def make_sinkhorn_loss(
