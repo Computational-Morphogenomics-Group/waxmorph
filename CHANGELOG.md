@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Torch and JAX graph builders now reject invalid geometry, particle counts, feature shapes,
   and edge indices.
 - PyVista categorical points ignore morphogen length and reject short polarity arrays.
+- Torch and JAX trainers validate configurations and convert states and targets to contiguous
+  float32 before device or checkpoint setup.
 
 ## [0.1.0] 2026-07-03
 

@@ -15,6 +15,7 @@ import numpy as np
 import optax
 from tqdm import trange
 
+from waxmorph._train_core import _prepare_training_inputs
 from waxmorph.constants import EPS_POLARITY
 from waxmorph.jax.gnn import GNS as JaxGNS
 from waxmorph.jax.graph import (
@@ -229,21 +230,6 @@ def _resolve_jax_device(device: str, *, require_cuda: bool) -> jax.Device:
             raise RuntimeError("JAX/Warp differentiable physics requires a JAX GPU backend.")
 
     return jax.devices("cpu")[0]
-
-
-def _validate_finite_numpy(name: str, arr: np.ndarray) -> None:
-    finite_mask = np.isfinite(arr)
-    if finite_mask.all():
-        return
-
-    bad_indices = np.argwhere(~finite_mask)
-    first_bad = tuple(int(i) for i in bad_indices[0])
-    bad_value = arr[first_bad]
-    raise ValueError(
-        f"Non-finite values detected in {name} before training: "
-        f"total_bad={(~finite_mask).sum()}, first_bad_index={first_bad}, "
-        f"first_bad_value={bad_value!r}"
-    )
 
 
 def _validate_finite_array(name: str, array: jax.Array, *, rollout_step: int, phase: str) -> None:
@@ -1345,6 +1331,8 @@ def train(
     collect-then-replay design (see
     :func:`_collect_topologies_and_trajectory`) so the dynamic neighbor graph
     fits JAX's static-shape compilation.
+    State and target arrays are converted to C-contiguous ``float32``; state
+    arrays must share a nonzero particle axis.
 
     Args:
         model: Equinox Graph Network Simulator model.
@@ -1353,7 +1341,8 @@ def train(
         loss_fn: Shape loss function mapping predicted positions with shape
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.
-        polarities: Initial polarity vectors with shape ``[N, 3]``.
+        polarities: Initial unit polarity vectors with shape ``[N, 3]``. They
+            are not normalized by this function.
         c: Initial signaling-molecule concentrations with shape ``[N, num_molecules]``.
         radii: Particle radii with shape ``[N]``.
         targets: ``(frame, positions)`` supervision pairs. Frame indices are
@@ -1376,10 +1365,10 @@ def train(
         ``log`` keys.
 
     Raises:
+        TypeError: If config types, array dtypes, or target frames are invalid.
         RuntimeError: If Warp-backed differentiable physics is requested on a
             device where JAX cannot provide a GPU backend.
-        ValueError: If targets are missing, duplicated, out of range, or contain
-            non-finite values.
+        ValueError: If config bounds, state arrays, radii, or targets are invalid.
 
     See Also:
         waxmorph.torch.train.train: PyTorch parity backend, which is the default
@@ -1390,16 +1379,9 @@ def train(
     if config is None:
         config = TrainConfig()
 
-    if config.n_epochs < 1:
-        raise ValueError(f"config.n_epochs must be >= 1, got {config.n_epochs}.")
-
-    if targets is None:
-        raise ValueError("train() requires `targets`.")
-
-    _validate_finite_numpy("source_pos", source_pos)
-    _validate_finite_numpy("polarities", polarities)
-    _validate_finite_numpy("c", c)
-    _validate_finite_numpy("radii", radii)
+    source_pos, polarities, c, radii, targets = _prepare_training_inputs(
+        config, source_pos, polarities, c, radii, targets
+    )
 
     N = len(source_pos)
     jax_device = _resolve_jax_device(device, require_cuda=_uses_warp_bridge(config))
@@ -1418,14 +1400,8 @@ def train(
 
     targets_by_frame: dict[int, jax.Array] = {}
     for frame, pos in targets:
-        frame_int = int(frame)
-        if not (0 <= frame_int < config.t_rollout):
-            raise ValueError(f"Target frame {frame_int} outside [0, {config.t_rollout}).")
-        if frame_int in targets_by_frame:
-            raise ValueError(f"Duplicate target frame {frame_int}.")
-        _validate_finite_numpy(f"targets[frame={frame_int}]", pos)
         with jax.default_device(jax_device):
-            targets_by_frame[frame_int] = jnp.asarray(pos, dtype=jnp.float32)
+            targets_by_frame[frame] = jnp.asarray(pos, dtype=jnp.float32)
 
     losses_total = []
     losses_shape = []

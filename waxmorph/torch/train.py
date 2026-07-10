@@ -14,6 +14,7 @@ import torch
 import warp as wp
 from tqdm import trange
 
+from waxmorph._train_core import _prepare_training_inputs
 from waxmorph.constants import EPS_POLARITY, HASH_GRID_DIM
 from waxmorph.torch.gnn import GNS
 from waxmorph.torch.graph import build_graph
@@ -140,22 +141,6 @@ class TrainResult:
 
     model: Any
     log: dict
-
-
-def _validate_finite_numpy(name: str, arr: np.ndarray) -> None:
-    """Fail fast on invalid host inputs before training starts."""
-    finite_mask = np.isfinite(arr)
-    if finite_mask.all():
-        return
-
-    bad_indices = np.argwhere(~finite_mask)
-    first_bad = tuple(int(i) for i in bad_indices[0])
-    bad_value = arr[first_bad]
-    raise ValueError(
-        f"Non-finite values detected in {name} before training: "
-        f"total_bad={(~finite_mask).sum()}, first_bad_index={first_bad}, "
-        f"first_bad_value={bad_value!r}"
-    )
 
 
 def _validate_finite_tensor(
@@ -432,13 +417,16 @@ def train(
     soft-sphere mechanics and graph diffusion on top so the trajectory stays
     biophysically coherent. Optimizes ``L = L_shape + lambda_reg * L_reg`` with
     the supplied optimizer (typically AdamW), tracking the best-loss epoch.
+    State and target arrays are converted to C-contiguous ``float32``; state
+    arrays must share a nonzero particle axis.
 
     Args:
         model: Graph Network Simulator model.
         loss_fn: Shape loss function mapping predicted positions with shape
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.
-        polarities: Initial polarity vectors with shape ``[N, 3]``.
+        polarities: Initial unit polarity vectors with shape ``[N, 3]``. They
+            are not normalized by this function.
         c: Initial signaling-molecule concentrations with shape ``[N, num_molecules]``.
         radii: Particle radii with shape ``[N]``.
         targets: ``(frame, positions)`` supervision pairs. Frame indices are
@@ -462,8 +450,8 @@ def train(
         ``log`` keys.
 
     Raises:
-        ValueError: If targets are missing, duplicated, out of range, or contain
-            non-finite values.
+        TypeError: If config types, array dtypes, or target frames are invalid.
+        ValueError: If config bounds, state arrays, radii, or targets are invalid.
 
     See Also:
         waxmorph.jax.train.train: JAX/Equinox parity backend. The torch path is
@@ -474,45 +462,27 @@ def train(
     if config is None:
         config = TrainConfig()
 
-    if config.n_epochs < 1:
-        raise ValueError(f"config.n_epochs must be >= 1, got {config.n_epochs}.")
+    source_pos, polarities, c, radii, targets = _prepare_training_inputs(
+        config, source_pos, polarities, c, radii, targets
+    )
 
-    if targets is None:
-        raise ValueError("train() requires `targets`.")
-
-    _validate_finite_numpy("source_pos", source_pos)
-    _validate_finite_numpy("polarities", polarities)
-    _validate_finite_numpy("c", c)
-    _validate_finite_numpy("radii", radii)
-
-    # Detect devices
     wp_device = device
     torch_device = torch.device(device)
     model = model.to(torch_device)
 
     N = len(source_pos)
-    max_particles = N
 
-    # Checkpoint detection
     if save_path is not None and os.path.exists(save_path):
         model = GNS.load(save_path, map_location=torch_device).to(torch_device)
         config = dataclasses.replace(config, n_epochs=1)
 
-    # Warp scratch buffers
-    f_net = wp.zeros(max_particles, dtype=wp.vec3f, device=wp_device)
+    f_net = wp.zeros(N, dtype=wp.vec3f, device=wp_device)
     R_t = torch.from_numpy(radii.copy()).to(torch_device)
     R_wp = wp.from_numpy(radii.copy(), dtype=wp.float32, device=wp_device)
 
-    # Per-frame target tensors (device-resident)
     targets_by_frame: dict[int, torch.Tensor] = {}
     for frame, pos in targets:
-        frame_int = int(frame)
-        if not (0 <= frame_int < config.t_rollout):
-            raise ValueError(f"Target frame {frame_int} outside [0, {config.t_rollout}).")
-        if frame_int in targets_by_frame:
-            raise ValueError(f"Duplicate target frame {frame_int}.")
-        _validate_finite_numpy(f"targets[frame={frame_int}]", pos)
-        targets_by_frame[frame_int] = torch.from_numpy(pos).to(torch_device)
+        targets_by_frame[frame] = torch.from_numpy(pos).to(torch_device)
 
     X_source_t = torch.from_numpy(source_pos).to(torch_device)
 
