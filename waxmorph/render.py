@@ -253,21 +253,21 @@ class PyVistaInterface(RenderInterface):
         *,
         cell_types: np.ndarray | None = None,
     ) -> pv.PolyData:
-        """
-        Build a point-cloud PolyData with per-point arrays:
-          - 'radius' (float)
-          - 'rgb'    (uint8[3])    (from morphogens OR cell_types override)
-          - 'polarity' (float[3]) optional
-          - 'cell_type' (int) optional
+        """Build points with ``radius``, ``rgb``, and optional state arrays.
+
+        ``cell_types`` overrides morphogen colors. Polarity vectors are normalized for
+        direction-only arrow glyphs.
         """
         c = np.asarray(centers, dtype=float)
         r = np.asarray(radii, dtype=float).reshape(-1)
-        m = np.asarray(morphogens, dtype=float).reshape(-1)
+        if cell_types is None:
+            color_values = np.asarray(morphogens, dtype=float).reshape(-1)
+        else:
+            color_values = np.asarray(cell_types).reshape(-1)
 
-        # clamp n to the shortest input so per-point arrays stay aligned
         if n is None:
             n = len(c)
-        n = min(n, len(c), len(r), len(m))
+        n = min(n, len(c), len(r), len(color_values))
 
         pts = c[:n]
         rad = r[:n]
@@ -275,29 +275,26 @@ class PyVistaInterface(RenderInterface):
         _require_pyvista()
 
         if cell_types is not None:
-            ct = np.asarray(cell_types).reshape(-1)
-            n = min(n, len(ct))
-            pts = pts[:n]
-            rad = rad[:n]
-            rgb = PyVistaInterface._rgb_from_categories(ct[:n])
+            rgb = PyVistaInterface._rgb_from_categories(color_values[:n])
         else:
-            rgb = PyVistaInterface._rgb_from_morph(m[:n])
+            rgb = PyVistaInterface._rgb_from_morph(color_values[:n])
 
         pd = pv.PolyData(pts)
         pd["radius"] = rad
-        pd["rgb"] = rgb  # used with rgb=True
+        pd["rgb"] = rgb
 
-        # Optional: store the category itself (handy for picking/inspection)
         if cell_types is not None:
-            pd["cell_type"] = np.asarray(cell_types).reshape(-1)[:n].astype(np.int32, copy=False)
+            pd["cell_type"] = color_values[:n].astype(np.int32, copy=False)
 
         if polarities is not None:
             p = np.asarray(polarities, dtype=float)
             if p.ndim != 2 or p.shape[1] != 3:
                 raise ValueError(f"polarities must have shape (N,3); got {p.shape}")
+            if len(p) < n:
+                raise ValueError(f"polarities has {len(p)} rows but {n} points are rendered")
             p = p[:n]
 
-            # unit-normalize so arrow glyphs encode direction only, not magnitude
+            # Glyph length is configured separately; normalize directions here.
             norms = np.linalg.norm(p, axis=1, keepdims=True)
             p = p / np.clip(norms, 1e-12, None)
 

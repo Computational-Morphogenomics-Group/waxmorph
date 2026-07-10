@@ -151,6 +151,63 @@ class TestPyVistaHelpers:
         )
         assert "cell_type" in pd.array_names
 
+    def test_cell_types_ignore_short_morphogens(self, small_state):
+        n = 7
+        cell_types = small_state["cell_types"].copy()
+        cell_types[n:] = 9
+        expected_types = cell_types[:n].astype(np.int32)
+        for morphogens in (small_state["morphogens"][:2], None, object()):
+            pd = render.PyVistaInterface._points_polydata(
+                small_state["centers"],
+                small_state["radii"],
+                morphogens,
+                n=n,
+                cell_types=cell_types,
+            )
+
+            assert pd.n_points == n
+            assert pd["cell_type"].dtype == np.int32
+            assert pd["rgb"].dtype == np.uint8
+            np.testing.assert_array_equal(pd.points, small_state["centers"][:n])
+            np.testing.assert_array_equal(pd["radius"], small_state["radii"][:n])
+            np.testing.assert_array_equal(pd["cell_type"], expected_types)
+            np.testing.assert_array_equal(
+                pd["rgb"], render.PyVistaInterface._rgb_from_categories(expected_types)
+            )
+
+    def test_morphogens_limit_points_without_cell_types(self, small_state):
+        pd = render.PyVistaInterface._points_polydata(
+            small_state["centers"],
+            small_state["radii"],
+            small_state["morphogens"][:3],
+            n=small_state["n"],
+        )
+
+        assert pd.n_points == 3
+
+    def test_cell_types_limit_points(self, small_state):
+        cell_types = small_state["cell_types"][:4]
+        pd = render.PyVistaInterface._points_polydata(
+            small_state["centers"],
+            small_state["radii"],
+            small_state["morphogens"],
+            n=small_state["n"],
+            cell_types=cell_types,
+        )
+
+        assert pd.n_points == 4
+        np.testing.assert_array_equal(pd["cell_type"], cell_types.astype(np.int32))
+
+    def test_points_polydata_rejects_short_polarities(self, small_state):
+        with pytest.raises(ValueError, match=r"polarities.*7"):
+            render.PyVistaInterface._points_polydata(
+                small_state["centers"],
+                small_state["radii"],
+                small_state["morphogens"],
+                polarities=small_state["polarities"][:3],
+                n=7,
+            )
+
     def test_glyph_spheres(self, small_state):
         pd = render.PyVistaInterface._points_polydata(
             small_state["centers"],
