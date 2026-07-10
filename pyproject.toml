@@ -27,6 +27,10 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=1.24",
+  "scipy>=1.11",
+  "torch>=2",
+  "tqdm>=4.66",
+  "warp-lang>=1.10",
 ]
 optional-dependencies.all = [
   "waxmorph[dev,docs,jax,learning,simulation]",
@@ -61,7 +65,6 @@ optional-dependencies.jax-cuda = [
 optional-dependencies.learning = [
   "geomloss>=0.2.6",
   "pykeops>=2.1",
-  "torch>=2",
   "waxmorph[simulation]",
 ]
 # ---------------------------------------------------------------------------
@@ -73,11 +76,9 @@ optional-dependencies.simulation = [
   "matplotlib>=3.8",
   "pyglet>=2",
   "pyvista>=0.44",
-  "scipy>=1.11",
-  "tqdm>=4.66",
   "trimesh>=4",
+  "usd-core",
   "vtk>=9.3",
-  "warp-lang>=1.5",
 ]
 urls.Documentation = "https://waxmorph.readthedocs.io"
 urls.Issues = "https://github.com/Computational-Morphogenomics-Group/waxmorph/issues"

@@ -50,6 +50,9 @@ The base package:
 pip install waxmorph
 ```
 
+This installs the default PyTorch API, Warp runtime, SciPy graph construction,
+and training progress support.
+
 The forward simulation and PyTorch learning workflow:
 
 ```bash
@@ -80,8 +83,7 @@ pre-commit install
 The simulation kernels and the principal movie-rendering paths are implemented
 on NVIDIA Warp and are intended to run on CUDA. The graph and data utilities are
 available on CPU, but the full examples are GPU-oriented. USD export relies on
-Warp's USD renderer; where that backend is unavailable, a USD Python package
-such as `usd-core` or `usd-exchange` is required.
+Warp's USD renderer; the `simulation` extra installs `usd-core` for that path.
 
 ## Quickstart: mesh-to-mesh shape assembly
 

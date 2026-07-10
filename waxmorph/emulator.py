@@ -602,12 +602,3 @@ def diffusion_step_differentiable(
         )
 
     return c_out
-
-
-# Clear Warp's compiled-kernel caches at import time so the kernels above are
-# (re)generated against the current Warp version and constants. This guards
-# against stale cached binaries silently shadowing edits to the kernel sources
-# or to shared values in waxmorph.constants. (LTO cache first, then the kernel
-# cache.) The simulator twin performs the same import-time clear.
-wp.clear_lto_cache()
-wp.clear_kernel_cache()

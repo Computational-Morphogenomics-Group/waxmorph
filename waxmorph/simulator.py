@@ -1834,9 +1834,3 @@ def division_logic_mes_polarity(
     sep = 1.02 * r
     X[parent] = x + u * sep
     X[child] = x - u * sep
-
-
-# Reload signal
-wp.clear_kernel_cache()
-if hasattr(wp, "clear_lto_cache"):
-    wp.clear_lto_cache()

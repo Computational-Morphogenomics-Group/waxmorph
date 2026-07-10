@@ -7,7 +7,8 @@ Install the base package with pip:
 
    pip install waxmorph
 
-Extras gate the heavier dependencies; pick the combination for your workflow.
+The base install includes the default PyTorch API, Warp runtime, SciPy graph
+construction, and training progress support. Extras add the following workflows.
 
 Run the forward simulator and the PyTorch learning stack:
 
@@ -40,12 +41,12 @@ What each extra pulls in
 ------------------------
 
 ``simulation``
-   NVIDIA Warp, PyVista, and trimesh — the forward simulator and the principal
+   PyVista, trimesh, VTK, OpenGL support, and ``usd-core`` — mesh processing and
    movie-rendering paths.
 
 ``learning``
-   PyTorch, GeomLoss, and pykeops — the default graph-network backend and its
-   optimal-transport losses.
+   GeomLoss and PyKeOps — optional optimal-transport losses for the default
+   PyTorch backend.
 
 ``jax``
    JAX, Equinox, Optax, and ott-jax — the parity backend.
@@ -62,5 +63,5 @@ examples are GPU-oriented.
 
 .. note::
 
-   USD export uses Warp's USD renderer; where that backend is unavailable,
-   install a USD Python package such as ``usd-core`` or ``usd-exchange``.
+   USD export uses Warp's USD renderer and the ``usd-core`` package installed by
+   the ``simulation`` extra.
