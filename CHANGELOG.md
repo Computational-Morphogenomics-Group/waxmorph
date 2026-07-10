@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Mechanics now preserves values and identity gradients for rows beyond `particle_count`.
 - Diffusion kernels no longer accept unused positions or radii; public signatures and
   Torch/JAX results are unchanged.
+- Torch and JAX graph builders now reject invalid geometry, particle counts, feature shapes,
+  and edge indices.
 
 ## [0.1.0] 2026-07-03
 

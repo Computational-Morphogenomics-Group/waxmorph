@@ -12,7 +12,11 @@ import jax.numpy as jnp
 import numpy as np
 import warp as wp
 
-from .._graph_core import build_edge_index_np
+from .._graph_core import (
+    _active_particle_count,
+    _validate_feature_shapes,
+    build_edge_index_np,
+)
 from ..constants import EPS_DIST, EPS_NORM
 
 ANGLE_EPS = 1e-6
@@ -20,9 +24,10 @@ ANGLE_EPS = 1e-6
 
 def _slice_active(arr, particle_count: int):
     """Slice inputs down to active particles when a count is provided."""
+    active = _active_particle_count(particle_count, array=arr)
     if particle_count <= 0:
         return arr
-    return arr[:particle_count]
+    return arr[:active]
 
 
 def _wp_to_jax(arr: wp.array, particle_count: int) -> jax.Array:
@@ -74,7 +79,7 @@ def build_edge_index(
         R: Radius array with shape ``[N]``.
         particle_count: Number of active particles. Non-positive values use
             the full arrays.
-        eps_dist: Contact buffer matching ``simulator.EPS_DIST``.
+        eps_dist: Contact buffer distance.
         max_edges: Optional output capacity. If provided, padding entries use
             sender ``0`` and receiver ``0`` so shapes stay static across JIT
             calls.
@@ -101,8 +106,9 @@ def build_edge_index(
         >>> print(edge_index.tolist(), int(num_edges))
         [[0, 1], [1, 0]] 2
     """
-    pos = _snapshot_numpy(X, particle_count).astype(np.float32, copy=False)
-    rad = _snapshot_numpy(R, particle_count).astype(np.float32, copy=False)
+    active = _active_particle_count(particle_count, positions=X, radii=R)
+    pos = _snapshot_numpy(X, active).astype(np.float32, copy=False)
+    rad = _snapshot_numpy(R, active).astype(np.float32, copy=False)
 
     senders, receivers = build_edge_index_np(pos, rad, eps_dist)
 
@@ -153,7 +159,9 @@ def build_node_features(
         >>> print(build_node_features(c, 3).tolist())
         [[0.20000000298023224], [0.4000000059604645], [0.800000011920929]]
     """
-    c = _as_jax(c, particle_count).astype(jnp.float32)
+    active = _active_particle_count(particle_count, concentrations=c)
+    c = _as_jax(c, active).astype(jnp.float32)
+    _validate_feature_shapes(active, concentrations=c)
     if c.ndim == 1:
         c = c[..., None]
     return c
@@ -178,13 +186,9 @@ def build_edge_features(
         d_{ij} = \lVert x_i - x_j \rVert_2, \qquad
         \theta_{ij} = \arccos\!\left( p_i^\top p_j \right).
 
-    The polarity angle is used in place of the raw polarity vectors because it
-    is a rotation-invariant relative-orientation signal between neighbors:
-    rotating the whole tissue leaves every pairwise angle unchanged, so the
-    learned update rule sees the geometry of how two cells' polarities relate
-    rather than their absolute frame. ``cos`` is clamped to
-    ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` before :func:`jax.numpy.arccos` to keep
-    the gradient finite at the antiparallel/parallel endpoints.
+    ``P`` must contain unit vectors because the raw dot product is not
+    normalized. Clamping to ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` keeps the
+    :func:`jax.numpy.arccos` gradient finite at parallel and antiparallel inputs.
 
     Args:
         X: Position array with shape ``[N, 3]``.
@@ -207,8 +211,24 @@ def build_edge_features(
         >>> print(jnp.round(build_edge_features(X, P, edge_index, 2), 4).tolist())
         [[1.0, 0.00139999995008111], [1.0, 0.00139999995008111]]
     """
-    pos = _as_jax(X, particle_count).astype(jnp.float32)
-    pol = _as_jax(P, particle_count).astype(jnp.float32)
+    active = _active_particle_count(particle_count, positions=X, polarities=P)
+    pos = _as_jax(X, active).astype(jnp.float32)
+    pol = _as_jax(P, active).astype(jnp.float32)
+    edge_index = jnp.asarray(edge_index)
+    _validate_feature_shapes(active, positions=pos, polarities=pol, edge_index=edge_index)
+    if not jnp.issubdtype(edge_index.dtype, jnp.integer):
+        raise TypeError("edge_index must have an integer dtype.")
+    # Traced training topologies are validated before JIT; eager public inputs are checked here.
+    try:
+        concrete_edges = np.asarray(jax.device_get(edge_index))
+    except jax.errors.TracerArrayConversionError:
+        concrete_edges = None
+    if (
+        concrete_edges is not None
+        and concrete_edges.size
+        and (concrete_edges.min() < 0 or concrete_edges.max() >= active)
+    ):
+        raise ValueError(f"edge_index values must lie in [0, {active}).")
 
     senders = edge_index[0]
     receivers = edge_index[1]
@@ -252,7 +272,7 @@ def build_graph(
         R: Radius array with shape ``[N]``.
         particle_count: Number of active particles. Non-positive values use
             the full arrays.
-        c: Signaling-molecule concentration array.
+        c: Required signaling-molecule concentration array.
         eps_dist: Contact buffer distance.
         max_edges: Optional capacity passed to :func:`build_edge_index`.
 
@@ -275,7 +295,23 @@ def build_graph(
         >>> print([tuple(a.shape) for a in out[:3]], int(out[3]))
         [(3, 1), (2, 2), (2, 2)] 2
     """
-    edge_index, num_edges = build_edge_index(X, R, particle_count, eps_dist, max_edges)
-    node_features = build_node_features(c, particle_count)
-    edge_features = build_edge_features(X, P, edge_index, particle_count)
+    if c is None:
+        raise TypeError("build_graph() requires `c`.")
+    active = _active_particle_count(
+        particle_count,
+        positions=X,
+        polarities=P,
+        radii=R,
+        concentrations=c,
+    )
+    edge_index, num_edges = build_edge_index(X, R, active, eps_dist, max_edges)
+    node_features = build_node_features(c, active)
+    if active == 0 and edge_index.shape[1]:
+        # Padding refers to node 0, which does not exist in an empty graph.
+        pos = _as_jax(X, active).astype(jnp.float32)
+        pol = _as_jax(P, active).astype(jnp.float32)
+        _validate_feature_shapes(active, positions=pos, polarities=pol)
+        edge_features = jnp.zeros((edge_index.shape[1], 2), dtype=jnp.float32)
+    else:
+        edge_features = build_edge_features(X, P, edge_index, active)
     return node_features, edge_index, edge_features, num_edges
