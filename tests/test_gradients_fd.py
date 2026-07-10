@@ -357,6 +357,27 @@ class TestWarpBridgeGradientOracle:
     """
 
     @pytest.mark.parametrize("device", DEVICES)
+    def test_warp_mech_step_inactive_tail_has_identity_vjp(self, device):
+        positions = torch.tensor(
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [7.0, -3.0, 1.0]],
+            dtype=torch.float32,
+            device=device,
+            requires_grad=True,
+        )
+        radii = wp.full(3, value=0.5, dtype=wp.float32, device=device)
+        f_net = wp.zeros(3, dtype=wp.vec3f, device=device, requires_grad=True)
+        cotangent = torch.tensor(
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.4, -0.7, 1.2]],
+            dtype=torch.float32,
+            device=device,
+        )
+
+        output = WarpMechStep.apply(positions, radii, 2, 0.0, f_net, None)
+        (output * cotangent).sum().backward()
+
+        torch.testing.assert_close(positions.grad, cotangent, rtol=1e-5, atol=1e-6)
+
+    @pytest.mark.parametrize("device", DEVICES)
     def test_warp_mech_step_grad_matches_fd(self, device):
         rng = np.random.default_rng(0)
         n = _BRIDGE_N
@@ -418,6 +439,44 @@ class TestWarpBridgeGradientOracle:
 
         maxrel = _max_directional_rel_error(fwd, c0.ravel(), grad, h=1e-3, seed=2)
         assert maxrel < 2e-2, f"WarpDiffusionStep VJP vs FD rel err {maxrel:.2e} (f32 smoke)"
+
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_warp_diffusion_step_matches_linear_oracle(self, device):
+        positions = np.array(
+            [[0.0, 0.0, 0.0], [0.9, 0.0, 0.0], [1.8, 0.0, 0.0], [10.0, 0.0, 0.0]],
+            dtype=np.float32,
+        )
+        concentrations = torch.tensor(
+            [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
+            dtype=torch.float32,
+            device=device,
+            requires_grad=True,
+        )
+        cotangent = torch.tensor(
+            [[0.2, -0.3], [0.5, 0.7], [-0.4, 0.9], [1.1, -0.8]],
+            dtype=torch.float32,
+            device=device,
+        )
+        operator = torch.tensor(
+            [
+                [0.9, 0.1, 0.0, 0.0],
+                [0.1, 0.8, 0.1, 0.0],
+                [0.0, 0.1, 0.9, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=torch.float32,
+            device=device,
+        )
+        X = wp.array(positions, dtype=wp.vec3f, device=device)
+        R = wp.full(4, value=0.5, dtype=wp.float32, device=device)
+
+        output = WarpDiffusionStep.apply(concentrations, X, R, 3, 0.5, 0.2, None)
+        (output * cotangent).sum().backward()
+
+        torch.testing.assert_close(output, operator @ concentrations, rtol=1e-5, atol=1e-6)
+        torch.testing.assert_close(
+            concentrations.grad, operator.T @ cotangent, rtol=1e-5, atol=1e-6
+        )
 
 
 # ---------------------------------------------------------------------------

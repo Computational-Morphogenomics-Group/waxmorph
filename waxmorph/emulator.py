@@ -312,8 +312,6 @@ def _build_neighbor_pairs_dynamic(
 
 @wp.kernel
 def _molecule_diffusion_laplacian_from_pairs(
-    X: wp.array(dtype=wp.vec3f),
-    R: wp.array(dtype=wp.float32),
     c: wp.array2d(dtype=wp.float32),
     edges_i: wp.array(dtype=wp.int32),
     edges_j: wp.array(dtype=wp.int32),
@@ -344,8 +342,6 @@ def _molecule_diffusion_laplacian_from_pairs(
     reshaped the neighbour graph.
 
     Args:
-        X: Agent positions (unused here; topology is carried by the pairs).
-        R: Agent radii (unused here; present for launch-signature symmetry).
         c: Concentration field, shape ``[N, num_molecules]``.
         edges_i: Lower endpoints of the frozen pairs.
         edges_j: Upper endpoints of the frozen pairs.
@@ -450,9 +446,10 @@ def mech_step_sticky_differentiable(
             recorded.
         X: Position array, shape ``[N, 3]``; the differentiated input.
         R: Radius array, length ``N`` (constant; defines contact range).
-        particle_count: Number of active particles.
+        particle_count: Number of active particles; inactive rows pass through
+            unchanged with identity gradients.
         dt: Mechanics Euler step size (friction folded in).
-        f_net: Scratch net-force buffer, zeroed and grad-enabled here.
+        f_net: Length-``N`` scratch net-force buffer, zeroed and grad-enabled here.
         grid: Optional reusable :class:`warp.HashGrid`; one is allocated when
             ``None``.
 
@@ -501,7 +498,7 @@ def mech_step_sticky_differentiable(
             )
         wp.launch(
             _gd_update,
-            dim=particle_count,
+            dim=X.shape[0],
             inputs=[X, f_net, dt],
             outputs=[X_out],
             device=device,
@@ -589,7 +586,7 @@ def diffusion_step_differentiable(
             wp.launch(
                 _molecule_diffusion_laplacian_from_pairs,
                 dim=num_edges,
-                inputs=[X, R, c, edges_i[:num_edges], edges_j[:num_edges]],
+                inputs=[c, edges_i[:num_edges], edges_j[:num_edges]],
                 outputs=[lap_c],
                 device=device,
             )

@@ -1,6 +1,7 @@
 """Tests for the simplified emulator kernels."""
 
 import numpy as np
+import pytest
 import warp as wp
 
 from waxmorph.emulator import (
@@ -17,6 +18,8 @@ try:
         DEVICE = "cuda"
 except RuntimeError:
     DEVICE = "cpu"
+
+DEVICES = ["cpu"] + (["cuda"] if DEVICE == "cuda" else [])
 
 
 def _make_cluster(positions, radii, num_molecules=2):
@@ -76,3 +79,18 @@ class TestDifferentiableNeighborPairOverflow:
         g_after = c_out.numpy()
         assert g_after.shape == (n, 2)
         assert np.isfinite(g_after).all()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_mechanics_preserves_inactive_tail(device):
+    positions = np.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [7.0, -3.0, 1.0], [-4.0, 2.0, 5.0]],
+        dtype=np.float32,
+    )
+    X = wp.array(positions, dtype=wp.vec3f, device=device)
+    R = wp.full(4, value=0.5, dtype=wp.float32, device=device)
+    f_net = wp.zeros(4, dtype=wp.vec3f, device=device)
+
+    X_out = mech_step_sticky_differentiable(wp.Tape(), X, R, particle_count=1, dt=0.0, f_net=f_net)
+
+    np.testing.assert_allclose(X_out.numpy(), positions, rtol=1e-5, atol=1e-6)

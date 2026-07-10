@@ -568,7 +568,6 @@ def _native_warp_mech_step(
 
 
 def _native_warp_diffusion_step(
-    X_wp,
     c_wp,
     pair_i_wp,
     pair_j_wp,
@@ -590,7 +589,7 @@ def _native_warp_diffusion_step(
         wp.launch(
             _molecule_diffusion_laplacian_from_pairs,
             dim=num_pairs,
-            inputs=[X_wp, ctx.R_wp, c_wp, pair_i_wp[:num_pairs], pair_j_wp[:num_pairs]],
+            inputs=[c_wp, pair_i_wp[:num_pairs], pair_j_wp[:num_pairs]],
             outputs=[ctx.lap_c],
             device=ctx.device,
         )
@@ -853,7 +852,6 @@ def _collect_topologies_and_trajectory(
             for _ in range(config.diff_steps):
                 diff_pairs.append(pairs)
                 c_wp = _native_warp_diffusion_step(
-                    X_wp,
                     c_wp,
                     pair_i_wp,
                     pair_j_wp,
