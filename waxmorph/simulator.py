@@ -21,6 +21,8 @@ See Also:
         the soft-sphere force and graph-Laplacian diffusion.
 """
 
+from math import isfinite as _isfinite
+
 import warp as wp
 
 from .constants import EPS_DEN, EPS_NORM, FOUR_THIRDS_PI, HASH_GRID_DIM, RAND_EPS
@@ -1481,7 +1483,7 @@ def growth_step(
     device: str = "cuda",
     grad_consist: bool = True,
 ) -> None:
-    r"""Dispatch one activator-driven growth update for all particles.
+    r"""Dispatch one bounded growth update for all particles.
 
     Launches :func:`growth_step_inner`, which advances the mesenchymal Hill
     growth rule for the equilibrium radius and relaxes the physical radius toward
@@ -1497,7 +1499,9 @@ def growth_step(
     with :math:`\lambda_{\mathrm{ref},i}\sim\mathcal{U}(0.8, 1)` drawn per step,
     :math:`\ell_{\mathrm{sw}}` = ``ell_sw``, and
     :math:`\alpha_{\mathrm{grow}}` = ``alpha_grow``. Epithelial cells
-    instead relax deterministically toward ``R_ref``.
+    instead relax deterministically toward ``R_ref``. Physical radii advance
+    only while below their target and cannot overshoot it. Mesenchymal
+    equilibrium radii are capped at ``R_max``; epithelial values are copied.
 
     Args:
         R: Physical-radius array, shape ``(N,)``.
@@ -1509,7 +1513,7 @@ def growth_step(
         ell_sw: Single-element array holding the growth Hill switch concentration.
         dt: Growth Euler step :math:`\Delta t_{\mathrm{grow}}`.
         R_ref: Epithelial reference radius for deterministic relaxation.
-        R_max: Cap applied to the equilibrium radius before growth.
+        R_max: Upper bound for mesenchymal equilibrium radii.
         particle_count: Number of active particles.
         R_next: Output physical radii, shape ``(N,)``.
         R_eq_next: Output equilibrium radii, shape ``(N,)``.
@@ -1518,7 +1522,18 @@ def growth_step(
 
     Returns:
         None. Results are written in place to ``R_next`` and ``R_eq_next``.
+
+    Raises:
+        ValueError: If ``dt`` or ``R_max`` is negative or non-finite, or
+            ``R_ref`` is nonpositive or non-finite.
     """
+    if not _isfinite(dt) or dt < 0:
+        raise ValueError("dt must be finite and nonnegative")
+    if not _isfinite(R_max) or R_max < 0:
+        raise ValueError("R_max must be finite and nonnegative")
+    if not _isfinite(R_ref) or R_ref <= 0:
+        raise ValueError("R_ref must be finite and positive")
+
     wp.launch(
         growth_step_inner,
         dim=particle_count,
@@ -1555,7 +1570,8 @@ def growth_step_inner(
 
     # Mesenchyme: activator-driven growth of the target (equilibrium) radius.
     if CT[i] == wp.uint32(0):
-        r_i_0, r_eq_i = R[i], wp.min(R_eq[i], R_max)
+        r_i = R[i]
+        target = wp.min(R_eq[i], R_max)
 
         V = volume_from_radius(R[i])
         num = safe_div(A[i], V) ** alpha_grow[0]
@@ -1566,14 +1582,23 @@ def growth_step_inner(
         # Hill switch on activator concentration (half-max at ell_sw)
         frac = safe_div(num, (ell_sw[0] ** alpha_grow[0]) + num)
 
-        R_eq_next[i] = r_eq_i + frac * lam * dt
-        R_next[i] = r_i_0 + ((1.0 - safe_div(r_i_0, r_eq_i)) ** 2.0) * dt  # relax r -> r_eq
+        R_eq_next[i] = wp.min(target + frac * lam * dt, R_max)
+        if target > 0.0 and r_i < target:
+            increment = ((1.0 - safe_div(r_i, target)) ** 2.0) * dt
+            R_next[i] = wp.min(r_i + increment, target)
+        else:
+            R_next[i] = r_i
         keys[i] = key
 
     # Epithelium: deterministic relaxation toward the reference radius R_ref.
     if CT[i] == wp.uint32(1):
-        r_i_1 = R[i]
-        R_next[i] = r_i_1 + ((1.0 - safe_div(r_i_1, R_ref)) ** 2.0) * dt
+        r_i = R[i]
+        R_eq_next[i] = R_eq[i]
+        if R_ref > 0.0 and r_i < R_ref:
+            increment = ((1.0 - safe_div(r_i, R_ref)) ** 2.0) * dt
+            R_next[i] = wp.min(r_i + increment, R_ref)
+        else:
+            R_next[i] = r_i
 
 
 @wp.func
@@ -1617,6 +1642,19 @@ def st_gumbel_softmax_bernoulli(
     return key, s_straight, s
 
 
+@wp.func
+def _reserve_division_slot(
+    div_count: wp.array(dtype=wp.int32), max_particles: wp.int32
+) -> wp.int32:
+    current = div_count[0]
+    while current < max_particles:
+        observed = wp.atomic_cas(div_count, wp.int32(0), current, current + wp.int32(1))
+        if observed == current:
+            return current
+        current = observed
+    return wp.int32(-1)
+
+
 @wp.kernel
 def division_decision(
     X: wp.array(dtype=wp.vec3f),
@@ -1648,8 +1686,6 @@ def division_decision(
     unique child slot via an atomic counter (capped at ``max_particles``).
     """
     parent = wp.tid()
-    # Position is currently not used directly by this decision kernel.
-    _ = X[parent]
 
     key = keys[parent]
 
@@ -1676,11 +1712,8 @@ def division_decision(
     if s_hard == wp.int32(0):
         return
 
-    # Reserve child slot (unique)
-    child = wp.atomic_add(div_count, 0, 1)
-
-    if wp.int32(child) >= wp.int32(max_particles):
-        print("capacity exceeded")
+    child = _reserve_division_slot(div_count, max_particles)
+    if child < wp.int32(0):
         return
 
     div_slots[parent] = child

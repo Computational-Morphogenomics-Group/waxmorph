@@ -1,6 +1,7 @@
 """Tests for the full Warp simulator (mechanics, chemistry, growth, division)."""
 
 import numpy as np
+import pytest
 import warp as wp
 
 from waxmorph import simulator
@@ -14,6 +15,8 @@ try:
         DEVICE = "cuda"
 except RuntimeError:
     DEVICE = "cpu"
+
+WARP_DEVICES = ["cpu"] + (["cuda"] if DEVICE == "cuda" else [])
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,6 +101,15 @@ def _sphere_state(
         "n_mes": n_mes,
         "n_epi": n_epi,
     }
+
+
+@wp.kernel(enable_backward=False)
+def _reserve_division_slots(
+    div_count: wp.array(dtype=wp.int32),
+    max_particles: wp.int32,
+    div_slots: wp.array(dtype=wp.int32),
+) -> None:
+    div_slots[wp.tid()] = simulator._reserve_division_slot(div_count, max_particles)
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +351,146 @@ class TestChemStep:
 # ---------------------------------------------------------------------------
 
 
+def _growth_boundary_state(device):
+    return {
+        "R": wp.array([1.2, 0.5, 1.0, 1.2, 0.5, 1.0], dtype=wp.float32, device=device),
+        "R_eq": wp.array([0.8, 1.0, 1.0, 0.7, 0.8, 0.9], dtype=wp.float32, device=device),
+        "A": wp.ones(6, dtype=wp.float32, device=device),
+        "CT": wp.array([0, 0, 0, 1, 1, 1], dtype=wp.uint32, device=device),
+        "keys": simulator.gen_key_array(6, device=device),
+        "alpha_grow": wp.ones(1, dtype=wp.float32, device=device),
+        "ell_sw": wp.full(1, value=0.1, dtype=wp.float32, device=device),
+        "R_next": wp.full(6, value=-99.0, dtype=wp.float32, device=device),
+        "R_eq_next": wp.full(6, value=-99.0, dtype=wp.float32, device=device),
+    }
+
+
+def _run_boundary_growth(s, dt, R_ref=1.0, R_max=1.0, device="cpu"):
+    simulator.growth_step(
+        s["R"],
+        s["R_eq"],
+        s["A"],
+        s["CT"],
+        s["keys"],
+        s["alpha_grow"],
+        s["ell_sw"],
+        dt,
+        R_ref,
+        R_max,
+        6,
+        s["R_next"],
+        s["R_eq_next"],
+        device=device,
+        grad_consist=False,
+    )
+
+
 class TestGrowthStep:
+    @pytest.mark.parametrize("device", WARP_DEVICES)
+    @pytest.mark.parametrize(
+        "dt,expected_r,expected_r_eq",
+        [
+            (
+                0.0,
+                [1.2, 0.5, 1.0, 1.2, 0.5, 1.0],
+                [0.8, 1.0, 1.0, 0.7, 0.8, 0.9],
+            ),
+            (
+                10.0,
+                [1.2, 1.0, 1.0, 1.2, 1.0, 1.0],
+                [1.0, 1.0, 1.0, 0.7, 0.8, 0.9],
+            ),
+        ],
+        ids=["zero-step", "large-step"],
+    )
+    def test_growth_is_bounded_and_writes_separate_outputs(
+        self, device, dt, expected_r, expected_r_eq
+    ):
+        s = _growth_boundary_state(device)
+        r_before = s["R"].numpy().copy()
+        r_eq_before = s["R_eq"].numpy().copy()
+        keys_before = s["keys"].numpy().copy()
+
+        _run_boundary_growth(s, dt, device=device)
+
+        np.testing.assert_allclose(s["R_next"].numpy(), expected_r, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(s["R_eq_next"].numpy(), expected_r_eq, rtol=1e-5, atol=1e-6)
+        np.testing.assert_array_equal(s["R"].numpy(), r_before)
+        np.testing.assert_array_equal(s["R_eq"].numpy(), r_eq_before)
+        keys_after = s["keys"].numpy()
+        assert np.all(keys_after[:3] != keys_before[:3])
+        np.testing.assert_array_equal(keys_after[3:], keys_before[3:])
+
+    @pytest.mark.parametrize("device", WARP_DEVICES)
+    def test_mesenchymal_rate_distribution(self, device):
+        n = 4096
+        radius = 0.5
+        dt = 0.01
+        R = wp.full(n, value=radius, dtype=wp.float32, device=device)
+        R_eq = wp.full(n, value=radius, dtype=wp.float32, device=device)
+        A = wp.ones(n, dtype=wp.float32, device=device)
+        CT = wp.zeros(n, dtype=wp.uint32, device=device)
+        keys = simulator.gen_key_array(n, device=device)
+        alpha_grow = wp.ones(1, dtype=wp.float32, device=device)
+        ell_sw = wp.full(1, value=0.1, dtype=wp.float32, device=device)
+        R_next = wp.empty_like(R)
+        R_eq_next = wp.empty_like(R_eq)
+
+        simulator.growth_step(
+            R,
+            R_eq,
+            A,
+            CT,
+            keys,
+            alpha_grow,
+            ell_sw,
+            dt,
+            1.0,
+            2.0,
+            n,
+            R_next,
+            R_eq_next,
+            device=device,
+            grad_consist=False,
+        )
+
+        volume = simulator.FOUR_THIRDS_PI * radius**3
+        concentration = 1.0 / (volume + simulator.EPS_DEN)
+        fraction = concentration / (0.1 + concentration + simulator.EPS_DEN)
+        rates = (R_eq_next.numpy() - radius) / (fraction * dt)
+        standard_error = (0.2 / np.sqrt(12.0)) / np.sqrt(n)
+        assert rates.min() >= 0.8 - 1e-5
+        assert rates.max() <= 1.0 + 1e-5
+        assert rates.mean() == pytest.approx(0.9, abs=3 * standard_error)
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("dt", -1.0),
+            ("dt", np.nan),
+            ("dt", np.inf),
+            ("R_max", -1.0),
+            ("R_max", np.nan),
+            ("R_max", np.inf),
+            ("R_ref", 0.0),
+            ("R_ref", -1.0),
+            ("R_ref", np.nan),
+            ("R_ref", np.inf),
+        ],
+    )
+    def test_growth_rejects_invalid_scalars_before_launch(self, name, value):
+        s = _growth_boundary_state("cpu")
+        scalars = {"dt": 0.1, "R_ref": 1.0, "R_max": 1.0}
+        scalars[name] = value
+        keys_before = s["keys"].numpy().copy()
+
+        with pytest.raises(ValueError, match=name):
+            _run_boundary_growth(s, **scalars)
+
+        np.testing.assert_array_equal(s["R_next"].numpy(), np.full(6, -99.0))
+        np.testing.assert_array_equal(s["R_eq_next"].numpy(), np.full(6, -99.0))
+        np.testing.assert_array_equal(s["keys"].numpy(), keys_before)
+
     def test_radii_increase(self):
         """Mesenchymal cells with activator should grow."""
         s = _sphere_state(30, 60)
@@ -465,7 +616,44 @@ class TestCountNeighbors:
 # ---------------------------------------------------------------------------
 
 
+def _reservation_result(device, initial, capacity, threads):
+    div_count = wp.full(1, value=initial, dtype=wp.int32, device=device)
+    div_slots = wp.full(threads, value=-1, dtype=wp.int32, device=device)
+    wp.launch(
+        _reserve_division_slots,
+        dim=threads,
+        inputs=[div_count, capacity, div_slots],
+        device=device,
+    )
+    wp.synchronize_device(device)
+    return int(div_count.numpy()[0]), div_slots.numpy()
+
+
 class TestDivision:
+    @pytest.mark.parametrize("device", WARP_DEVICES)
+    @pytest.mark.parametrize(
+        "initial,capacity,expected",
+        [(17, 17, []), (9, 17, list(range(9, 17)))],
+        ids=["full", "multiple-free"],
+    )
+    def test_reservation_is_bounded_and_unique(self, device, initial, capacity, expected):
+        count, slots = _reservation_result(device, initial, capacity, threads=256)
+        accepted = slots[slots >= 0]
+        assert count == capacity
+        assert sorted(accepted.tolist()) == expected
+        assert len(accepted) == len(np.unique(accepted))
+        assert np.all(slots[slots < 0] == -1)
+
+    @pytest.mark.parametrize("device", WARP_DEVICES)
+    def test_one_free_slot_under_contention(self, device):
+        repetitions = 20 if device.startswith("cuda") else 1
+        for _ in range(repetitions):
+            count, slots = _reservation_result(device, 16, 17, threads=4096)
+            accepted = slots[slots >= 0]
+            assert count == 17
+            np.testing.assert_array_equal(accepted, [16])
+            assert np.count_nonzero(slots == -1) == 4095
+
     def test_division_increases_count(self):
         """Running division should produce new particles."""
         s = _sphere_state(50, 200, radius=0.6)
@@ -551,10 +739,11 @@ class TestDivision:
             device=DEVICE,
         )
 
-        new_count = min(div_count.numpy().item(), s["max_particles"])
-        assert (
-            new_count >= pcount
-        ), f"Expected division to produce new particles. Before: {pcount}, after: {new_count}"
+        accepted = np.count_nonzero(div_slots.numpy() >= 0)
+        new_count = div_count.numpy().item()
+        assert accepted > 0
+        assert new_count == pcount + accepted
+        assert new_count <= s["max_particles"]
 
     def test_division_conserves_chemicals(self):
         """Division should split activator/inhibitor evenly (mass conserved)."""
@@ -644,6 +833,8 @@ class TestDivision:
             device=DEVICE,
         )
 
+        assert np.count_nonzero(div_slots.numpy() >= 0) > 0
+
         a_total_after = s["A"].numpy().sum()
         i_total_after = s["I"].numpy().sum()
 
@@ -655,21 +846,11 @@ class TestDivision:
         """Division should not exceed max_particles."""
         max_p = 25
         s = _sphere_state(20, max_p, radius=1.2)
+        s["CT"].fill_(0)
         keys = simulator.gen_key_array(max_p, device=DEVICE)
-
-        n_tot = wp.zeros(max_p, dtype=wp.int32, device=DEVICE)
+        keys_before = keys.numpy().copy()
         n_epi = wp.zeros(max_p, dtype=wp.int32, device=DEVICE)
         n_mes = wp.zeros(max_p, dtype=wp.int32, device=DEVICE)
-        simulator.count_neighbors_step(
-            s["X"],
-            s["R"],
-            s["CT"],
-            s["particle_count"],
-            n_tot,
-            n_epi,
-            n_mes,
-            device=DEVICE,
-        )
 
         pcount = s["particle_count"]
         div_count = wp.full(1, value=pcount, dtype=wp.int32, device=DEVICE)
@@ -698,8 +879,14 @@ class TestDivision:
             device=DEVICE,
         )
 
-        new_count = min(div_count.numpy().item(), max_p)
+        slots = div_slots.numpy()
+        accepted_slots = slots[slots >= 0]
+        new_count = div_count.numpy().item()
+        assert new_count == pcount + len(accepted_slots)
         assert new_count <= max_p
+        assert len(accepted_slots) == len(np.unique(accepted_slots))
+        assert np.all((accepted_slots >= pcount) & (accepted_slots < max_p))
+        assert np.all(keys.numpy()[:pcount] != keys_before[:pcount])
 
 
 # ---------------------------------------------------------------------------
