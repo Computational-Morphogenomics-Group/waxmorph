@@ -220,7 +220,6 @@ class TestGNSSaveLoad:
             torch.testing.assert_close(out_orig[key], out_loaded[key])
 
     def test_save_load_preserves_config(self, tmp_path):
-        """Loaded model has the same architecture config."""
         gns = GNS(
             node_feature_dim=5,
             edge_feature_dim=3,
@@ -234,14 +233,67 @@ class TestGNSSaveLoad:
             layer_norm=False,
             checkpoint_processor=True,
         )
+        expected_config = {
+            "node_feature_dim": 5,
+            "edge_feature_dim": 3,
+            "node_latent_dim": 64,
+            "edge_latent_dim": 48,
+            "hidden_dim": 64,
+            "num_mp_steps": 7,
+            "num_mlp_layers": 3,
+            "output_dims": {"dX": 3},
+            "activation": "gelu",
+            "layer_norm": False,
+            "checkpoint_processor": True,
+        }
+        assert gns._constructor_config() == expected_config
+
         path = tmp_path / "model.pt"
         gns.save(path)
+        payload = torch.load(path, weights_only=False, map_location="cpu")
         gns2 = GNS.load(path)
 
+        assert list(payload) == ["config", "state_dict"]
+        assert list(payload["config"]) == list(expected_config)
+        assert payload["config"] == expected_config
+        assert gns2._constructor_config() == expected_config
         assert len(gns2.processor) == 7
         assert gns2.checkpoint_processor is True
         assert gns2.node_encoder.activation_name == "gelu"
         assert list(gns2.decoders.keys()) == ["dX"]
+
+    def test_save_load_preserves_depth_one_config(self, tmp_path):
+        gns = GNS(
+            node_feature_dim=4,
+            edge_feature_dim=6,
+            node_latent_dim=5,
+            edge_latent_dim=7,
+            hidden_dim=13,
+            num_mp_steps=0,
+            num_mlp_layers=1,
+            activation="tanh",
+            checkpoint_processor=True,
+        )
+        expected_config = {
+            "node_feature_dim": 4,
+            "edge_feature_dim": 6,
+            "node_latent_dim": 5,
+            "edge_latent_dim": 7,
+            "hidden_dim": 13,
+            "num_mp_steps": 0,
+            "num_mlp_layers": 1,
+            "output_dims": {"dX": 3, "dP": 3, "dc": 2},
+            "activation": "tanh",
+            "layer_norm": True,
+            "checkpoint_processor": True,
+        }
+        path = tmp_path / "model.pt"
+
+        gns.save(path)
+        loaded = GNS.load(path)
+
+        assert gns._constructor_config() == expected_config
+        assert loaded._constructor_config() == expected_config
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for memory test")

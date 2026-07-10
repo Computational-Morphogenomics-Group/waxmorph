@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - PyVista categorical points ignore morphogen length and reject short polarity arrays.
 - Torch and JAX trainers validate configurations and convert states and targets to contiguous
   float32 before device or checkpoint setup.
+- Torch checkpoint refinement preserves model and optimizer bindings, rejects incompatible
+  architectures, and clears stale optimizer state.
 
 ## [0.1.0] 2026-07-03
 

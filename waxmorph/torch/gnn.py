@@ -230,54 +230,34 @@ class GNS(nn.Module):
             }
         )
 
+    def _constructor_config(self) -> dict[str, object]:
+        def output_dim(mlp: MLP) -> int:
+            last_layer = mlp.net[-1]
+            if isinstance(last_layer, nn.Linear):
+                return last_layer.out_features
+            return last_layer.normalized_shape[0]
+
+        return {
+            "node_feature_dim": self.node_encoder.net[0].in_features,
+            "edge_feature_dim": self.edge_encoder.net[0].in_features,
+            "node_latent_dim": output_dim(self.node_encoder),
+            "edge_latent_dim": output_dim(self.edge_encoder),
+            "hidden_dim": self._hidden_dim,
+            "num_mp_steps": len(self.processor),
+            "num_mlp_layers": sum(
+                isinstance(module, nn.Linear) for module in self.node_encoder.net
+            ),
+            "output_dims": {name: output_dim(decoder) for name, decoder in self.decoders.items()},
+            "activation": self.node_encoder.activation_name,
+            "layer_norm": any(isinstance(module, nn.LayerNorm) for module in self.node_encoder.net),
+            "checkpoint_processor": self.checkpoint_processor,
+        }
+
     def save(self, path: str | Path) -> None:
-        """Save model config and weights to a single file with :func:`torch.save`.
-
-        The constructor config is not stored on the instance; it is reconstructed
-        here by introspecting the encoder/processor/decoder layer widths (input and
-        output features, block count, presence of LayerNorm). This keeps the
-        checkpoint self-describing so :meth:`load` can rebuild the architecture
-        without the original keyword arguments.
-
-        Args:
-            path: Destination file path for the combined config + state-dict blob.
-
-        See Also:
-            :meth:`waxmorph.jax.gnn.GNS.save`: JAX/Equinox parity twin (writes
-            weights plus a sidecar ``path.json`` config instead of one file).
-        """
+        """Save constructor configuration and weights in one :func:`torch.save` file."""
         torch.save(
             {
-                "config": {
-                    "node_feature_dim": self.node_encoder.net[0].in_features,
-                    "edge_feature_dim": self.edge_encoder.net[0].in_features,
-                    "node_latent_dim": (
-                        self.node_encoder.net[-1].out_features
-                        if isinstance(self.node_encoder.net[-1], nn.Linear)
-                        else self.node_encoder.net[-1].normalized_shape[0]
-                    ),
-                    "edge_latent_dim": (
-                        self.edge_encoder.net[-1].out_features
-                        if isinstance(self.edge_encoder.net[-1], nn.Linear)
-                        else self.edge_encoder.net[-1].normalized_shape[0]
-                    ),
-                    "hidden_dim": self._hidden_dim,
-                    "num_mp_steps": len(self.processor),
-                    "num_mlp_layers": len(
-                        [m for m in self.node_encoder.net if isinstance(m, nn.Linear)]
-                    ),
-                    "output_dims": {
-                        name: (
-                            dec.net[-1].out_features
-                            if isinstance(dec.net[-1], nn.Linear)
-                            else dec.net[-1].normalized_shape[0]
-                        )
-                        for name, dec in self.decoders.items()
-                    },
-                    "activation": self.node_encoder.activation_name,
-                    "layer_norm": any(isinstance(m, nn.LayerNorm) for m in self.node_encoder.net),
-                    "checkpoint_processor": self.checkpoint_processor,
-                },
+                "config": self._constructor_config(),
                 "state_dict": self.state_dict(),
             },
             path,

@@ -437,11 +437,10 @@ def train(
             unique.
         config: Training hyperparameters. Defaults to
             :class:`waxmorph.torch.train.TrainConfig`.
-        save_path: Optional path where the best model and log are saved. If the
-            path already exists it is treated as a checkpoint to resume from:
-            the model is loaded and ``config.n_epochs`` is forced to ``1`` (a
-            single refinement/inference pass), and no file is overwritten on
-            exit. Saving happens only when ``save_path`` did not already exist.
+        save_path: New paths receive the best model and log. An existing trusted
+            GNS checkpoint must match the supplied model. Its weights load into
+            that object, prior optimizer state is discarded, and one refinement
+            update runs without overwriting existing model or log files.
         device: Warp and :class:`torch.device` string such as ``"cuda"`` or
             ``"cpu"``.
 
@@ -451,7 +450,8 @@ def train(
 
     Raises:
         TypeError: If config types, array dtypes, or target frames are invalid.
-        ValueError: If config bounds, state arrays, radii, or targets are invalid.
+        ValueError: If config bounds, state arrays, radii, targets, or checkpoint
+            architecture are invalid.
 
     See Also:
         waxmorph.jax.train.train: JAX/Equinox parity backend. The torch path is
@@ -468,13 +468,28 @@ def train(
 
     wp_device = device
     torch_device = torch.device(device)
-    model = model.to(torch_device)
-
     N = len(source_pos)
 
     if save_path is not None and os.path.exists(save_path):
-        model = GNS.load(save_path, map_location=torch_device).to(torch_device)
+        checkpoint_model = GNS.load(save_path, map_location=torch_device).to(torch_device)
+        model_config = model._constructor_config()
+        checkpoint_config = checkpoint_model._constructor_config()
+        mismatches = [
+            name for name, value in model_config.items() if checkpoint_config[name] != value
+        ]
+        if mismatches:
+            details = ", ".join(
+                f"{name} (model={model_config[name]!r}, checkpoint={checkpoint_config[name]!r})"
+                for name in mismatches
+            )
+            raise ValueError(f"Incompatible checkpoint GNS configuration: {details}.")
+        model = model.to(torch_device)
+        model.load_state_dict(checkpoint_model.state_dict())
+        optimizer.state.clear()
+        del checkpoint_model
         config = dataclasses.replace(config, n_epochs=1)
+    else:
+        model = model.to(torch_device)
 
     f_net = wp.zeros(N, dtype=wp.vec3f, device=wp_device)
     R_t = torch.from_numpy(radii.copy()).to(torch_device)
