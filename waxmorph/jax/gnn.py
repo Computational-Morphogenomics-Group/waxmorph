@@ -365,6 +365,5 @@ class GNS(eqx.Module):
         path = Path(path)
         with open(str(path) + ".json") as f:
             config = json.load(f)
-        # Need a dummy key to create the skeleton
         skeleton = cls(**config, key=jax.random.PRNGKey(0))
         return eqx.tree_deserialise_leaves(path, skeleton)

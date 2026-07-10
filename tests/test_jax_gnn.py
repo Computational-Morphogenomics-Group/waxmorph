@@ -1,5 +1,7 @@
 """Tests for the JAX/Equinox GNS architecture."""
 
+import json
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -324,7 +326,6 @@ class TestGNSSaveLoad:
             )
 
     def test_save_load_preserves_config(self, tmp_path, key):
-        """Loaded model has the same architecture config."""
         gns = GNS(
             node_feature_dim=5,
             edge_feature_dim=3,
@@ -339,10 +340,37 @@ class TestGNSSaveLoad:
             checkpoint_processor=True,
             key=key,
         )
+        expected_config = {
+            "node_feature_dim": 5,
+            "edge_feature_dim": 3,
+            "node_latent_dim": 64,
+            "edge_latent_dim": 48,
+            "hidden_dim": 64,
+            "num_mp_steps": 7,
+            "num_mlp_layers": 3,
+            "output_dims": {"dX": 3},
+            "activation": "gelu",
+            "layer_norm": False,
+            "checkpoint_processor": True,
+        }
         path = tmp_path / "model.eqx"
         gns.save(path)
+        assert {item.name for item in tmp_path.iterdir()} == {"model.eqx", "model.eqx.json"}
+        saved_config = json.loads((tmp_path / "model.eqx.json").read_text())
         gns2 = GNS.load(path)
 
+        assert gns._config == expected_config
+        assert list(saved_config) == list(expected_config)
+        assert saved_config == expected_config
+        assert gns2._config == expected_config
+        original_tree = eqx.filter(gns, eqx.is_array)
+        loaded_tree = eqx.filter(gns2, eqx.is_array)
+        assert jax.tree_util.tree_structure(original_tree) == jax.tree_util.tree_structure(
+            loaded_tree
+        )
+        assert [(leaf.shape, leaf.dtype) for leaf in jax.tree_util.tree_leaves(original_tree)] == [
+            (leaf.shape, leaf.dtype) for leaf in jax.tree_util.tree_leaves(loaded_tree)
+        ]
         assert len(gns2.processor) == 7
         assert gns2.checkpoint_processor is True
         assert gns2.node_encoder.activation_name == "gelu"

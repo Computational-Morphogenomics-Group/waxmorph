@@ -259,6 +259,42 @@ def _device_put_arrays(tree, device: jax.Device):
     )
 
 
+def _validate_checkpoint_model(model: JaxGNS, checkpoint_model: JaxGNS) -> None:
+    if model._config != checkpoint_model._config:
+        config_names = dict.fromkeys((*model._config, *checkpoint_model._config))
+        mismatches = [
+            name
+            for name in config_names
+            if name not in model._config
+            or name not in checkpoint_model._config
+            or model._config[name] != checkpoint_model._config[name]
+        ]
+        raise ValueError(
+            f"Incompatible checkpoint GNS configuration fields: {', '.join(mismatches)}."
+        )
+
+    model_tree = eqx.filter(model, eqx.is_array)
+    checkpoint_tree = eqx.filter(checkpoint_model, eqx.is_array)
+    if jax.tree_util.tree_structure(model_tree) != jax.tree_util.tree_structure(checkpoint_tree):
+        raise ValueError("Incompatible checkpoint GNS PyTree structure.")
+
+    model_leaves = _array_leaves(model_tree)
+    checkpoint_leaves = _array_leaves(checkpoint_tree)
+    for index, (model_leaf, checkpoint_leaf) in enumerate(
+        zip(model_leaves, checkpoint_leaves, strict=True)
+    ):
+        if model_leaf.shape != checkpoint_leaf.shape:
+            raise ValueError(
+                f"Incompatible checkpoint GNS leaf {index} shape: "
+                f"model={model_leaf.shape}, checkpoint={checkpoint_leaf.shape}."
+            )
+        if model_leaf.dtype != checkpoint_leaf.dtype:
+            raise ValueError(
+                f"Incompatible checkpoint GNS leaf {index} dtype: "
+                f"model={model_leaf.dtype}, checkpoint={checkpoint_leaf.dtype}."
+            )
+
+
 def _tree_all_finite(tree) -> jax.Array:
     leaves = _array_leaves(tree)
     if not leaves:
@@ -1337,7 +1373,8 @@ def train(
     Args:
         model: Equinox Graph Network Simulator model.
         optimizer: :class:`optax.GradientTransformation`.
-        opt_state: Optimizer state corresponding to ``model``.
+        opt_state: Optimizer state corresponding to ``model``. Existing
+            checkpoints discard it because they do not store optimizer state.
         loss_fn: Shape loss function mapping predicted positions with shape
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.
@@ -1353,11 +1390,11 @@ def train(
             unique.
         config: Training hyperparameters. Defaults to
             :class:`waxmorph.jax.train.TrainConfig`.
-        save_path: Optional path where the best model and log are saved. If the
-            path already exists it is treated as a checkpoint to resume from:
-            the model is loaded and ``config.n_epochs`` is forced to ``1`` (a
-            single refinement/inference pass), and no file is overwritten on
-            exit. Saving happens only when ``save_path`` did not already exist.
+        save_path: New paths receive the best model and log. An existing trusted
+            checkpoint must match the supplied GNS config, tree, shapes, and
+            dtypes. Its weights load on the requested device, optimizer state is
+            reinitialized, and one refinement update runs. The checkpoint pair
+            and any existing log remain unchanged.
         device: Device string such as ``"cuda"``, ``"cuda:0"``, or ``"cpu"``.
 
     Returns:
@@ -1368,7 +1405,8 @@ def train(
         TypeError: If config types, array dtypes, or target frames are invalid.
         RuntimeError: If Warp-backed differentiable physics is requested on a
             device where JAX cannot provide a GPU backend.
-        ValueError: If config bounds, state arrays, radii, or targets are invalid.
+        ValueError: If config bounds, state arrays, radii, targets, or checkpoint
+            structure are invalid.
 
     See Also:
         waxmorph.torch.train.train: PyTorch parity backend, which is the default
@@ -1385,18 +1423,24 @@ def train(
 
     N = len(source_pos)
     jax_device = _resolve_jax_device(device, require_cuda=_uses_warp_bridge(config))
+    if save_path is not None and os.path.exists(save_path):
+        with jax.default_device(jax_device):
+            checkpoint_model = JaxGNS.load(save_path)
+        _validate_checkpoint_model(model, checkpoint_model)
+        model = _device_put_arrays(checkpoint_model, jax_device)
+        with jax.default_device(jax_device):
+            opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+        opt_state = _device_put_arrays(opt_state, jax_device)
+        config = dataclasses.replace(config, n_epochs=1)
+    else:
+        model = _device_put_arrays(model, jax_device)
+        opt_state = _device_put_arrays(opt_state, jax_device)
+
     with jax.default_device(jax_device):
         X_source = jnp.asarray(source_pos, dtype=jnp.float32)
         P_source = jnp.asarray(polarities, dtype=jnp.float32)
         c_source = jnp.asarray(c, dtype=jnp.float32)
         R = jnp.asarray(radii, dtype=jnp.float32)
-
-    if save_path is not None and os.path.exists(save_path):
-        model = JaxGNS.load(save_path)
-        config = dataclasses.replace(config, n_epochs=1)
-
-    model = _device_put_arrays(model, jax_device)
-    opt_state = _device_put_arrays(opt_state, jax_device)
 
     targets_by_frame: dict[int, jax.Array] = {}
     for frame, pos in targets:

@@ -420,3 +420,234 @@ def test_train_rejects_missing_targets():
             config=config,
             device="cpu",
         )
+
+
+def _checkpoint_model(**overrides):
+    kwargs = {
+        "node_feature_dim": 2,
+        "edge_feature_dim": 2,
+        "node_latent_dim": 8,
+        "edge_latent_dim": 8,
+        "hidden_dim": 8,
+        "num_mp_steps": 1,
+        "num_mlp_layers": 2,
+        "output_dims": {"dX": 3, "dP": 3, "dc": 2},
+        "activation": "relu",
+        "layer_norm": True,
+        "checkpoint_processor": False,
+    }
+    kwargs.update(overrides)
+    return GNS(**kwargs, key=jax.random.PRNGKey(0))
+
+
+def _train_from_checkpoint(model, optimizer, opt_state, save_path, device="cpu"):
+    source_pos, polarities, c, radii = _minimal_inputs()
+    return jax_train_module.train(
+        model,
+        optimizer,
+        opt_state,
+        squared_loss,
+        source_pos=source_pos,
+        polarities=polarities,
+        c=c,
+        radii=radii,
+        targets=[(0, source_pos + 0.1)],
+        config=jax_train_module.TrainConfig(
+            n_epochs=4,
+            t_rollout=1,
+            mech_steps=0,
+            diff_steps=0,
+            lambda_reg=0.0,
+            grad_clip_norm=None,
+            log_every=10,
+        ),
+        save_path=save_path,
+        device=device,
+    )
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(not _has_jax_warp_cuda(), reason="JAX CUDA required"),
+        ),
+    ],
+)
+def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monkeypatch, device):
+    checkpoint_model = jax.tree.map(
+        lambda value: jnp.full_like(value, 0.05) if eqx.is_array(value) else value,
+        _checkpoint_model(),
+    )
+    checkpoint_arrays = [
+        np.asarray(jax.device_get(value)).copy()
+        for value in jax_train_module._array_leaves(checkpoint_model)
+    ]
+    checkpoint_path = tmp_path / "model.eqx"
+    checkpoint_model.save(checkpoint_path)
+    config_path = tmp_path / "model.eqx.json"
+    log_path = tmp_path / "model.eqx.log.npz"
+    log_path.write_bytes(b"existing log")
+    saved_bytes = {path: path.read_bytes() for path in (checkpoint_path, config_path, log_path)}
+
+    init_calls = []
+    init_state_platforms = []
+
+    def init_optimizer(params):
+        init_calls.append(params)
+        count = jnp.array(0, dtype=jnp.int32)
+        init_state_platforms.append(count.device.platform)
+        return {"count": count}
+
+    def unused_update(*_args, **_kwargs):
+        raise AssertionError("fake train step bypasses optimizer.update")
+
+    optimizer = optax.GradientTransformation(init_optimizer, unused_update)
+    stale_state = {"count": jnp.array(99, dtype=jnp.int32)}
+    source_pos, polarities, c, _ = _minimal_inputs()
+    collected_models = []
+    step_calls = []
+
+    def collect_topologies(*, model, **_kwargs):
+        collected_models.append(model)
+        trajectory = [
+            {"pos": source_pos.copy(), "pol": polarities.copy(), "c": c.copy()},
+            {"pos": source_pos.copy(), "pol": polarities.copy(), "c": c.copy()},
+        ]
+        return (object(),), trajectory
+
+    def make_train_step(**_kwargs):
+        def train_step(model, opt_state, *_args):
+            updated_model = jax.tree.map(
+                lambda value: value + 1e-3 if eqx.is_array(value) else value,
+                model,
+            )
+            step_calls.append((model, opt_state, updated_model))
+            first_leaf = jax_train_module._array_leaves(model)[0]
+
+            def scalar(value, dtype):
+                return jax.device_put(jnp.array(value, dtype=dtype), first_leaf.device)
+
+            return (
+                updated_model,
+                {"count": scalar(1, jnp.int32)},
+                scalar(1.0, jnp.float32),
+                scalar(1.0, jnp.float32),
+                scalar(0.0, jnp.float32),
+                scalar(1.0, jnp.float32),
+                scalar(True, jnp.bool_),
+                scalar(True, jnp.bool_),
+            )
+
+        return train_step
+
+    monkeypatch.setattr(jax_train_module, "_collect_topologies_and_trajectory", collect_topologies)
+    monkeypatch.setattr(jax_train_module, "_stack_topologies", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(jax_train_module, "_make_train_step", make_train_step)
+
+    result = _train_from_checkpoint(
+        _checkpoint_model(), optimizer, stale_state, checkpoint_path, device=device
+    )
+
+    assert len(init_calls) == 1
+    assert len(collected_models) == len(step_calls) == 1
+    expected_platform = "gpu" if device == "cuda" else "cpu"
+    assert init_state_platforms == [expected_platform]
+    assert {
+        value.device.platform for value in jax_train_module._array_leaves(collected_models[0])
+    } == {expected_platform}
+    assert {value.device.platform for value in jax_train_module._array_leaves(init_calls[0])} == {
+        expected_platform
+    }
+    for actual, expected in zip(
+        jax_train_module._array_leaves(collected_models[0]), checkpoint_arrays, strict=True
+    ):
+        np.testing.assert_array_equal(np.asarray(jax.device_get(actual)), expected)
+    for actual, expected in zip(
+        jax_train_module._array_leaves(init_calls[0]), checkpoint_arrays, strict=True
+    ):
+        np.testing.assert_array_equal(np.asarray(jax.device_get(actual)), expected)
+    assert int(jax.device_get(step_calls[0][1]["count"])) == 0
+    assert step_calls[0][1]["count"].device.platform == expected_platform
+    assert any(
+        not np.array_equal(np.asarray(before), np.asarray(after))
+        for before, after in zip(
+            jax_train_module._array_leaves(step_calls[0][0]),
+            jax_train_module._array_leaves(step_calls[0][2]),
+            strict=True,
+        )
+    )
+    assert result.log["config_n_epochs"] == 1
+    assert all(
+        result.log[name].shape == (1,) for name in ("losses_total", "losses_shape", "losses_l2")
+    )
+    assert {path: path.read_bytes() for path in saved_bytes} == saved_bytes
+
+
+@pytest.mark.parametrize(
+    ("field", "override"),
+    [
+        ("node_feature_dim", {"node_feature_dim": 3}),
+        ("edge_feature_dim", {"edge_feature_dim": 3}),
+        ("node_latent_dim", {"node_latent_dim": 9}),
+        ("edge_latent_dim", {"edge_latent_dim": 9}),
+        ("hidden_dim", {"hidden_dim": 9}),
+        ("num_mp_steps", {"num_mp_steps": 2}),
+        ("num_mlp_layers", {"num_mlp_layers": 3}),
+        ("output_dims", {"output_dims": {"dX": 3, "dP": 3, "dc": 3}}),
+        ("activation", {"activation": "gelu"}),
+        ("layer_norm", {"layer_norm": False}),
+        ("checkpoint_processor", {"checkpoint_processor": True}),
+    ],
+)
+def test_train_rejects_incompatible_checkpoint_config(tmp_path, monkeypatch, field, override):
+    checkpoint_path = tmp_path / "model.eqx"
+    _checkpoint_model(**override).save(checkpoint_path)
+
+    def forbidden_init(_params):
+        raise AssertionError("optimizer.init must follow compatibility checks")
+
+    optimizer = optax.GradientTransformation(forbidden_init, lambda *_args: None)
+    monkeypatch.setattr(
+        jax_train_module,
+        "_collect_topologies_and_trajectory",
+        lambda **_kwargs: pytest.fail("rollout must follow compatibility checks"),
+    )
+
+    with pytest.raises(ValueError, match=field):
+        _train_from_checkpoint(_checkpoint_model(), optimizer, (), checkpoint_path)
+
+
+@pytest.mark.parametrize(
+    ("kind", "match"),
+    [("structure", "PyTree structure"), ("shape", "shape"), ("dtype", "dtype")],
+)
+def test_train_rejects_incompatible_checkpoint_tree(tmp_path, monkeypatch, kind, match):
+    checkpoint_path = tmp_path / "model.eqx"
+    _checkpoint_model().save(checkpoint_path)
+    model = _checkpoint_model()
+    weight = model.node_encoder.net.layers[0].weight
+    if kind == "structure":
+        model = eqx.tree_at(lambda tree: tree.node_encoder.norm, model, None)
+    elif kind == "shape":
+        model = eqx.tree_at(
+            lambda tree: tree.node_encoder.net.layers[0].weight,
+            model,
+            weight[:, :-1],
+        )
+    else:
+        model = eqx.tree_at(
+            lambda tree: tree.node_encoder.net.layers[0].weight,
+            model,
+            weight.astype(jnp.float16),
+        )
+    monkeypatch.setattr(
+        jax_train_module,
+        "_collect_topologies_and_trajectory",
+        lambda **_kwargs: pytest.fail("rollout must follow compatibility checks"),
+    )
+
+    with pytest.raises(ValueError, match=match):
+        _train_from_checkpoint(model, optax.sgd(0.0), (), checkpoint_path)

@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   float32 before device or checkpoint setup.
 - Torch checkpoint refinement preserves model and optimizer bindings, rejects incompatible
   architectures, and clears stale optimizer state.
+- JAX checkpoint refinement rejects incompatible model trees and initializes fresh optimizer
+  state from loaded weights on the requested device.
 
 ## [0.1.0] 2026-07-03
 
