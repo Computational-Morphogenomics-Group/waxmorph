@@ -487,7 +487,7 @@ def test_native_warp_collection_physics_matches_jax_bridge():
         ctx,
     )
 
-    native_x = jax_train_module._warp_positions_to_jax(
+    native_x = jax_train_module._warp_to_jax(
         jax_train_module._native_warp_mech_step(
             x_wp,
             pair_i_wp,
@@ -509,7 +509,7 @@ def test_native_warp_collection_physics_matches_jax_bridge():
     )
 
     c_wp = jax_train_module._jax_c_to_warp(c)
-    native_c = jax_train_module._warp_c_to_jax(
+    native_c = jax_train_module._warp_to_jax(
         jax_train_module._native_warp_diffusion_step(
             c_wp,
             pair_i_wp,

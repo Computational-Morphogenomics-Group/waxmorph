@@ -164,16 +164,15 @@ def _resolve_jax_device(device: str, *, require_cuda: bool) -> jax.Device:
 
 def _validate_finite_array(name: str, array: jax.Array, *, rollout_step: int, phase: str) -> None:
     arr = np.asarray(jax.device_get(array))
-    finite_mask = np.isfinite(arr)
-    if finite_mask.all():
+    bad_indices = np.argwhere(~np.isfinite(arr))
+    if len(bad_indices) == 0:
         return
 
-    bad_indices = np.argwhere(~finite_mask)
     first_bad = tuple(int(i) for i in bad_indices[0])
     bad_value = arr[first_bad]
     raise ValueError(
         f"Non-finite values detected in {name} during {phase} at rollout step {rollout_step}: "
-        f"total_bad={(~finite_mask).sum()}, first_bad_index={first_bad}, "
+        f"total_bad={len(bad_indices)}, first_bad_index={first_bad}, "
         f"first_bad_value={bad_value!r}"
     )
 
@@ -270,14 +269,11 @@ def _checked_loss_values(
     epoch: int,
     phase: str,
 ) -> tuple[float, float, float]:
-    values = tuple(
-        (name, float(jax.device_get(value)))
-        for name, value in (("loss", loss), ("shape loss", loss_shape), ("L2 loss", loss_l2))
-    )
-    for name, value in values:
+    values = tuple(float(jax.device_get(value)) for value in (loss, loss_shape, loss_l2))
+    for name, value in zip(("loss", "shape loss", "L2 loss"), values, strict=True):
         if not np.isfinite(value):
             raise ValueError(f"Non-finite {name} during {phase} at epoch {epoch}: value={value!r}")
-    return tuple(value for _name, value in values)
+    return values
 
 
 def _max_edges_for_config(config: TrainConfig, particle_count: int) -> int:
@@ -303,58 +299,8 @@ def _bucketed_capacity(observed_max: int, max_capacity: int, *, name: str) -> in
             f"{name} has {observed_max} entries but max_edges_factor allows only "
             f"{max_capacity}. Increase TrainConfig.max_edges_factor."
         )
-    if observed_max <= 0:
-        return 1
-
     bucketed = int(np.ceil((observed_max * _CAPACITY_HEADROOM) / _CAPACITY_BUCKET))
     return min(max(bucketed * _CAPACITY_BUCKET, 1), max_capacity)
-
-
-def _build_pair_topology_warp(
-    X: jax.Array,
-    R: jax.Array,
-    particle_count: int,
-    max_pairs: int | None,
-    device: str,
-    grid=None,
-) -> _PairTopology:
-    import warp as wp
-
-    from waxmorph.constants import EPS_DIST, HASH_GRID_DIM
-    from waxmorph.emulator import _build_neighbor_pairs_dynamic
-
-    X_wp = wp.from_jax(X, dtype=wp.vec3f)
-    R_wp = wp.from_jax(R, dtype=wp.float32)
-    r_max = float(np.asarray(jax.device_get(R[:particle_count])).max())
-    query_radius = 2.0 * r_max + EPS_DIST
-    if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
-    grid.build(X_wp[:particle_count], query_radius)
-    edges_i, edges_j, num_pairs = _build_neighbor_pairs_dynamic(
-        X_wp,
-        R_wp,
-        particle_count,
-        query_radius,
-        grid,
-        device,
-    )
-
-    if max_pairs is not None and num_pairs > max_pairs:
-        raise ValueError(
-            f"Neighbor pair list has {num_pairs} entries but max_edges_factor allows only "
-            f"{max_pairs}. Increase TrainConfig.max_edges_factor."
-        )
-    if num_pairs == 0:
-        empty = jnp.zeros((0,), dtype=jnp.int32)
-        return _PairTopology(pair_i=empty, pair_j=empty, num_pairs=jnp.asarray(0, jnp.int32))
-
-    pair_i = jnp.asarray(wp.to_jax(edges_i[:num_pairs]), dtype=jnp.int32)
-    pair_j = jnp.asarray(wp.to_jax(edges_j[:num_pairs]), dtype=jnp.int32)
-    return _PairTopology(
-        pair_i=pair_i,
-        pair_j=pair_j,
-        num_pairs=jnp.asarray(num_pairs, dtype=jnp.int32),
-    )
 
 
 def _build_pair_topology(
@@ -362,18 +308,9 @@ def _build_pair_topology(
     R: jax.Array,
     particle_count: int,
     max_pairs: int | None = None,
-    device: str = "cuda",
 ) -> _PairTopology:
-    if max_pairs is not None and str(device).startswith("cuda"):
-        return _build_pair_topology_warp(X, R, particle_count, max_pairs, device)
-
     edge_index, _num_edges = build_edge_index(X, R, particle_count=particle_count)
     edges = np.asarray(jax.device_get(edge_index))
-
-    if edges.shape[1] == 0:
-        empty = jnp.zeros((0,), dtype=jnp.int32)
-        return _PairTopology(pair_i=empty, pair_j=empty, num_pairs=jnp.asarray(0, jnp.int32))
-
     mask = edges[0] < edges[1]
     pair_i = jnp.asarray(edges[0, mask], dtype=jnp.int32)
     pair_j = jnp.asarray(edges[1, mask], dtype=jnp.int32)
@@ -434,16 +371,10 @@ def _jax_c_to_warp(c: jax.Array):
     return c_wp
 
 
-def _warp_positions_to_jax(X_wp, dtype) -> jax.Array:
+def _warp_to_jax(array, dtype) -> jax.Array:
     import warp as wp
 
-    return jnp.asarray(wp.to_jax(X_wp), dtype=dtype)
-
-
-def _warp_c_to_jax(c_wp, dtype) -> jax.Array:
-    import warp as wp
-
-    return jnp.asarray(wp.to_jax(c_wp), dtype=dtype)
+    return jnp.asarray(wp.to_jax(array), dtype=dtype)
 
 
 def _build_warp_collection_pairs(
@@ -548,8 +479,7 @@ def _native_warp_diffusion_step(
     return c_out
 
 
-@eqx.filter_jit
-def _collection_gns_step(
+def _apply_gns_step(
     model,
     X: jax.Array,
     P: jax.Array,
@@ -571,6 +501,9 @@ def _collection_gns_step(
     P_next = P_next / jnp.maximum(jnp.linalg.norm(P_next, axis=-1, keepdims=True), EPS_POLARITY)
     c_next = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
     return X_next, P_next, c_next, dX, dP, dc
+
+
+_collection_gns_step = eqx.filter_jit(_apply_gns_step)
 
 
 def _collect_topologies_and_trajectory(
@@ -598,14 +531,13 @@ def _collect_topologies_and_trajectory(
     topologies: list[_StepTopology] = []
     trajectory = [{"pos": _as_numpy(X), "pol": _as_numpy(P), "c": _as_numpy(c)}]
     max_edges = _max_edges_for_config(config, particle_count)
-    max_pairs = max_edges
     use_native_warp = str(device).startswith("cuda") and _uses_warp_bridge(config)
     warp_ctx = (
         _make_warp_collection_context(
             R,
             c,
             particle_count=particle_count,
-            max_pairs=max_pairs,
+            max_pairs=max_edges,
             device=device,
         )
         if use_native_warp
@@ -613,9 +545,8 @@ def _collect_topologies_and_trajectory(
     )
 
     for t in range(config.t_rollout):
-        _validate_finite_array("X", X, rollout_step=t, phase="pre-graph build")
-        _validate_finite_array("P", P, rollout_step=t, phase="pre-graph build")
-        _validate_finite_array("c", c, rollout_step=t, phase="pre-graph build")
+        for name, array in (("X", X), ("P", P), ("c", c)):
+            _validate_finite_array(name, array, rollout_step=t, phase="pre-graph build")
 
         edge_index, num_edges = build_edge_index(
             X,
@@ -633,20 +564,15 @@ def _collect_topologies_and_trajectory(
             particle_count,
             config.dt_gns,
         )
-        num_edges_int = _scalar_int(num_edges)
-        edge_index_for_replay = edge_index[:, :num_edges_int]
+        edge_index_for_replay = edge_index[:, : _scalar_int(num_edges)]
 
-        _validate_finite_array("dX", dX, rollout_step=t, phase="gns output")
-        _validate_finite_array("dP", dP, rollout_step=t, phase="gns output")
-        _validate_finite_array("dc", dc, rollout_step=t, phase="gns output")
+        for name, array in (("dX", dX), ("dP", dP), ("dc", dc)):
+            _validate_finite_array(name, array, rollout_step=t, phase="gns output")
 
-        X = jax.lax.stop_gradient(X_next)
-        P = jax.lax.stop_gradient(P_next)
-        c = jax.lax.stop_gradient(c_next)
+        X, P, c = map(jax.lax.stop_gradient, (X_next, P_next, c_next))
 
-        _validate_finite_array("X", X, rollout_step=t, phase="post-gns update")
-        _validate_finite_array("P", P, rollout_step=t, phase="post-gns update")
-        _validate_finite_array("c", c, rollout_step=t, phase="post-gns update")
+        for name, array in (("X", X), ("P", P), ("c", c)):
+            _validate_finite_array(name, array, rollout_step=t, phase="post-gns update")
 
         mech_pairs: list[_PairTopology] = []
         if warp_ctx is not None and config.mech_steps > 0:
@@ -665,15 +591,14 @@ def _collect_topologies_and_trajectory(
                     config.dt_mech,
                     warp_ctx,
                 )
-            X = jax.lax.stop_gradient(_warp_positions_to_jax(X_wp, X.dtype))
+            X = jax.lax.stop_gradient(_warp_to_jax(X_wp, X.dtype))
         else:
             for _ in range(config.mech_steps):
                 pairs = _build_pair_topology(
                     X,
                     R,
                     particle_count,
-                    max_pairs=max_pairs,
-                    device=device,
+                    max_pairs=max_edges,
                 )
                 mech_pairs.append(pairs)
                 from waxmorph.jax.warp_autograd import warp_mech_step
@@ -711,7 +636,7 @@ def _collect_topologies_and_trajectory(
                     config.dt_diff,
                     warp_ctx,
                 )
-            c = jax.lax.stop_gradient(_warp_c_to_jax(c_wp, c.dtype))
+            c = jax.lax.stop_gradient(_warp_to_jax(c_wp, c.dtype))
         else:
             diff_pairs_for_step = None
             for _ in range(config.diff_steps):
@@ -720,8 +645,7 @@ def _collect_topologies_and_trajectory(
                         X,
                         R,
                         particle_count,
-                        max_pairs=max_pairs,
-                        device=device,
+                        max_pairs=max_edges,
                     )
                 diff_pairs.append(diff_pairs_for_step)
                 from waxmorph.jax.warp_autograd import warp_diffusion_step
@@ -753,22 +677,13 @@ def _collect_topologies_and_trajectory(
     return tuple(topologies), trajectory
 
 
-def _empty_pair_stack(t_rollout: int, num_steps: int, max_pairs: int) -> jax.Array:
-    return jnp.zeros((t_rollout, num_steps, max_pairs), dtype=jnp.int32)
-
-
 def _max_edge_count(topologies: tuple[_StepTopology, ...]) -> int:
-    if not topologies:
-        return 0
-    return max(_scalar_int(topology.num_edges) for topology in topologies)
+    return max((_scalar_int(topology.num_edges) for topology in topologies), default=0)
 
 
 def _max_pair_count(topologies: tuple[_StepTopology, ...]) -> int:
-    observed = 0
-    for topology in topologies:
-        for pairs in (*topology.mech_pairs, *topology.diff_pairs):
-            observed = max(observed, _scalar_int(pairs.num_pairs))
-    return observed
+    counts = (_scalar_int(p.num_pairs) for t in topologies for p in (*t.mech_pairs, *t.diff_pairs))
+    return max(counts, default=0)
 
 
 def _stack_pair_topologies(
@@ -780,7 +695,7 @@ def _stack_pair_topologies(
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     t_rollout = len(topologies)
     if num_steps == 0:
-        empty_pairs = _empty_pair_stack(t_rollout, 0, max_pairs)
+        empty_pairs = jnp.zeros((t_rollout, 0, max_pairs), dtype=jnp.int32)
         empty_counts = jnp.zeros((t_rollout, 0), dtype=jnp.int32)
         return empty_pairs, empty_pairs, empty_counts
 
@@ -807,14 +722,13 @@ def _stack_pair_topologies(
                 )
             num_pairs_array[t, step] = count
             if count > 0:
-                pair_i_array[t, step, :count] = np.asarray(
-                    jax.device_get(pairs.pair_i[:count]),
-                    dtype=np.int32,
-                )
-                pair_j_array[t, step, :count] = np.asarray(
-                    jax.device_get(pairs.pair_j[:count]),
-                    dtype=np.int32,
-                )
+                for buffer, values in (
+                    (pair_i_array, pairs.pair_i),
+                    (pair_j_array, pairs.pair_j),
+                ):
+                    buffer[t, step, :count] = np.asarray(
+                        jax.device_get(values[:count]), dtype=np.int32
+                    )
 
     return (
         jnp.asarray(pair_i_array, dtype=jnp.int32),
@@ -860,11 +774,6 @@ def _stack_topologies(
     num_edges_array = np.zeros((len(topologies),), dtype=np.int32)
     for t, topology in enumerate(topologies):
         count = _scalar_int(topology.num_edges)
-        if count > edge_capacity:
-            raise ValueError(
-                f"Graph has {count} edges but max_edges_factor allows only {edge_capacity}. "
-                "Increase TrainConfig.max_edges_factor."
-            )
         if topology.edge_index.shape[1] < count:
             raise ValueError(
                 f"Graph edge count is {count}, but only {topology.edge_index.shape[1]} "
@@ -900,18 +809,16 @@ def _apply_rollout_step_from_batch(
     particle_count: int,
     device: str,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    node_feats = build_node_features(c, particle_count)
-    edge_feats = build_edge_features(X, P, topology.edge_index, particle_count)
-
-    out = model(node_feats, topology.edge_index, edge_feats, num_edges=topology.num_edges)
-    dX = out["dX"] * config.dt_gns
-    dP = out["dP"] * config.dt_gns
-    dc = out["dc"] * config.dt_gns
-
-    X = X + dX
-    P = P + dP
-    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), EPS_POLARITY)
-    c = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
+    X, P, c, dX, _dP, _dc = _apply_gns_step(
+        model,
+        X,
+        P,
+        c,
+        topology.edge_index,
+        topology.num_edges,
+        particle_count,
+        config.dt_gns,
+    )
 
     if config.mech_steps > 0 or config.diff_steps > 0:
         from waxmorph.jax.warp_autograd import warp_diffusion_step, warp_mech_step
@@ -970,16 +877,15 @@ def _epoch_loss_with_topology_batch(
         )
         return (X, P, c), (X, step_l2)
 
-    (_X, _P, _c), (positions, step_l2) = jax.lax.scan(
+    _, (positions, step_l2) = jax.lax.scan(
         scan_step,
         (X_source, P_source, c_source),
         topology_batch,
     )
-    loss_l2 = jnp.sum(step_l2)
     loss_shape = jnp.asarray(0.0, dtype=X_source.dtype)
     for frame, target in targets_by_frame.items():
         loss_shape = loss_shape + loss_fn(positions[int(frame)], target)
-    return loss_shape, loss_l2
+    return loss_shape, jnp.sum(step_l2)
 
 
 def _zero_grads_if_nonfinite(grads, finite: jax.Array):
@@ -1090,8 +996,7 @@ def train(
         ValueError: If config bounds, state arrays, radii, targets, or checkpoint
             structure are invalid.
     """
-    if config is None:
-        config = TrainConfig()
+    config = TrainConfig() if config is None else config
 
     source_pos, polarities, c, radii, targets = _prepare_training_inputs(
         config, source_pos, polarities, c, radii, targets
@@ -1117,21 +1022,11 @@ def train(
         P_source = jnp.asarray(polarities, dtype=jnp.float32)
         c_source = jnp.asarray(c, dtype=jnp.float32)
         R = jnp.asarray(radii, dtype=jnp.float32)
+        targets_by_frame = {frame: jnp.asarray(pos, dtype=jnp.float32) for frame, pos in targets}
 
-    targets_by_frame: dict[int, jax.Array] = {}
-    for frame, pos in targets:
-        with jax.default_device(jax_device):
-            targets_by_frame[frame] = jnp.asarray(pos, dtype=jnp.float32)
-
-    losses_total = []
-    losses_shape = []
-    losses_l2 = []
-    best_loss = float("inf")
-    best_model = None
-    best_trajectory = None
-    best_epoch = 0
-    best_shape_loss = 0.0
-    best_l2_loss = 0.0
+    losses_total, losses_shape, losses_l2 = [], [], []
+    best_loss, best_model, best_trajectory, best_epoch = float("inf"), None, None, 0
+    best_shape_loss = best_l2_loss = 0.0
     max_pairs = _max_edges_for_config(config, N)
     train_step = _make_train_step(
         config=config,
@@ -1154,28 +1049,19 @@ def train(
                 particle_count=N,
                 device=device,
             )
-            topology_batch = _stack_topologies(
-                topologies,
-                config=config,
-                max_pairs=max_pairs,
-            )
-        return topology_batch, trajectory
+            batch = _stack_topologies(topologies, config=config, max_pairs=max_pairs)
+        return batch, trajectory
 
     def record_evaluation(epoch, candidate_model, trajectory, values):
-        nonlocal best_loss, best_model, best_trajectory, best_epoch
-        nonlocal best_shape_loss, best_l2_loss
+        nonlocal best_loss, best_model, best_trajectory, best_epoch, best_shape_loss, best_l2_loss
         epoch_loss, epoch_shape_loss, epoch_l2_loss = values
         losses_total.append(epoch_loss)
         losses_shape.append(epoch_shape_loss)
         losses_l2.append(epoch_l2_loss)
 
         if epoch_loss < best_loss:
-            best_loss = epoch_loss
-            best_shape_loss = epoch_shape_loss
-            best_l2_loss = epoch_l2_loss
-            best_model = candidate_model
-            best_trajectory = trajectory
-            best_epoch = epoch
+            best_loss, best_shape_loss, best_l2_loss = values
+            best_model, best_trajectory, best_epoch = candidate_model, trajectory, epoch
 
         if (epoch + 1) % config.log_every == 0:
             print(
@@ -1261,28 +1147,18 @@ def train(
         epoch=config.n_epochs - 1,
         phase="post-update evaluation",
     )
-    record_evaluation(
-        config.n_epochs - 1,
-        model,
-        final_trajectory,
-        final_values,
-    )
-    model = best_model
-
-    traj_pos = np.stack([f["pos"] for f in best_trajectory])
-    traj_pol = np.stack([f["pol"] for f in best_trajectory])
-    traj_c = np.stack([f["c"] for f in best_trajectory])
+    record_evaluation(config.n_epochs - 1, model, final_trajectory, final_values)
 
     log = {
         "losses_total": np.array(losses_total),
         "losses_shape": np.array(losses_shape),
         "losses_l2": np.array(losses_l2),
-        "best_traj_pos": traj_pos,
-        "best_traj_pol": traj_pol,
-        "best_traj_c": traj_c,
+        "best_traj_pos": np.stack([f["pos"] for f in best_trajectory]),
+        "best_traj_pol": np.stack([f["pol"] for f in best_trajectory]),
+        "best_traj_c": np.stack([f["c"] for f in best_trajectory]),
         "best_epoch": best_epoch,
         "best_loss": best_loss,
-        "target_frames": np.array(sorted(targets_by_frame.keys()), dtype=np.int64),
+        "target_frames": np.array(sorted(targets_by_frame), dtype=np.int64),
     }
     for field in dataclasses.fields(config):
         log[f"config_{field.name}"] = getattr(config, field.name)
@@ -1290,7 +1166,7 @@ def train(
     if save_path is not None and not os.path.exists(save_path):
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        model.save(save_path)
+        best_model.save(save_path)
         np.savez_compressed(f"{save_path}.log.npz", **log)
 
-    return TrainResult(model=model, log=log)
+    return TrainResult(model=best_model, log=log)
