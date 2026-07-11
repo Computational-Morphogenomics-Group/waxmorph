@@ -1,4 +1,7 @@
-"""Tests for the experimental JAX/Warp autodiff bridge."""
+"""Tests for the JAX/Warp autodiff bridge."""
+
+import sys
+from types import ModuleType
 
 import jax
 import jax.numpy as jnp
@@ -6,6 +9,7 @@ import numpy as np
 import pytest
 import warp as wp
 
+import waxmorph.jax.warp_autograd as warp_autograd
 from waxmorph.jax.warp_autograd import warp_diffusion_step, warp_mech_step
 
 
@@ -29,6 +33,35 @@ _requires_jax_cuda = pytest.mark.skipif(
     not _has_jax_warp_cuda(),
     reason="JAX/Warp bridge requires a CUDA JAX device (JAX_PLATFORMS!=cpu); see module note",
 )
+
+
+def test_jax_kernel_loader_prefers_public_api(monkeypatch):
+    public_jax_kernel = object()
+    monkeypatch.setattr(warp_autograd.wp, "jax_kernel", public_jax_kernel)
+    monkeypatch.setitem(sys.modules, "warp.jax_experimental", None)
+    monkeypatch.setitem(sys.modules, "warp.jax_experimental.ffi", None)
+    warp_autograd._load_jax_kernel.cache_clear()
+    try:
+        assert warp_autograd._load_jax_kernel() is public_jax_kernel
+    finally:
+        warp_autograd._load_jax_kernel.cache_clear()
+
+
+def test_jax_kernel_loader_supports_legacy_api(monkeypatch):
+    legacy_jax_kernel = object()
+    ffi = ModuleType("warp.jax_experimental.ffi")
+    ffi.jax_kernel = legacy_jax_kernel
+    experimental = ModuleType("warp.jax_experimental")
+    experimental.ffi = ffi
+
+    monkeypatch.delattr(warp_autograd.wp, "jax_kernel", raising=False)
+    monkeypatch.setitem(sys.modules, "warp.jax_experimental", experimental)
+    monkeypatch.setitem(sys.modules, "warp.jax_experimental.ffi", ffi)
+    warp_autograd._load_jax_kernel.cache_clear()
+    try:
+        assert warp_autograd._load_jax_kernel() is legacy_jax_kernel
+    finally:
+        warp_autograd._load_jax_kernel.cache_clear()
 
 
 def _fd_directional_rel_error(loss_fn, x0, grad, *, h=1e-3, n_dirs=4, seed=0):

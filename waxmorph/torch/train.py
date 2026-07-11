@@ -23,57 +23,25 @@ from waxmorph.torch.warp_autograd import WarpDiffusionStep, WarpMechStep
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
-    r"""Hyperparameters for PyTorch non-growing shape assembly training.
+    r"""Non-growing rollout and optimizer settings.
 
-    Mirrors :class:`waxmorph.jax.train.TrainConfig`; shared fields carry the
-    same meaning across backends. The JAX twin adds ``max_edges_factor``
-    because static-shape compilation needs a compile-time edge-count bound.
+    ``n_epochs`` counts optimizer updates; histories evaluate each resulting model, requiring
+    one extra rollout. Each rollout has ``t_rollout`` learned steps. ``mech_steps`` and
+    ``diff_steps`` are prescribed substep counts; zero disables the corresponding correction.
+    ``dt_gns`` scales all learned deltas. ``dt_mech`` and ``dt_diff`` are explicit step sizes
+    whose stable range depends on the active forces and graph; nonfinite states are rejected.
+    Diffusion applies :math:`c\leftarrow\max(c-D_{emu}L_Gc\,\Delta t_{diff},0)`.
 
-    Attributes:
-        n_epochs: Number of optimizer updates. Histories contain the rollout
-            after each update, requiring one additional rollout evaluation.
-        t_rollout: Number of emulation (Euler) steps unrolled per epoch, i.e.
-            the trajectory length ``T``. The reference configuration uses
-            ``T = 100`` (the default here).
-        mech_steps: Soft-sphere mechanics substeps applied after each learned
-            update, run on a faster time scale so the trajectory stays
-            biophysically coherent. Typically a handful (default 5); ``0``
-            disables the mechanics constraint.
-        diff_steps: Graph-Laplacian diffusion substeps applied after each
-            learned update, analogous to ``mech_steps``. Default 5; ``0``
-            disables the diffusion constraint.
-        dt_mech: Forward-Euler step :math:`\Delta t` for the soft-sphere
-            mechanics correction. Small (default 1e-2) to keep the explicit
-            integration stable; the effective per-rollout displacement is
-            ``mech_steps * dt_mech``.
-        dt_diff: Forward-Euler step :math:`\Delta t` for the graph-Laplacian
-            diffusion correction (default 1e-2). Larger values approach the
-            CFL-style stability limit of explicit diffusion and can blow up.
-        dt_gns: Multiplier on the raw GNS deltas before they are added to the
-            state, i.e. the learned-update Euler step ``dt`` (default 1e-2).
-            Keeps initial (near-random) network outputs from moving particles
-            far in a single step.
-        D_emu: Signaling-molecule diffusion coefficient ``D_emu`` in the
-            graph-diffusion update ``c -= D_emu * (L_G c) * dt_diff`` (default
-            0.1). With ``dt_diff`` it sets how fast latent fields homogenize;
-            ``D_emu * dt_diff`` near/above the inverse max node degree risks
-            instability.
-        lambda_reg: Weight :math:`\lambda` of the learned-displacement
-            regularizer,
+    The optimized loss is :math:`L=L_{shape}+\lambda_{reg}L_{reg}`, where
 
-            .. math::
+    .. math::
 
-                L_{reg} = \lambda \sum_t
-                \lVert \Delta t_{GNS}\,GNS_{X,t} \rVert_F^2.
+        L_{reg}=\sum_t\lVert\Delta t_{GNS}\,GNS_{X,t}\rVert_F^2.
 
-            This is computed before mechanics and excludes prescribed
-            displacements.
-        grad_clip_norm: Maximum global gradient L2 norm; gradients are rescaled
-            when they exceed it. ``None`` disables clipping. Default 1.0.
-        log_every: Epoch interval used for progress logging.
-
-    See Also:
-        waxmorph.jax.train.TrainConfig: JAX/Equinox parity backend.
+    The regularizer is measured before mechanics and excludes prescribed displacement.
+    ``grad_clip_norm`` caps the global L2 gradient norm; ``None`` disables clipping.
+    ``log_every`` controls progress output. JAX adds ``max_edges_factor`` for its static edge
+    capacity.
 
     Examples:
         >>> cfg = TrainConfig(n_epochs=3, t_rollout=2)
@@ -96,42 +64,16 @@ class TrainConfig:
 
 @dataclasses.dataclass
 class TrainResult:
-    """Result returned by :func:`waxmorph.torch.train.train`.
+    """Best post-update model and its training log.
 
-    Mirrors :class:`waxmorph.jax.train.TrainResult`; the ``log`` keys are
-    identical across backends.
-
-    Attributes:
-        model: Best post-update :class:`torch.nn.Module`. The supplied optimizer
-            is restored to the matching state.
-        log: Diagnostics for the run. Per-epoch loss histories (each a 1-D
-            array of length ``n_epochs``) describe post-update rollouts:
-
-            - ``losses_total``: total loss ``L_shape + lambda_reg * L_reg``.
-            - ``losses_shape``: shape (distributional) loss at the target
-              frames only.
-            - ``losses_l2``: unweighted
-              ``sum||dt_gns * GNS_X||^2`` term.
-
-            Best post-update trajectory (leading axis is ``t_rollout + 1``
-            because frame 0 is the source state):
-
-            - ``best_traj_pos``: positions, shape ``[t_rollout+1, N, 3]``.
-            - ``best_traj_pol``: polarities, shape ``[t_rollout+1, N, 3]``.
-            - ``best_traj_c``: concentrations, shape
-              ``[t_rollout+1, N, num_molecules]``.
-
-            Metadata:
-
-            - ``best_epoch``: zero-based index of the best epoch.
-            - ``best_loss``: total loss at that epoch.
-            - ``target_frames``: sorted supervised frame indices.
-            - ``config_<field>``: one entry per :class:`TrainConfig` field
-              (e.g. ``config_n_epochs``, ``config_lambda_reg``), recording the
-              hyperparameters used.
-
-    See Also:
-        waxmorph.jax.train.TrainResult: JAX/Equinox parity backend.
+    The supplied optimizer state is restored alongside ``model``. ``losses_total``,
+    ``losses_shape``, and ``losses_l2`` are length-``n_epochs`` post-update histories; shape
+    loss sums supervised frames and L2 is the unweighted learned-displacement regularizer.
+    ``best_traj_pos`` and
+    ``best_traj_pol`` have shape ``[t_rollout + 1, N, 3]``; ``best_traj_c`` has shape
+    ``[t_rollout + 1, N, C]``. ``best_epoch`` is zero-based; other metadata keys are
+    ``best_loss``, sorted ``target_frames``, and one ``config_<field>`` per
+    :class:`TrainConfig` field. JAX adds ``config_max_edges_factor``.
     """
 
     model: Any
@@ -141,7 +83,6 @@ class TrainResult:
 def _validate_finite_tensor(
     name: str, tensor: torch.Tensor, *, rollout_step: int, phase: str
 ) -> None:
-    """Raise a contextual error before invalid tensors reach later pipeline stages."""
     finite_mask = torch.isfinite(tensor)
     if bool(finite_mask.all()):
         return
@@ -163,7 +104,6 @@ def _raise_on_nonfinite_named_tensors(
     epoch: int,
     phase: str,
 ) -> None:
-    """Fail fast on invalid parameter tensors or gradients."""
     for name, tensor in named_tensors:
         if tensor is None:
             continue
@@ -183,7 +123,6 @@ def _raise_on_nonfinite_named_tensors(
 
 
 def _format_gradient_stats(stats, *, limit: int = 5) -> str:
-    """Format the largest gradient tensors for clipping diagnostics."""
     if not stats:
         return "none"
 
@@ -276,47 +215,14 @@ def _run_epoch(
     torch_device,
     epoch_trajectory,
 ):
-    """Run one training epoch with differentiable physics.
+    """Roll out one differentiable epoch on ``torch_device``.
 
-    Positions and concentrations stay on the :mod:`torch.autograd` computation
-    graph throughout. Physics corrections are applied via WarpMechStep /
-    WarpDiffusionStep autograd functions, so gradients flow through the full
-    trajectory. JAX collects and replays frozen topology in two passes; Torch
-    keeps the whole tape live and needs no topology cache.
-
-    ``targets_by_frame`` maps rollout-step index -> target position tensor.
-    A shape loss is accumulated at every tagged post-update state; frame ``0``
-    therefore supervises the state after the first rollout update, not the
-    initial source state.
-
-    Args:
-        model: Graph Network Simulator producing per-step ``dX``/``dP``/``dc``.
-        config: Training hyperparameters; only the rollout/step fields are read.
-        source_pos: Initial host positions, used only to seed diagnostics; the
-            live differentiable state is read from ``X_source_t``.
-        polarities: Initial host polarities, shape ``[N, 3]``; copied to device.
-        c: Initial host concentrations, shape ``[N, num_molecules]``; copied to
-            device and made a leaf requiring grad.
-        R_t: Particle radii on the torch device, shape ``[N]``.
-        R_wp: Particle radii as a Warp array, consumed by the mechanics step.
-        f_net: Preallocated Warp net-force scratch buffer, shape ``[N]``.
-        grid: Reused Warp ``HashGrid`` for neighbor queries.
-        N: Active particle count.
-        targets_by_frame: Map from zero-based post-update rollout step to the
-            device-resident target position tensor supervised at that step.
-        X_source_t: Initial positions on the torch device; cloned into the
-            leaf that starts the differentiable rollout.
-        loss_fn: Distributional shape loss mapping ``([N, 3], [M, 3])`` to a
-            scalar.
-        torch_device: Device the rollout tensors live on.
-        epoch_trajectory: Mutable list seeded with the source frame; one
-            detached snapshot dict is appended per rollout step.
-
-    Returns:
-        Tuple ``(loss_shape, loss_l2, epoch_trajectory)`` where ``loss_shape``
-        is the summed shape loss over supervised frames, ``loss_l2`` is the
-        unweighted ``sum||dX||^2`` regularizer term, and ``epoch_trajectory``
-        is the same list passed in, now holding ``t_rollout + 1`` frames.
+    Features remain attached to the Torch graph, while each step's COO topology comes from a
+    detached state snapshot. Each Warp bridge call owns a tape; Torch autograd composes the
+    calls through the rollout. ``targets_by_frame`` uses post-step indices, so frame 0 follows
+    the first learned and prescribed updates. Returns the summed supervised shape loss, the
+    unweighted ``sum_t ||dt_gns * GNS_X,t||^2`` measured before mechanics, and the detached
+    source-plus-``t_rollout`` trajectory.
     """
     X_t = X_source_t.clone().requires_grad_(True)
     c_t = torch.from_numpy(c.copy()).to(torch_device).requires_grad_(True)
@@ -334,8 +240,6 @@ def _run_epoch(
         _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="pre-graph build")
         _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="pre-graph build")
 
-        # Build graph from the live Torch state. Feature gradients remain
-        # connected to X_t / P_t / c_t; edge_index is rebuilt from a snapshot.
         node_feats, edge_index, edge_feats = build_graph(
             X_t,
             P_t,
@@ -344,7 +248,6 @@ def _run_epoch(
             c=c_t,
         )
 
-        # GNS forward (differentiable)
         out = model(node_feats, edge_index, edge_feats)
         dX = out["dX"] * config.dt_gns
         dP = out["dP"] * config.dt_gns
@@ -355,7 +258,6 @@ def _run_epoch(
 
         loss_l2 = loss_l2 + dX.square().sum()
 
-        # Apply GNS deltas (stays on PyTorch graph)
         X_t = X_t + dX
         P_t = torch.nn.functional.normalize(P_t + dP, dim=-1, eps=EPS_POLARITY)
         c_t = torch.clamp_min(c_t + dc, 0.0)
@@ -363,7 +265,6 @@ def _run_epoch(
         _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="post-gns update")
         _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="post-gns update")
 
-        # Physics correction (differentiable via autograd functions)
         for _ in range(config.mech_steps):
             X_t = WarpMechStep.apply(X_t, R_wp, N, config.dt_mech, f_net, grid)
         _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="post-mechanics")
@@ -383,7 +284,6 @@ def _run_epoch(
             }
         )
 
-        # Accumulate shape loss at every rollout step tagged with a target
         if _t in targets_by_frame:
             loss_shape = loss_shape + loss_fn(X_t, targets_by_frame[_t])
 
@@ -404,56 +304,27 @@ def train(
     save_path: str | Path | None = None,
     device: str = "cuda",
 ) -> TrainResult:
-    """Train a GNS model for non-growing shape assembly (PyTorch backend).
+    """Train through learned, mechanics, and diffusion rollout steps.
 
-    Learns neighbor-dependent updates that assemble an initial particle cloud
-    into the supervised target morphologies, then composes the prescribed
-    soft-sphere mechanics and graph diffusion on top so the trajectory stays
-    biophysically coherent. Optimizes ``L = L_shape + lambda_reg * L_reg`` with
-    the supplied optimizer, tracking post-update losses and restoring the best
-    model and optimizer states together.
-    State and target arrays are converted to C-contiguous ``float32``; state
-    arrays must share a nonzero particle axis.
+    Optimizes ``L_shape + lambda_reg * sum_t ||dt_gns * GNS_X,t||^2``. Histories and
+    selection use post-update rollouts; the supplied optimizer is restored to the selected
+    model. Feature gradients remain live; each graph build and Warp substep freezes its own
+    contact or pair topology.
 
-    Args:
-        model: Graph Network Simulator model.
-        optimizer: Updated in place and restored to the returned model's state.
-        loss_fn: Shape loss function mapping predicted positions with shape
-            ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
-        source_pos: Initial particle positions with shape ``[N, 3]``.
-        polarities: Initial unit polarity vectors with shape ``[N, 3]``. They
-            are not normalized by this function.
-        c: Initial signaling-molecule concentrations with shape ``[N, num_molecules]``.
-        radii: Particle radii with shape ``[N]``.
-        targets: ``(frame, positions)`` supervision pairs. Frame indices are
-            zero-based rollout steps measured *after* the per-step updates, so
-            frame ``0`` supervises the state after the first rollout update, not
-            the initial source state, and the highest usable index is
-            ``t_rollout - 1``. Frames must lie in ``[0, t_rollout)`` and must be
-            unique.
-        config: Training hyperparameters. Defaults to
-            :class:`waxmorph.torch.train.TrainConfig`.
-        save_path: New paths receive the best model and log. An existing trusted
-            GNS checkpoint must match the supplied model. Its weights load into
-            that object, prior optimizer state is discarded, and one refinement
-            update runs without overwriting existing model or log files.
-        device: Warp and :class:`torch.device` string such as ``"cuda"`` or
-            ``"cpu"``.
+    State and target arrays become C-contiguous ``float32``. Positions and polarities have
+    shape ``[N, 3]``, concentrations ``[N, C]``, and radii ``[N]`` with common nonzero ``N``;
+    input polarities are used as supplied for the first graph, whose angle feature assumes
+    unit vectors; later learned updates apply normalization. ``loss_fn`` maps predicted
+    ``[N, 3]`` and target ``[M, 3]`` positions to a scalar. Targets are unique
+    ``(frame, [M, 3])`` pairs with ``0 <= frame < t_rollout``. Frame 0 supervises the state
+    after the first complete rollout step, not the source.
 
-    Returns:
-        Best post-update model and full training log; see :class:`TrainResult`
-        for the ``log`` keys.
-
-    Raises:
-        TypeError: If config types, array dtypes, or target frames are invalid.
-        ValueError: If config bounds, state arrays, radii, targets, or checkpoint
-            architecture are invalid.
-
-    See Also:
-        waxmorph.jax.train.train: JAX/Equinox parity backend. The torch path is
-            the default because Warp autodiff integrates through
-            :class:`torch.autograd.Function`; the JAX path needs compile-time
-            shapes and an edge-count bound (more memory).
+    ``device`` must be accepted by Torch and Warp. A new ``save_path`` receives the best GNS
+    checkpoint and compressed log. An existing trusted checkpoint must match the supplied
+    model; its weights load into that object, optimizer state is cleared, and one refinement
+    update runs without overwriting either file. See :class:`TrainResult` for the log schema.
+    The JAX counterpart requires CUDA for its Warp custom VJPs and adds a static edge-capacity
+    setting.
     """
     if config is None:
         config = TrainConfig()

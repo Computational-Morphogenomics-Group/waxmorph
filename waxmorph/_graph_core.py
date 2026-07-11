@@ -1,8 +1,4 @@
-"""Detached NumPy contact topology shared by Torch and JAX.
-
-One KD-tree implementation keeps backend adjacency identical without importing either
-framework.
-"""
+"""Detached NumPy contact topology shared by Torch and JAX."""
 
 from numbers import Integral
 
@@ -93,14 +89,13 @@ def build_edge_index_np(
     rad: np.ndarray,
     eps_dist: float = EPS_DIST,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return bidirectional ``int64`` contacts for positions ``[N,3]`` and radii ``[N]``.
+    """Build detached, bidirectional contacts as ``int64`` sender and receiver arrays ``[E]``.
 
-    An edge ``(i, j)`` exists when ``dist(pos[i], pos[j]) <= rad[i] + rad[j] + eps_dist``
-    and ``i != j``. A :class:`scipy.spatial.cKDTree` finds candidates within
-    ``2 * max(rad) + eps_dist`` before applying the exact radius-sum threshold.
-    Candidate and output processing scales with their pair counts; dense
-    contact graphs can still be quadratic. Inputs must be finite; radii and
-    ``eps_dist`` must be nonnegative.
+    Inputs have shapes ``pos[N,3]`` and ``rad[N]``. Distinct particles contact when
+    ``||pos[i] - pos[j]|| <= rad[i] + rad[j] + eps_dist``. A host
+    :class:`scipy.spatial.cKDTree` supplies candidates, so topology is outside backend
+    autodiff; candidate and output work depends on pair counts and can be quadratic for
+    dense graphs. Inputs must be finite, with nonnegative radii and ``eps_dist``.
 
     Examples:
         >>> pos = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])

@@ -1,28 +1,7 @@
-"""Shape-matching losses for non-growing tissue emulation (JAX backend).
+"""JAX losses for ordered arrays and unordered point clouds.
 
-The emulator deforms an unordered population of agents toward a target
-morphology, so the loss must compare two point sets rather than two indexed
-arrays. This is the JAX/OTT parity backend of :mod:`waxmorph.torch.losses`;
-``squared_loss`` and ``chamfer_distance`` mirror the torch side one-to-one.
-
-Provides:
-
-1. ``squared_loss`` (Frobenius norm squared) — pick when each predicted cell
-   has a *known* target identity and row order is meaningful, so position
-   ``i`` of the prediction must match position ``i`` of the target.
-2. ``chamfer_distance`` (two-sided, normalized) — pick for *unordered* point
-   clouds sampled from shapes, the realistic biological case where row order
-   carries no meaning and the two clouds may differ in size.
-3. ``make_sinkhorn_loss`` — factory returning a debiased Sinkhorn divergence
-   callable using ``ott-jax``. It is the JAX counterpart of the PyTorch
-   :func:`waxmorph.torch.losses.make_samples_loss`, but Sinkhorn-only: the
-   broader GeomLoss MMD/Hausdorff families are not exposed on this backend.
-
-See Also:
-    waxmorph.torch.losses: PyTorch default backend with the same
-        ``squared_loss`` and ``chamfer_distance``, plus
-        :func:`waxmorph.torch.losses.make_samples_loss` covering the full
-        GeomLoss family (Sinkhorn/MMD/Hausdorff).
+``squared_loss`` requires row correspondence; Chamfer and Sinkhorn do not. The OTT factory
+provides only debiased Sinkhorn divergence, unlike PyTorch's broader GeomLoss factory.
 """
 
 from __future__ import annotations
@@ -34,30 +13,16 @@ import jax.numpy as jnp
 
 
 def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
-    r"""Squared Frobenius norm between row-aligned predicted and target positions.
+    r"""Squared Frobenius norm for row-aligned arrays of equal shape.
 
-    Pick this only when each predicted cell has a known target identity and row
-    order is meaningful, so prediction row ``i`` is supposed to land on target
-    row ``i``. For unordered point clouds sampled from shapes (the realistic
-    biological case) use :func:`chamfer_distance` or :func:`make_sinkhorn_loss`,
-    which are invariant to row permutations.
+    Use :func:`chamfer_distance` or :func:`make_sinkhorn_loss` when rows have no shared
+    identity.
 
     .. math::
         \mathcal{L} = \lVert X^f - X^T \rVert_F^2
 
-    Args:
-        X_pred: Predicted positions with shape ``[N, 3]``.
-        X_target: Target positions with shape ``[N, 3]`` in the same row order.
-
-    Returns:
-        Scalar squared Frobenius norm.
-
     Raises:
         ValueError: If the input shapes differ.
-
-    See Also:
-        waxmorph.torch.losses.squared_loss: PyTorch twin with identical
-            semantics.
 
     Examples:
         >>> x = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -91,41 +56,22 @@ def _validate_chamfer_inputs(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> None
 
 
 def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
-    r"""Two-sided Chamfer distance between unordered predicted and target clouds.
+    r"""Two directional mean distances between unordered, possibly unequal clouds.
 
-    Pick this (or :func:`make_sinkhorn_loss`) for unordered point clouds sampled
-    from shapes — the realistic biological case — where row order carries no
-    meaning and the two clouds may differ in size. Each point is matched to its
-    nearest neighbor in the other cloud and both directions are summed, so the
-    loss is permutation-invariant. This is the symmetric Chamfer term used in
-    waxMorph; unlike the normalized Chamfer distance (NCD) used for evaluation,
-    the per-point terms here use Euclidean distances rather than squared
-    distances.
-
-    The nearest-neighbor ``min`` is non-smooth at ties; autodiff takes the
-    subgradient of whichever neighbor index is selected.
+    The Euclidean, not squared, nearest-neighbor terms are permutation-invariant and
+    exchange-symmetric:
 
     .. math::
 
         \mathcal{L} = \frac{1}{N}\sum_i \min_j \lVert X^f_i - X^T_j \rVert
         + \frac{1}{M}\sum_j \min_i \lVert X^f_i - X^T_j \rVert
 
-    Args:
-        X_pred: Predicted positions with shape ``[N, 3]``.
-        X_target: Target positions with shape ``[M, 3]``. ``M`` may differ
-            from ``N``.
-
-    Returns:
-        Sum of the two directional mean nearest-neighbor distances.
+    JAX splits a ``min`` cotangent equally among tied minima; the derivative remains
+    nonsmooth because the tied set changes under perturbation. Coincident distances use a
+    finite zero-gradient branch.
 
     Raises:
         ValueError: If either cloud is empty or not rank 2, or feature widths differ.
-
-    See Also:
-        waxmorph.torch.losses.chamfer_distance: PyTorch twin with identical
-            semantics.
-        make_sinkhorn_loss: Sinkhorn divergence for the same unordered-cloud
-            regime.
 
     Examples:
         >>> x = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -147,71 +93,24 @@ def make_sinkhorn_loss(
     cost_fn: Any | None = None,
     **solve_kwargs: Any,
 ) -> Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray]:
-    """Build a debiased Sinkhorn divergence loss for unordered point clouds.
-
-    Use this for the realistic biological case where predicted and target cells
-    are unordered samples from two shapes. The Sinkhorn divergence is a fast
-    entropic approximation of the 2-Wasserstein distance and is the default
-    shape loss in waxMorph. It is permutation-invariant and the
-    returned callable is differentiable through ``ott-jax``.
-
-    Uses ``ott.tools.sinkhorn_divergence`` to compute the three-term debiased
-    Sinkhorn divergence, matching the behavior of :class:`geomloss.SamplesLoss`
-    with ``debias=True`` (the PyTorch default).
-
-    This is the JAX counterpart of :func:`waxmorph.torch.losses.make_samples_loss`,
-    but Sinkhorn-only: the torch wrapper additionally exposes the GeomLoss
-    MMD/Hausdorff families, which are not provided on this backend.
-
-    The debiased divergence is:
+    r"""Build OTT's debiased entropic-OT divergence for unordered clouds.
 
     .. math::
-        S_\\varepsilon(\\alpha, \\beta)
-        = \\mathrm{OT}_\\varepsilon(\\alpha, \\beta)
-        - \\tfrac{1}{2}\\mathrm{OT}_\\varepsilon(\\alpha, \\alpha)
-        - \\tfrac{1}{2}\\mathrm{OT}_\\varepsilon(\\beta, \\beta)
+        S_\varepsilon(\alpha,\beta)=\mathrm{OT}_\varepsilon(\alpha,\beta)
+        -\tfrac12\mathrm{OT}_\varepsilon(\alpha,\alpha)
+        -\tfrac12\mathrm{OT}_\varepsilon(\beta,\beta).
 
-    This ensures :math:`S_\\varepsilon(\\alpha, \\alpha) \\approx 0`.
+    ``blur`` sets ``epsilon = blur ** p``. Without ``cost_fn``, ``p=1`` selects Euclidean
+    cost and ``p=2`` selects half squared Euclidean cost; other exponents require an
+    explicit cost. An explicit cost replaces only that selection, while ``p`` still sets the
+    epsilon exponent. ``solve_kwargs`` are forwarded to OTT.
 
-    Args:
-        blur: Entropic regularization knob (the analogue of the geomloss
-            ``blur``), passed to OTT as ``epsilon = blur ** p`` to match
-            geomloss's temperature convention.
-        p: Ground-cost exponent selecting the OTT cost when ``cost_fn`` is not
-            given: ``p=2`` uses the half-squared-Euclidean cost
-            (:class:`ott.geometry.costs.PNormP` with ``p=2``, i.e. ``½‖x-y‖²``,
-            matching geomloss's ``p=2`` ground cost) and ``p=1`` uses Euclidean
-            cost (:class:`ott.geometry.costs.Euclidean`). Other exponents require
-            an explicit ``cost_fn``. ``p`` also sets the entropic temperature
-            exponent ``epsilon = blur ** p``.
-        cost_fn: Optional explicit OTT :class:`~ott.geometry.costs.CostFn`. When
-            given it overrides ``p``.
-        **solve_kwargs: Additional Sinkhorn solver options forwarded to OTT as
-            ``solve_kwargs`` (e.g. ``threshold``, ``max_iterations``).
-
-    Note:
-        The divergence is always the debiased three-term form, matching the
-        torch default ``geomloss.SamplesLoss(debias=True)``; this backend does
-        not expose a debias toggle. The geomloss ``scaling`` (multiscale
-        annealing) and ``reach`` (unbalanced OT) knobs have no direct OTT mapping
-        here and are not exposed. Because OTT solves at the single temperature
-        ``epsilon = blur ** p`` while geomloss anneals it, the returned value
-        matches ``geomloss.SamplesLoss`` only approximately (within a few percent
-        for typical clouds), not exactly.
-
-    Returns:
-        Callable ``loss_fn(X_pred, X_target)`` returning a scalar
-        :class:`jax.Array` Sinkhorn divergence.
+    The factory is always debiased and does not map GeomLoss's MMD, Hausdorff, ``scaling``,
+    or ``reach`` options. Different solvers and option sets preclude numerical-equivalence
+    guarantees with :func:`waxmorph.torch.losses.make_samples_loss`. OTT is imported lazily.
 
     Raises:
         ImportError: If ``ott-jax`` is not installed.
-
-    See Also:
-        waxmorph.torch.losses.make_samples_loss
-            PyTorch counterpart exposing the full GeomLoss family
-            (Sinkhorn/MMD/Hausdorff); this factory is Sinkhorn-only.
-        chamfer_distance
-            Lightweight unordered-cloud loss with no extra dependencies.
     """
     from ott.geometry import costs, pointcloud
     from ott.tools import sinkhorn_divergence as sd
@@ -229,7 +128,6 @@ def make_sinkhorn_loss(
             )
 
     def loss_fn(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
-        """Evaluate the configured Sinkhorn divergence between point clouds."""
         divergence, _ = sd.sinkhorn_divergence(
             pointcloud.PointCloud,
             X_pred,

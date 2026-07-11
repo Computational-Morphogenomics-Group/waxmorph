@@ -1,28 +1,9 @@
-"""PyTorch autograd bridge that makes Warp physics steps differentiable.
+"""Torch autograd adapters for Warp mechanics and diffusion.
 
-Mental model: Warp owns the physics math, PyTorch owns the gradient graph.
-Each class here is a :class:`torch.autograd.Function` wrapping one Warp
-physics step. The design is forward-records / backward-replays: ``forward``
-records every kernel launch on a fresh :class:`warp.Tape` while freezing the
-neighbor topology for the step, and ``backward`` seeds the output adjoint and
-calls ``tape.backward()`` to replay the recorded launches in reverse,
-propagating ``dL/dout → dL/din``. Only the differentiated tensor receives a
-gradient; all other inputs return ``None``.
-
-This is the PyTorch half of a two-backend bridge that keeps gradient flow
-identical across frameworks.
-
-Notes:
-    Backend divergence: this path imposes no device restriction (Warp will run
-    the kernels on whatever device the input tensors live on). The JAX twin,
-    by contrast, hard-requires a CUDA Warp/JAX device and raises
-    :class:`RuntimeError` otherwise (see
-    :func:`waxmorph.jax.warp_autograd._device_requires_cuda`).
-
-See Also:
-    :mod:`waxmorph.jax.warp_autograd`: JAX parity backend, which reaches the
-        same Warp physics through Warp's experimental JAX FFI custom VJP
-        rather than a :class:`torch.autograd.Function`.
+Each forward call owns a fresh :class:`warp.Tape` and a frozen neighbor list. Backward seeds
+the output adjoint and replays that tape; only the documented Torch state receives a gradient.
+Torch uses the input's Warp-compatible device. JAX instead uses CUDA-only custom VJPs; the
+bridges do not promise identical gradients.
 """
 
 from __future__ import annotations
@@ -37,19 +18,11 @@ from waxmorph.emulator import (
 
 
 class WarpMechStep(torch.autograd.Function):
-    """Differentiable sticky-sphere mechanics step.
+    r"""Sticky-sphere Euler step differentiating positions only.
 
-    Forward records repulsion + adhesion force kernels and the Euler position
-    update on a :class:`warp.Tape`, then returns the updated positions as a
-    torch tensor. Backward replays that tape to propagate
-    ``dL/dX_out → dL/dX_in``; only the position input is differentiated.
-
-    See Also:
-        :func:`waxmorph.emulator.mech_step_sticky_differentiable`: the
-            tape-recording mechanics step this wraps (force law and Euler
-            update live there).
-        :func:`waxmorph.jax.warp_autograd.warp_mech_step`: JAX twin reaching
-            the same mechanics through a Warp/JAX custom VJP.
+    Forward gives Warp a zero-copy view of contiguous detached Torch storage, discovers pairs
+    outside a fresh tape, and records :math:`X_{out}=X+\Delta t\,F(X,R)` on that frozen list.
+    Backward returns :math:`dL/dX`; radii and scratch objects receive no Torch gradient.
     """
 
     @staticmethod
@@ -62,30 +35,15 @@ class WarpMechStep(torch.autograd.Function):
         f_net_wp: wp.array,
         grid: wp.HashGrid | None,
     ) -> torch.Tensor:
-        """Apply a Warp mechanics step during the PyTorch forward pass.
-
-        Args:
-            X_torch: Position tensor with shape ``[N, 3]``.
-            R_wp: Warp radius array.
-            particle_count: Number of active particles.
-            dt: Mechanics Euler step size.
-            f_net_wp: Scratch Warp net-force buffer.
-            grid: Optional reusable :class:`warp.HashGrid`.
-
-        Returns:
-            Updated position tensor with shape ``[N, 3]``.
-        """
-        # zero-copy view of torch positions as a grad-tracked Warp array
+        # Warp shares storage only with the contiguous detached tensor.
         X_wp = wp.from_torch(X_torch.detach().contiguous(), dtype=wp.vec3f)
         X_wp.requires_grad = True
 
-        # record pairwise force kernels on the tape (topology frozen for the step)
         tape = wp.Tape()
         X_out = mech_step_sticky_differentiable(
             tape, X_wp, R_wp, particle_count, dt, f_net_wp, grid
         )
 
-        # stash tape + endpoints for backward replay
         ctx.tape = tape
         ctx.X_wp = X_wp
         ctx.X_out = X_out
@@ -94,29 +52,21 @@ class WarpMechStep(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
-        """Replay the Warp tape and return the gradient with respect to positions."""
-        # seed output adjoint, replay tape in reverse to accumulate input adjoint
         ctx.X_out.grad = wp.from_torch(grad_output.detach().contiguous(), dtype=wp.vec3f)
         ctx.tape.backward()
-        # clone before zeroing: grad buffer is reused once the tape is cleared
+        # Clone before tape.zero() clears the shared gradient buffer in place.
         grad_input = wp.to_torch(ctx.X_wp.grad).view(-1, 3).clone()
         ctx.tape.zero()
         return grad_input, None, None, None, None, None
 
 
 class WarpDiffusionStep(torch.autograd.Function):
-    """Differentiable signaling-molecule diffusion step.
+    r"""Graph diffusion step differentiating concentrations only.
 
-    Forward records the graph-Laplacian diffusion of concentrations and the
-    Euler update on a :class:`warp.Tape`, then returns the updated
-    concentrations as a torch tensor. Backward replays that tape to propagate
-    ``dL/dc_out → dL/dc_in``; only the concentration input is differentiated.
-
-    See Also:
-        :func:`waxmorph.emulator.diffusion_step_differentiable`: the
-            tape-recording diffusion step this wraps.
-        :func:`waxmorph.jax.warp_autograd.warp_diffusion_step`: JAX twin
-            reaching the same diffusion through a Warp/JAX custom VJP.
+    On frozen pairs, forward records
+    :math:`c_{out}=\max(c-D_{emu}L_Gc\,\Delta t,0)` independently per molecule.
+    Positions and radii determine topology but receive no gradient. Warp views contiguous
+    flattened Torch storage reshaped to ``[N, C]``.
     """
 
     @staticmethod
@@ -130,27 +80,11 @@ class WarpDiffusionStep(torch.autograd.Function):
         dt: float,
         grid: wp.HashGrid | None,
     ) -> torch.Tensor:
-        """Apply a Warp diffusion step during the PyTorch forward pass.
-
-        Args:
-            c_torch: Concentration tensor with shape ``[N, num_molecules]``.
-            X_wp: Warp position array used for neighbor topology.
-            R_wp: Warp radius array.
-            particle_count: Number of active particles.
-            D_emu: Diffusion coefficient.
-            dt: Diffusion Euler step size.
-            grid: Optional reusable :class:`warp.HashGrid`.
-
-        Returns:
-            Updated concentration tensor with shape ``[N, num_molecules]``.
-        """
         n, num_molecules = c_torch.shape
-        # flatten then reshape: Warp 2d arrays need a contiguous 1d source
         c_wp = wp.from_torch(c_torch.detach().contiguous().view(-1), dtype=wp.float32)
         c_wp = c_wp.reshape((n, num_molecules))
         c_wp.requires_grad = True
 
-        # record graph-Laplacian diffusion kernels on the tape
         tape = wp.Tape()
         c_out = diffusion_step_differentiable(
             tape, X_wp, R_wp, c_wp, particle_count, D_emu, dt, grid
@@ -165,14 +99,12 @@ class WarpDiffusionStep(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
-        """Replay the Warp tape and return the gradient with respect to concentrations."""
         n, num_molecules = ctx.shape
-        # seed output adjoint (flatten/reshape to match the 2d Warp buffer)
         ctx.c_out.grad = wp.from_torch(
             grad_output.detach().contiguous().view(-1), dtype=wp.float32
         ).reshape((n, num_molecules))
         ctx.tape.backward()
-        # clone before zeroing: grad buffer is reused once the tape is cleared
+        # Clone before tape.zero() clears the shared gradient buffer in place.
         grad_input = wp.to_torch(ctx.c_wp.grad).view(n, num_molecules).clone()
         ctx.tape.zero()
         return grad_input, None, None, None, None, None, None

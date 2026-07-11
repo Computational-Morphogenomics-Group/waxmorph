@@ -1,18 +1,8 @@
-"""JAX/Equinox (parity) backend for the waxMorph GNS learning pipeline.
+"""Explicit JAX/Equinox backend; top-level :mod:`waxmorph` imports use PyTorch.
 
-Reached only via explicit ``from waxmorph.jax import ...``; the default top-level imports
-resolve to :mod:`waxmorph.torch`. Mirrors that backend's public surface using Equinox
-modules, an Optax optimiser, and static-shape compilation, and trains the graph-network
-simulator over the same shared Warp physics core (gradients flow through
-:mod:`waxmorph.jax.warp_autograd` via a custom VJP).
-
-Parity: :mod:`waxmorph.torch` is the template -- keep the two in sync when changing graph
-construction, losses, or training, and do not weaken the Torch<->JAX parity assertions.
-The one genuine divergence in this surface is losses: jax exposes ``make_sinkhorn_loss``
-(ott-jax) where torch exposes ``make_samples_loss`` (geomloss) plus ``SAMPLES_LOSS_DEFAULTS``.
-
-See Also:
-    waxmorph.torch: The PyTorch default backend (the documentation template).
+JAX uses padded static graph buffers, Optax, explicit PRNG keys, and CUDA-only custom VJPs
+for Warp physics. Its loss factory provides OTT Sinkhorn divergence rather than PyTorch's
+broader GeomLoss family.
 """
 
 from .gnn import GNS, GraphNetworkBlock

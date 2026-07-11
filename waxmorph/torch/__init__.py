@@ -1,13 +1,7 @@
-"""PyTorch (default) backend for the waxMorph GNS learning pipeline.
+"""Default PyTorch backend.
 
-Top-level package imports resolve here (``from waxmorph import GNS, train, build_graph``),
-and ``waxmorph.{gnn,graph,losses,mlp,train}`` are thin shims forwarding to these
-implementations. Gradients flow through :mod:`waxmorph.torch.warp_autograd` over the
-shared Warp physics core.
-
-Parity: :mod:`waxmorph.jax` mirrors this surface as an Equinox/Optax parity backend; keep
-the two in sync when changing graph construction, losses, or training. The torch losses
-expose ``make_samples_loss`` (geomloss Sinkhorn) where jax exposes ``make_sinkhorn_loss``.
+Import :mod:`waxmorph.jax` explicitly for JAX. The backends differ in loss factories,
+graph return shapes, and Warp gradient bridges.
 """
 
 from .gnn import GNS, GraphNetworkBlock

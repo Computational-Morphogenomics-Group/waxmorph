@@ -1,9 +1,7 @@
-"""Build PyTorch-geometric-style graph data from simulation state.
+"""PyTorch graph features with detached contact topology.
 
-Supports both Warp arrays and Torch tensors as inputs. When Torch
-tensors are provided, node and edge feature construction remains on the
-:mod:`torch.autograd` graph; only adjacency construction uses a detached
-snapshot of positions and radii.
+Torch node and edge features retain autograd; contacts use a detached host snapshot.
+Warp arrays are also accepted.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ def _resolve_device(
     device: torch.device | str | None,
     *arrays: torch.Tensor | wp.array | None,
 ) -> torch.device:
-    """Pick the output device from an explicit request or the first input."""
     if device is not None:
         return torch.device(device)
 
@@ -46,7 +43,6 @@ def _slice_active(
     arr: torch.Tensor | wp.array,
     particle_count: int,
 ) -> torch.Tensor | wp.array:
-    """Slice inputs down to active particles when a count is provided."""
     active = _active_particle_count(particle_count, array=arr)
     if particle_count <= 0:
         return arr
@@ -54,12 +50,7 @@ def _slice_active(
 
 
 def _wp_to_torch(arr: wp.array, particle_count: int) -> torch.Tensor:
-    """Convert a Warp array to a :class:`torch.Tensor`, sliced to active particles.
-
-    Handles both scalar (float32, uint32) and vector (vec3f) dtypes by
-    going through :mod:`numpy` when :func:`warp.to_torch` is unavailable or when the
-    dtype is not directly supported (e.g. uint32).
-    """
+    """Use NumPy if :func:`warp.to_torch` raises."""
     try:
         t = wp.to_torch(arr)
     except Exception:
@@ -72,7 +63,6 @@ def _as_torch(
     particle_count: int,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Convert Warp arrays or slice Torch tensors without breaking autograd."""
     target = None if device is None else torch.device(device)
 
     if isinstance(arr, torch.Tensor):
@@ -88,7 +78,6 @@ def _as_torch(
 
 
 def _snapshot_numpy(arr: torch.Tensor | wp.array, particle_count: int) -> np.ndarray:
-    """Materialize a detached CPU snapshot for non-differentiable topology."""
     return _as_torch(arr, particle_count).detach().cpu().numpy()
 
 
@@ -99,33 +88,13 @@ def build_edge_index(
     eps_dist: float = EPS_DIST,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Construct COO edge_index ``[2, E]`` from contact adjacency.
+    r"""Return unpadded directed COO contacts with shape ``[2, E]``.
 
-    An edge ``(i, j)`` exists when ``dist(X[i], X[j]) <= R[i] + R[j] + eps_dist``
-    and ``i != j``. Returns directed edges (both ``i->j`` and ``j->i``).
-
-    A detached CPU snapshot freezes topology for the current rollout step.
-    KD-tree queries avoid constructing a dense pairwise-distance matrix; work
-    also scales with the candidate and output pair counts.
-
-    Args:
-        X: Position array with shape ``[N, 3]``.
-        R: Radius array with shape ``[N]``.
-        particle_count: Number of active particles. Non-positive values use
-            the full arrays.
-        eps_dist: Contact buffer distance.
-        device: Output device for the edge tensor. Defaults to the device of
-            the first non-``None`` input array.
-
-    Returns:
-        Directed COO edge tensor with shape ``[2, E]``, where ``E`` is the
-        number of real contact edges (no padding; the JAX twin returns a
-        padded ``[2, max_edges]`` tensor plus an explicit ``num_edges`` count).
-
-    See Also:
-        :func:`waxmorph.jax.graph.build_edge_index`: JAX twin that pads to a
-        static ``max_edges`` capacity and returns ``(edge_index, num_edges)``
-        for compile-time array sizes.
+    A detached float32 CPU snapshot includes both orientations when :math:`i\ne j` and
+    :math:`\lVert x_i-x_j\rVert_2\le R_i+R_j+\varepsilon`, where
+    :math:`\varepsilon=\mathtt{eps\_dist}`. This excludes topology from autodiff. Nonpositive
+    ``particle_count`` uses all rows; ``device`` otherwise defaults from the inputs. JAX can
+    pad to a fixed edge capacity and returns an additional edge count.
 
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -152,26 +121,9 @@ def build_node_features(
     particle_count: int,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Assemble per-node signaling-molecule features from Warp or Torch arrays.
+    """Return float concentrations as ``[N, C]``, promoting ``[N]`` to ``[N, 1]``.
 
-    Feature layout per node::
-
-        [c_0, c_1, ..., c_{C-1}]
-
-    Args:
-        c: Signaling-molecule concentration array. One-dimensional arrays are
-            promoted to shape ``[N, 1]``.
-        particle_count: Number of active particles. Non-positive values use
-            the full array.
-        device: Output device for the feature tensor. Defaults to the device
-            of the input array.
-
-    Returns:
-        Float feature tensor with shape ``[N, C]``, where ``C`` is the number
-        of signaling molecules.
-
-    See Also:
-        :func:`waxmorph.jax.graph.build_node_features`: JAX twin.
+    Nonpositive ``particle_count`` uses all rows; ``device`` defaults from the input.
 
     Examples:
         >>> c = torch.tensor([0.2, 0.4, 0.8])
@@ -193,38 +145,18 @@ def build_edge_features(
     particle_count: int,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    r"""Compute per-edge feature tensor.
-
-    Feature layout per edge ``(i -> j)``::
-
-        [dist, angle(P_i, P_j)]
-
-    The two features encode the mechanical relationship of a neighbor pair:
+    r"""Return geometric features for each directed edge.
 
     .. math::
 
-        d_{ij} = \lVert x_i - x_j \rVert_2, \qquad
-        \theta_{ij} = \arccos\!\left( p_i^\top p_j \right).
+        [d_{ij},\theta_{ij}]
+        = [\lVert x_i-x_j\rVert_2,\arccos(p_i^\top p_j)].
 
-    ``P`` must contain unit vectors because the raw dot product is not
-    normalized. Clamping to ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` keeps the
-    :func:`torch.acos` gradient finite at parallel and antiparallel inputs.
-
-    Args:
-        X: Position array with shape ``[N, 3]``.
-        P: Polarity array with shape ``[N, 3]``.
-        edge_index: Directed COO edge tensor with shape ``[2, E]``.
-        particle_count: Number of active particles. Non-positive values use
-            the full arrays.
-        device: Output device for the feature tensor. Defaults to the device
-            of the first non-``None`` input array.
-
-    Returns:
-        Float edge feature tensor with shape ``[E, 2]`` whose columns are
-        ``[d_ij, theta_ij]``.
-
-    See Also:
-        :func:`waxmorph.jax.graph.build_edge_features`: JAX twin.
+    ``P`` must contain unit vectors because its dot products are not normalized. The dot
+    product is clamped to ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` before ``acos``. Torch uses
+    the exact Euclidean norm; JAX uses ``sqrt(||x_i-x_j||^2 + EPS_NORM^2)`` and masks padded
+    edges. Torch inputs retain gradients through positions and polarities. The output shape
+    is ``[E, 2]``.
 
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -268,34 +200,11 @@ def build_graph(
     eps_dist: float = EPS_DIST,
     device: torch.device | str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build ``(node_features, edge_index, edge_features)`` in one call.
+    """Return ``(node_features, edge_index, edge_features)``.
 
-    For Torch inputs, gradients flow through ``node_features`` and
-    ``edge_features`` back to the live state tensors. ``edge_index`` is
-    intentionally built from a detached snapshot of ``X`` and ``R`` and
-    should be treated as frozen for that rollout step.
-
-    Args:
-        X: Position array with shape ``[N, 3]``.
-        P: Polarity array with shape ``[N, 3]``.
-        R: Radius array with shape ``[N]``.
-        particle_count: Number of active particles. Non-positive values use
-            the full arrays.
-        c: Required signaling-molecule concentration array.
-        eps_dist: Contact buffer distance.
-        device: Output device for all returned tensors. Defaults to the device
-            of the first non-``None`` input array.
-
-    Returns:
-        Tuple ``(node_features, edge_index, edge_features)`` with shapes
-        ``[N, C]``, ``[2, E]``, and ``[E, 2]``. This is a 3-tuple; the JAX twin
-        returns a 4-tuple with a trailing ``num_edges`` count because its
-        ``edge_index`` is padded to a static ``max_edges`` capacity for
-        compile-time array sizes.
-
-    See Also:
-        :func:`waxmorph.jax.graph.build_graph`: JAX twin returning the extra
-        ``num_edges`` count for static-shape compilation.
+    Shapes are ``[N, C]``, ``[2, E]``, and ``[E, 2]``. Torch features remain
+    differentiable, but contacts use a detached position/radius snapshot. ``c`` is required.
+    JAX instead returns a 4-tuple with an edge count and optional padding.
 
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])

@@ -1,8 +1,7 @@
-"""Build JAX-style graph data from Warp simulation state or live JAX arrays.
+"""JAX graph construction with detached topology and differentiable features.
 
-Topology construction is intentionally non-differentiable: positions/radii are
-snapshotted to the host to build adjacency.  Feature construction stays in JAX,
-so gradients can flow through node and edge features to live state arrays.
+Positions and radii are copied to the host for adjacency; gradients flow only through the
+JAX node and edge features built from live state arrays.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ ANGLE_EPS = 1e-6
 
 
 def _slice_active(arr, particle_count: int):
-    """Slice inputs down to active particles when a count is provided."""
     active = _active_particle_count(particle_count, array=arr)
     if particle_count <= 0:
         return arr
@@ -31,11 +29,6 @@ def _slice_active(arr, particle_count: int):
 
 
 def _wp_to_jax(arr: wp.array, particle_count: int) -> jax.Array:
-    """Convert a Warp array to a :class:`jax.Array`, sliced to active particles.
-
-    Uses Warp's JAX conversion for zero-copy DLPack transfer when available,
-    with a :mod:`numpy` round-trip fallback.
-    """
     try:
         t = wp.to_jax(arr)
     except Exception:
@@ -44,7 +37,6 @@ def _wp_to_jax(arr: wp.array, particle_count: int) -> jax.Array:
 
 
 def _as_jax(arr, particle_count: int) -> jax.Array:
-    """Convert supported arrays to JAX without detaching live :class:`jax.Array` inputs."""
     if arr is None:
         raise TypeError("Expected a Warp or JAX array, got None.")
 
@@ -58,7 +50,6 @@ def _as_jax(arr, particle_count: int) -> jax.Array:
 
 
 def _snapshot_numpy(arr, particle_count: int) -> np.ndarray:
-    """Materialize a detached NumPy host snapshot for non-differentiable topology."""
     return np.asarray(jax.device_get(_as_jax(arr, particle_count)))
 
 
@@ -69,35 +60,13 @@ def build_edge_index(
     eps_dist: float = EPS_DIST,
     max_edges: int | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Construct COO edge_index ``[2, E]`` from contact adjacency.
+    """Build directed COO adjacency from a detached host snapshot.
 
-    An edge ``(i, j)`` exists when ``dist(X[i], X[j]) <= R[i] + R[j] + eps_dist``
-    and ``i != j``.  Returns directed edges (both ``i->j`` and ``j->i``).
-
-    Args:
-        X: Position array with shape ``[N, 3]``.
-        R: Radius array with shape ``[N]``.
-        particle_count: Number of active particles. Non-positive values use
-            the full arrays.
-        eps_dist: Contact buffer distance.
-        max_edges: Optional output capacity. If provided, padding entries use
-            sender ``0`` and receiver ``0`` so shapes stay static across JIT
-            calls.
-
-    Returns:
-        Pair ``(edge_index, num_edges)``. When ``max_edges`` is ``None`` the
-        edge tensor has shape ``[2, E]`` and ``num_edges == E``. When
-        ``max_edges`` is given the tensor is padded to ``[2, max_edges]`` with
-        ``(0, 0)`` entries past index ``num_edges`` so shapes stay static under
-        JIT; the trailing ``max_edges - num_edges`` columns are padding and
-        must be ignored by reading only the first ``num_edges`` columns.
-
-    Raises:
-        ValueError: If the observed edge count exceeds ``max_edges``.
-
-    See Also:
-        :func:`waxmorph.torch.graph.build_edge_index`: PyTorch twin that
-        returns an unpadded ``[2, E]`` tensor and no separate ``num_edges``.
+    A detached float32 host snapshot includes both directions when ``i != j`` and
+    ``dist(X[i], X[j]) <= R[i] + R[j] + eps_dist``. Nonpositive ``particle_count`` uses all
+    rows. Without ``max_edges``, the result is ``[2, E]`` with ``num_edges == E``. With a
+    capacity, it is ``[2, max_edges]`` padded by ``(0, 0)``; callers must mask columns at
+    indices greater than or equal to ``num_edges``. Capacity overflow raises ``ValueError``.
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -136,23 +105,9 @@ def build_node_features(
     c,
     particle_count: int,
 ) -> jax.Array:
-    """Assemble per-node signaling-molecule features from Warp or JAX arrays.
+    """Return concentrations as float32 ``[N, C]`` node features.
 
-    Feature layout per node::
-
-        [c_0, c_1, ..., c_{C-1}]
-
-    Args:
-        c: Signaling-molecule concentration array. One-dimensional arrays are
-            promoted to shape ``[N, 1]``.
-        particle_count: Number of active particles. Non-positive values use
-            the full array.
-
-    Returns:
-        Float :class:`jax.Array` with shape ``[N, C]``.
-
-    See Also:
-        :func:`waxmorph.torch.graph.build_node_features`: PyTorch twin.
+    Rank-one input becomes ``[N, 1]``; nonpositive ``particle_count`` uses every row.
 
     Examples:
         >>> c = jnp.array([0.2, 0.4, 0.8])
@@ -173,36 +128,18 @@ def build_edge_features(
     edge_index: jax.Array,
     particle_count: int,
 ) -> jax.Array:
-    r"""Compute per-edge feature tensor.
-
-    Feature layout per edge ``(i -> j)``::
-
-        [dist, angle(P_i, P_j)]
-
-    The two features encode the mechanical relationship of a neighbor pair:
+    r"""Return float32 ``[distance, polarity angle]`` for each directed edge.
 
     .. math::
 
-        d_{ij} = \lVert x_i - x_j \rVert_2, \qquad
-        \theta_{ij} = \arccos\!\left( p_i^\top p_j \right).
+        d_{ij} &= \sqrt{\lVert x_i-x_j\rVert_2^2 + \mathrm{EPS\_NORM}^2}, \\
+        \theta_{ij} &= \arccos\!\left(\operatorname{clip}
+        (p_i^\top p_j,-1+\mathrm{ANGLE\_EPS},1-\mathrm{ANGLE\_EPS})\right).
 
-    ``P`` must contain unit vectors because the raw dot product is not
-    normalized. Clamping to ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` keeps the
-    :func:`jax.numpy.arccos` gradient finite at parallel and antiparallel inputs.
-
-    Args:
-        X: Position array with shape ``[N, 3]``.
-        P: Polarity array with shape ``[N, 3]``.
-        edge_index: Directed COO edge array with shape ``[2, E]``.
-        particle_count: Number of active particles. Non-positive values use
-            the full arrays.
-
-    Returns:
-        Float :class:`jax.Array` edge feature array with shape ``[E, 2]`` whose
-        columns are ``[d_ij, theta_ij]``.
-
-    See Also:
-        :func:`waxmorph.torch.graph.build_edge_features`: PyTorch twin.
+    Unlike the PyTorch counterpart's exact norm, JAX regularizes every real-edge distance by
+    ``EPS_NORM``. ``P`` must contain unit vectors because its raw dot products are not
+    normalized. Clamping keeps ``arccos`` gradients finite. Self-edge padding is masked to
+    zero in both columns.
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -218,7 +155,7 @@ def build_edge_features(
     _validate_feature_shapes(active, positions=pos, polarities=pol, edge_index=edge_index)
     if not jnp.issubdtype(edge_index.dtype, jnp.integer):
         raise TypeError("edge_index must have an integer dtype.")
-    # Traced training topologies are validated before JIT; eager public inputs are checked here.
+    # Concrete indices are range-checked; tracing skips host validation.
     try:
         concrete_edges = np.asarray(jax.device_get(edge_index))
     except jax.errors.TracerArrayConversionError:
@@ -264,29 +201,11 @@ def build_graph(
     eps_dist: float = EPS_DIST,
     max_edges: int | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    """Build ``(node_features, edge_index, edge_features, num_edges)`` in one call.
+    """Build JAX node features, directed edges, edge features, and real-edge count.
 
-    Args:
-        X: Position array with shape ``[N, 3]``.
-        P: Polarity array with shape ``[N, 3]``.
-        R: Radius array with shape ``[N]``.
-        particle_count: Number of active particles. Non-positive values use
-            the full arrays.
-        c: Required signaling-molecule concentration array.
-        eps_dist: Contact buffer distance.
-        max_edges: Optional capacity passed to :func:`build_edge_index`.
-
-    Returns:
-        Tuple ``(node_features, edge_index, edge_features, num_edges)`` with
-        shapes ``[N, C]``, ``[2, E]`` (or ``[2, max_edges]`` when padded),
-        ``[E, 2]``, and a scalar ``num_edges``. The trailing ``num_edges`` is
-        the parity divergence from the PyTorch twin's 3-tuple: it reports how
-        many of the (possibly padded) ``edge_index`` columns are real edges,
-        which callers need under static-shape compilation.
-
-    See Also:
-        :func:`waxmorph.torch.graph.build_graph`: PyTorch twin returning an
-        unpadded 3-tuple ``(node_features, edge_index, edge_features)``.
+    ``c`` is required despite its compatibility default. Shapes are ``[N, C]``, ``[2, Q]``,
+    ``[Q, 2]``, and scalar, where ``Q`` is the real edge count or ``max_edges`` when padded.
+    JAX's fourth value and optional padding differ from PyTorch's unpadded three-tuple.
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])

@@ -1,9 +1,4 @@
-"""Graph construction surface.
-
-Re-exports the PyTorch implementation (:mod:`waxmorph.torch.graph`) for callers
-importing from ``waxmorph.*``. PyTorch is the default backend; reach the JAX
-parity builders explicitly via :mod:`waxmorph.jax.graph`.
-"""
+"""PyTorch graph re-exports for the default :mod:`waxmorph.graph` path."""
 
 from .torch.graph import (
     _wp_to_torch,
