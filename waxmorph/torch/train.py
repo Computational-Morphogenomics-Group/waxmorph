@@ -30,9 +30,8 @@ class TrainConfig:
     because static-shape compilation needs a compile-time edge-count bound.
 
     Attributes:
-        n_epochs: Number of optimization epochs (AdamW updates). Each epoch
-            replays a full ``t_rollout``-step trajectory. Convergence typically
-            occurs near 200-300 epochs; the default 2000 is a generous ceiling.
+        n_epochs: Number of optimizer updates. Histories contain the rollout
+            after each update, requiring one additional rollout evaluation.
         t_rollout: Number of emulation (Euler) steps unrolled per epoch, i.e.
             the trajectory length ``T``. The reference configuration uses
             ``T = 100`` (the default here).
@@ -59,19 +58,16 @@ class TrainConfig:
             0.1). With ``dt_diff`` it sets how fast latent fields homogenize;
             ``D_emu * dt_diff`` near/above the inverse max node degree risks
             instability.
-        lambda_reg: Strength :math:`\lambda` of the squared-displacement
-            regularizer that penalizes large frame-to-frame motion,
+        lambda_reg: Weight :math:`\lambda` of the learned-displacement
+            regularizer,
 
             .. math::
 
-                L_{reg} = \lambda \sum_{t} \lVert X_t - X_{t+1} \rVert_F^2,
+                L_{reg} = \lambda \sum_t
+                \lVert \Delta t_{GNS}\,GNS_{X,t} \rVert_F^2.
 
-            with :math:`\lVert \cdot \rVert_F` the Frobenius norm (summed over
-            the per-step ``dX`` deltas). It discourages trajectories that satisfy
-            the goals only at the supervised target frames by spreading motion
-            smoothly across the rollout. Small (default 1e-3): too large
-            over-smooths and prevents reaching the target, too small permits
-            erratic jumps.
+            This is computed before mechanics and excludes prescribed
+            displacements.
         grad_clip_norm: Maximum global gradient L2 norm; gradients are rescaled
             when they exceed it. ``None`` disables clipping. Default 1.0.
         log_every: Epoch interval used for progress logging.
@@ -106,20 +102,19 @@ class TrainResult:
     identical across backends.
 
     Attributes:
-        model: Best :class:`torch.nn.Module` found during training, or the
-            latest model if no finite improvement was recorded.
+        model: Best post-update :class:`torch.nn.Module`. The supplied optimizer
+            is restored to the matching state.
         log: Diagnostics for the run. Per-epoch loss histories (each a 1-D
-            array of length ``n_epochs``):
+            array of length ``n_epochs``) describe post-update rollouts:
 
             - ``losses_total``: total loss ``L_shape + lambda_reg * L_reg``.
             - ``losses_shape``: shape (distributional) loss at the target
               frames only.
-            - ``losses_l2``: unweighted squared-displacement term
-              ``sum||dX||^2`` (multiply by ``lambda_reg`` for its loss
-              contribution).
+            - ``losses_l2``: unweighted
+              ``sum||dt_gns * GNS_X||^2`` term.
 
-            Best trajectory (the rollout from the best-loss epoch; leading axis
-            is ``t_rollout + 1`` because frame 0 is the source state):
+            Best post-update trajectory (leading axis is ``t_rollout + 1``
+            because frame 0 is the source state):
 
             - ``best_traj_pos``: positions, shape ``[t_rollout+1, N, 3]``.
             - ``best_traj_pol``: polarities, shape ``[t_rollout+1, N, 3]``.
@@ -416,12 +411,14 @@ def train(
     into the supervised target morphologies, then composes the prescribed
     soft-sphere mechanics and graph diffusion on top so the trajectory stays
     biophysically coherent. Optimizes ``L = L_shape + lambda_reg * L_reg`` with
-    the supplied optimizer (typically AdamW), tracking the best-loss epoch.
+    the supplied optimizer, tracking post-update losses and restoring the best
+    model and optimizer states together.
     State and target arrays are converted to C-contiguous ``float32``; state
     arrays must share a nonzero particle axis.
 
     Args:
         model: Graph Network Simulator model.
+        optimizer: Updated in place and restored to the returned model's state.
         loss_fn: Shape loss function mapping predicted positions with shape
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.
@@ -445,8 +442,8 @@ def train(
             ``"cpu"``.
 
     Returns:
-        Best model and full training log; see :class:`TrainResult` for the
-        ``log`` keys.
+        Best post-update model and full training log; see :class:`TrainResult`
+        for the ``log`` keys.
 
     Raises:
         TypeError: If config types, array dtypes, or target frames are invalid.
@@ -501,25 +498,21 @@ def train(
 
     X_source_t = torch.from_numpy(source_pos).to(torch_device)
 
-    # Tracking
     losses_total = []
     losses_shape = []
     losses_l2 = []
     best_loss = float("inf")
     best_model_state = None
+    best_optimizer_state = None
     best_trajectory = None
     best_epoch = 0
     best_shape_loss = 0.0
     best_l2_loss = 0.0
 
-    # Pre-allocate hash grid
     grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=wp_device)
 
-    for epoch in trange(config.n_epochs):
-        optimizer.zero_grad(set_to_none=True)
-
+    def evaluate_model(*, epoch, phase):
         epoch_trajectory = [{"pos": source_pos.copy(), "pol": polarities.copy(), "c": c.copy()}]
-
         loss_shape, loss_l2, epoch_trajectory = _run_epoch(
             model=model,
             config=config,
@@ -537,9 +530,21 @@ def train(
             torch_device=torch_device,
             epoch_trajectory=epoch_trajectory,
         )
-
         loss = loss_shape + (loss_l2 * config.lambda_reg)
+        for name, value in (("loss", loss), ("shape loss", loss_shape), ("L2 loss", loss_l2)):
+            if not bool(torch.isfinite(value).all()):
+                raise ValueError(
+                    f"Non-finite {name} during {phase} at epoch {epoch}: "
+                    f"value={value.detach().cpu().item()!r}"
+                )
+        return loss, loss_shape, loss_l2, epoch_trajectory
 
+    optimizer.zero_grad(set_to_none=True)
+    loss, loss_shape, loss_l2, epoch_trajectory = evaluate_model(
+        epoch=0, phase="pre-update evaluation"
+    )
+
+    for epoch in trange(config.n_epochs):
         loss.backward()
         _raise_on_nonfinite_named_tensors(
             "gradients",
@@ -557,11 +562,6 @@ def train(
                     f"Non-finite gradient norm after clipping at epoch {epoch}: "
                     f"grad_norm={grad_norm.detach().cpu().item()!r}"
                 )
-        epoch_loss = loss.item()
-        epoch_shape_loss = loss_shape.item()
-        epoch_l2_loss = loss_l2.item()
-        is_best = epoch_loss < best_loss
-        candidate_state = copy.deepcopy(model.state_dict()) if is_best else None
 
         optimizer.step()
         _raise_on_nonfinite_named_tensors(
@@ -572,15 +572,24 @@ def train(
         )
         optimizer.zero_grad(set_to_none=True)
 
+        with torch.set_grad_enabled(epoch + 1 < config.n_epochs):
+            loss, loss_shape, loss_l2, epoch_trajectory = evaluate_model(
+                epoch=epoch, phase="post-update evaluation"
+            )
+
+        epoch_loss = loss.item()
+        epoch_shape_loss = loss_shape.item()
+        epoch_l2_loss = loss_l2.item()
         losses_total.append(epoch_loss)
         losses_shape.append(epoch_shape_loss)
         losses_l2.append(epoch_l2_loss)
 
-        if is_best:
+        if epoch_loss < best_loss:
             best_loss = epoch_loss
             best_shape_loss = epoch_shape_loss
             best_l2_loss = epoch_l2_loss
-            best_model_state = candidate_state
+            best_model_state = copy.deepcopy(model.state_dict())
+            best_optimizer_state = copy.deepcopy(optimizer.state_dict())
             best_trajectory = epoch_trajectory
             best_epoch = epoch
 
@@ -590,10 +599,9 @@ def train(
                 f"best={best_loss:.4f}  shape={best_shape_loss:.4f}  l2={best_l2_loss:.4f}"
             )
 
-    # Restore best model
     model.load_state_dict(best_model_state)
+    optimizer.load_state_dict(best_optimizer_state)
 
-    # Build log dict
     traj_pos = np.stack([f["pos"] for f in best_trajectory])
     traj_pol = np.stack([f["pol"] for f in best_trajectory])
     traj_c = np.stack([f["c"] for f in best_trajectory])
@@ -612,7 +620,6 @@ def train(
     for field in dataclasses.fields(config):
         log[f"config_{field.name}"] = getattr(config, field.name)
 
-    # Save
     if save_path is not None and not os.path.exists(save_path):
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)

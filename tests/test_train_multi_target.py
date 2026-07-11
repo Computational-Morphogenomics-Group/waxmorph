@@ -5,21 +5,19 @@ import importlib
 import numpy as np
 import pytest
 import torch
-import warp as wp
 
 from waxmorph.gnn import GNS
 from waxmorph.torch.losses import squared_loss
 
 torch_train_module = importlib.import_module("waxmorph.torch.train")
 
-wp.init()
-
-DEVICE = "cpu"
-try:
-    if wp.is_device_available("cuda"):
-        DEVICE = "cuda"
-except RuntimeError:
-    DEVICE = "cpu"
+TRAIN_DEVICES = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+    ),
+]
 
 
 def _minimal_inputs():
@@ -89,6 +87,181 @@ def _train_from_checkpoint(model, optimizer, save_path, device="cpu"):
         save_path=save_path,
         device=device,
     )
+
+
+class _ScalarStepModel(torch.nn.Module):
+    def __init__(self, value=1.0):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(value))
+        self.evaluated_weights = []
+        self.backward_count = 0
+        self.weight.register_hook(self._capture_gradient)
+
+    def _capture_gradient(self, gradient):
+        self.backward_count += 1
+        return gradient
+
+    def forward(self, node_feats, edge_index, edge_feats):
+        del edge_index, edge_feats
+        self.evaluated_weights.append(float(self.weight.detach().cpu()))
+        num_nodes = node_feats.shape[0]
+        weight = self.weight.to(dtype=node_feats.dtype)
+        return {
+            "dX": weight.expand(num_nodes, 3),
+            "dP": torch.zeros((num_nodes, 3), dtype=node_feats.dtype, device=node_feats.device),
+            "dc": torch.zeros_like(node_feats),
+        }
+
+
+class _CountingAdamW(torch.optim.AdamW):
+    def __init__(self, params, **kwargs):
+        super().__init__(params, **kwargs)
+        self.step_count = 0
+
+    def step(self, closure=None):
+        self.step_count += 1
+        return super().step(closure)
+
+
+def _train_scalar(model, optimizer, *, n_epochs, device="cpu", loss_fn=squared_loss):
+    source_pos, polarities, c, radii = _minimal_inputs()
+    return torch_train_module.train(
+        model,
+        optimizer,
+        loss_fn,
+        source_pos=source_pos,
+        polarities=polarities,
+        c=c,
+        radii=radii,
+        targets=[(0, source_pos)],
+        config=torch_train_module.TrainConfig(
+            n_epochs=n_epochs,
+            t_rollout=1,
+            mech_steps=0,
+            diff_steps=0,
+            dt_gns=1.0,
+            lambda_reg=0.0,
+            grad_clip_norm=None,
+            log_every=n_epochs + 1,
+        ),
+        device=device,
+    )
+
+
+@pytest.mark.parametrize("device", TRAIN_DEVICES)
+def test_train_one_epoch_returns_post_update_model_and_rollout(device):
+    source_pos, *_ = _minimal_inputs()
+    model = _ScalarStepModel()
+    optimizer = _CountingAdamW(model.parameters(), lr=0.5, weight_decay=0.0)
+    result = _train_scalar(model, optimizer, n_epochs=1, device=device)
+
+    assert result.model is model
+    assert optimizer.param_groups[0]["params"] == [result.model.weight]
+    assert result.model.weight.device.type == device
+    assert optimizer.step_count == result.model.backward_count == 1
+    np.testing.assert_allclose(model.evaluated_weights, [1.0, 0.5], rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(
+        result.model.weight.detach().cpu(), torch.tensor(0.5), rtol=1e-5, atol=1e-6
+    )
+    expected_pos = source_pos + 0.5
+    np.testing.assert_allclose(result.log["best_traj_pos"][-1], expected_pos, rtol=1e-5, atol=1e-6)
+    expected_loss = np.square(expected_pos - source_pos).sum()
+    for name in ("losses_total", "losses_shape", "losses_l2"):
+        np.testing.assert_allclose(result.log[name], [expected_loss], rtol=1e-5, atol=1e-6)
+    assert result.log["best_epoch"] == 0
+    assert result.log["best_loss"] == pytest.approx(expected_loss, rel=1e-5)
+
+
+@pytest.mark.parametrize("device", TRAIN_DEVICES)
+def test_train_restores_optimizer_state_with_best_post_update_model(device):
+    source_pos, *_ = _minimal_inputs()
+    model = _ScalarStepModel()
+    parameter = model.weight
+    optimizer = _CountingAdamW(model.parameters(), lr=0.5, betas=(0.8, 0.9), weight_decay=0.0)
+    group_options = {
+        name: value for name, value in optimizer.param_groups[0].items() if name != "params"
+    }
+    result = _train_scalar(model, optimizer, n_epochs=3, device=device)
+
+    expected_weights = np.array([1.0, 0.5, 0.0358389, -0.32067183])
+    expected_losses = source_pos.size * np.square(expected_weights[1:])
+    assert result.model is model
+    assert result.model.weight is parameter
+    assert optimizer.param_groups[0]["params"] == [parameter]
+    assert optimizer.step_count == result.model.backward_count == 3
+    np.testing.assert_allclose(model.evaluated_weights, expected_weights, rtol=1e-5, atol=1e-6)
+    for name in ("losses_total", "losses_shape", "losses_l2"):
+        np.testing.assert_allclose(result.log[name], expected_losses, rtol=1e-5, atol=1e-6)
+    assert result.log["best_epoch"] == 1
+    assert result.log["best_loss"] == pytest.approx(expected_losses[1], rel=1e-5)
+    torch.testing.assert_close(
+        result.model.weight.detach().cpu(),
+        torch.tensor(expected_weights[2], dtype=torch.float32),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        result.log["best_traj_pos"][-1],
+        source_pos + expected_weights[2],
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    assert {
+        name: value for name, value in optimizer.param_groups[0].items() if name != "params"
+    } == group_options
+
+    reference_model = _ScalarStepModel().to(device)
+    reference_optimizer = torch.optim.AdamW(
+        reference_model.parameters(), lr=0.5, betas=(0.8, 0.9), weight_decay=0.0
+    )
+
+    def update_scalar(current_model, current_optimizer):
+        current_optimizer.zero_grad(set_to_none=True)
+        (source_pos.size * current_model.weight.square()).backward()
+        current_optimizer.step()
+        current_optimizer.zero_grad(set_to_none=True)
+
+    update_scalar(reference_model, reference_optimizer)
+    update_scalar(reference_model, reference_optimizer)
+    torch.testing.assert_close(result.model.weight, reference_model.weight)
+    for name in ("step", "exp_avg", "exp_avg_sq"):
+        torch.testing.assert_close(
+            optimizer.state[result.model.weight][name],
+            reference_optimizer.state[reference_model.weight][name],
+        )
+
+    update_scalar(result.model, optimizer)
+    update_scalar(reference_model, reference_optimizer)
+    torch.testing.assert_close(result.model.weight, reference_model.weight)
+    for name in ("step", "exp_avg", "exp_avg_sq"):
+        torch.testing.assert_close(
+            optimizer.state[result.model.weight][name],
+            reference_optimizer.state[reference_model.weight][name],
+        )
+
+
+def test_train_rejects_nonfinite_post_update_loss():
+    model = _ScalarStepModel()
+    optimizer = _CountingAdamW(model.parameters(), lr=0.5, weight_decay=0.0)
+    loss_calls = 0
+
+    def finite_then_nan_loss(prediction, target):
+        nonlocal loss_calls
+        loss_calls += 1
+        if loss_calls == 1:
+            return squared_loss(prediction, target)
+        return prediction.sum() * torch.tensor(float("nan"), device=prediction.device)
+
+    with pytest.raises(ValueError, match="post-update evaluation"):
+        _train_scalar(
+            model,
+            optimizer,
+            n_epochs=1,
+            loss_fn=finite_then_nan_loss,
+        )
+
+    assert loss_calls == 2
+    assert optimizer.step_count == 1
 
 
 def test_run_epoch_accumulates_loss_across_tagged_frames():
@@ -262,16 +435,7 @@ def test_train_rejects_missing_targets():
         )
 
 
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("device", TRAIN_DEVICES)
 def test_train_loads_checkpoint_into_caller_model_and_resets_optimizer(
     tmp_path, monkeypatch, device
 ):
@@ -332,6 +496,8 @@ def test_train_loads_checkpoint_into_caller_model_and_resets_optimizer(
         not torch.equal(states_at_step[0][1][name], states_at_step[0][2][name])
         for name in checkpoint_state
     )
+    for name, value in states_at_step[0][2].items():
+        torch.testing.assert_close(result.model.state_dict()[name].cpu(), value)
     assert all("stale" not in state for state in optimizer.state.values())
     assert all(int(state["step"].item()) == 1 for state in optimizer.state.values())
     assert {
