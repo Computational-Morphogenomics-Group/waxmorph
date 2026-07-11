@@ -113,11 +113,6 @@ def build_edge_index_np(
     max_r = float(rad.max()) * 2 + eps_dist
     tree = cKDTree(pos)
     pairs = tree.query_pairs(r=max_r, output_type="ndarray")
-
-    if len(pairs) == 0:
-        empty = np.zeros(0, dtype=np.int64)
-        return empty, empty
-
     ii, jj = pairs[:, 0], pairs[:, 1]
     dists = np.linalg.norm(pos[ii] - pos[jj], axis=-1)
     thresholds = rad[ii] + rad[jj] + eps_dist

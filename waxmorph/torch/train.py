@@ -423,15 +423,7 @@ def train(
             phase="post-backward",
         )
         if config.grad_clip_norm is not None:
-            grad_norm = _clip_grad_norm_stable(
-                model.named_parameters(), config.grad_clip_norm, epoch=epoch
-            )
-            if not torch.isfinite(grad_norm):
-                optimizer.zero_grad(set_to_none=True)
-                raise ValueError(
-                    f"Non-finite gradient norm after clipping at epoch {epoch}: "
-                    f"grad_norm={grad_norm.detach().cpu().item()!r}"
-                )
+            _clip_grad_norm_stable(model.named_parameters(), config.grad_clip_norm, epoch=epoch)
 
         optimizer.step()
         _raise_on_nonfinite_named_tensors(

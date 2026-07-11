@@ -141,8 +141,7 @@ class PyVistaInterface(RenderInterface):
                 [hsluv.hsluv_to_rgb((float(h), float(s), float(lightness))) for h in hues],
                 dtype=float,
             )
-            rgb = np.clip(rgb, 0.0, 1.0)
-            return rgb
+            return np.clip(rgb, 0.0, 1.0)
         except Exception:
             h01 = (hues / 360.0).astype(float)
             hsv = np.stack([h01, np.full_like(h01, 0.85), np.full_like(h01, 0.95)], axis=-1)
@@ -156,8 +155,7 @@ class PyVistaInterface(RenderInterface):
 
         uniq, inv = np.unique(cats, return_inverse=True)
         palette = PyVistaInterface._husl_palette(len(uniq))
-        rgb = palette[inv]
-        return (rgb * 255).astype(np.uint8)
+        return (palette[inv] * 255).astype(np.uint8)
 
     @staticmethod
     def _rgb_from_morph(morphogens: np.ndarray) -> np.ndarray:
@@ -232,8 +230,7 @@ class PyVistaInterface(RenderInterface):
     def _glyph_spheres(points_pd: pv.PolyData, theta_res=24, phi_res=12) -> pv.PolyData:
         _require_pyvista()
         base = pv.Sphere(radius=1.0, theta_resolution=theta_res, phi_resolution=phi_res)
-        glyphs = points_pd.glyph(geom=base, scale="radius", orient=False)
-        return glyphs
+        return points_pd.glyph(geom=base, scale="radius", orient=False)
 
     @staticmethod
     def _glyph_polarity_arrows(
@@ -259,13 +256,12 @@ class PyVistaInterface(RenderInterface):
         )
         arrow.translate((-0.5, 0.0, 0.0), inplace=True)
 
-        glyphs = points_pd.glyph(
+        return points_pd.glyph(
             geom=arrow,
             orient=vector_name,
             scale=False,
             factor=float(length),
         )
-        return glyphs
 
     @staticmethod
     def cleanup(
@@ -549,7 +545,6 @@ class _UsdStageBackend(_BaseBackend):
         mesh_points=None,
         mesh_indices=None,
     ) -> None:
-        _ = (mesh_points, mesh_indices)
         self.renderer.begin_frame(float(t))
         self.renderer.render_points(
             name,

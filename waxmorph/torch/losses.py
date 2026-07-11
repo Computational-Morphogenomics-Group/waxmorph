@@ -106,9 +106,7 @@ def make_samples_loss(params: dict[str, Any] | None = None, **kwargs: Any) -> Sa
     Hausdorff. Hausdorff without a kernel uses ``energy_kernel``, including GeomLoss's legacy
     import fallback. JAX's factory is OTT Sinkhorn-only.
     """
-    merged: dict[str, Any] = {}
-    if params is not None:
-        merged.update(params)
+    merged = dict(params) if params is not None else {}
     merged.update(kwargs)
 
     unknown = sorted(str(key) for key in merged if key not in SAMPLES_LOSS_DEFAULTS)

@@ -80,12 +80,7 @@ def build_edge_index(
     rad = _snapshot_numpy(R, active).astype(np.float32, copy=False)
 
     senders, receivers = build_edge_index_np(pos, rad, eps_dist)
-
-    if len(senders) == 0:
-        ei = np.zeros((2, 0), dtype=np.int64)
-    else:
-        ei = np.stack([senders, receivers], axis=0)
-
+    ei = np.stack([senders, receivers], axis=0)
     num_edges = ei.shape[1]
 
     if max_edges is not None:

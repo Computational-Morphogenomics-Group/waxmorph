@@ -128,14 +128,13 @@ def make_sinkhorn_loss(
             )
 
     def loss_fn(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
-        divergence, _ = sd.sinkhorn_divergence(
+        return sd.sinkhorn_divergence(
             pointcloud.PointCloud,
             X_pred,
             X_target,
             cost_fn=cost_fn,
             epsilon=blur**p,
-            solve_kwargs=solve_kwargs if solve_kwargs else {},
-        )
-        return divergence
+            solve_kwargs=solve_kwargs,
+        )[0]
 
     return loss_fn
