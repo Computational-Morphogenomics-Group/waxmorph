@@ -9,7 +9,7 @@ FOUR_THIRDS_PI: float = 4.1887902047863905
 # Emulator and learned-graph contact slack; discrete topology is detached from gradients.
 EPS_DIST: float = 1e-2
 
-# Warp HashGrid cells per axis; this affects search performance, not physical parameters.
+# Warp HashGrid cells per axis tune search performance.
 HASH_GRID_DIM: int = 128
 
 # Additive offset for denominators that may reach zero.

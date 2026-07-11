@@ -1,7 +1,7 @@
 """PyTorch losses for row-aligned or unordered point clouds.
 
 ``squared_loss`` requires row correspondence. Chamfer and GeomLoss samples are
-permutation-invariant; JAX offers OTT Sinkhorn rather than all GeomLoss families.
+permutation-invariant; JAX offers OTT Sinkhorn, while PyTorch offers GeomLoss families.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ def squared_loss(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
         \mathcal{L} = \lVert X^f - X^T \rVert_F^2
 
     Rows are fixed correspondences and shapes must match. Use :func:`chamfer_distance` or
-    :func:`make_samples_loss` when row order has no meaning.
+    :func:`make_samples_loss` for unordered rows.
 
     Examples:
         >>> x = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -43,8 +43,8 @@ def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tens
         \mathcal{L} = \frac{1}{N}\sum_i \min_j \lVert X^f_i - X^T_j \rVert
         + \frac{1}{M}\sum_j \min_i \lVert X^f_i - X^T_j \rVert
 
-    The loss is permutation-invariant, permits unequal cloud sizes, and uses Euclidean rather
-    than squared distances. Nearest-neighbor ties are nonsmooth; ``torch.min`` routes the
+    The loss is permutation-invariant, permits unequal cloud sizes, and uses Euclidean
+    distances. Nearest-neighbor ties are nonsmooth; ``torch.min`` routes the
     derivative through its selected index. Inputs must be nonempty rank-2 arrays with equal
     feature width.
 
@@ -84,8 +84,8 @@ def make_samples_loss(params: dict[str, Any] | None = None, **kwargs: Any) -> Sa
     ``params`` and ``kwargs`` merge with ``kwargs`` taking precedence. Unspecified options
     use GeomLoss defaults, explicit ``None`` is retained, and unknown keys raise
     :class:`TypeError`. Supported families are Sinkhorn, Gaussian, Laplacian, energy, and
-    Hausdorff. Hausdorff without a kernel uses ``energy_kernel``, including GeomLoss's legacy
-    import fallback. JAX's factory is OTT Sinkhorn-only.
+    Hausdorff. Hausdorff uses ``energy_kernel`` by default, including GeomLoss's legacy
+    import fallback. JAX's factory provides OTT Sinkhorn divergence.
     """
     merged = dict(params) if params is not None else {}
     merged.update(kwargs)

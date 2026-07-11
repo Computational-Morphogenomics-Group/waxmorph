@@ -1,10 +1,9 @@
 Supervise multiple target frames
 ================================
 
-Use multi-target training when you want the rollout to pass through prescribed
-intermediate morphologies. Both single- and multi-target runs use the same
-``targets`` argument — a final-only run passes one ``(t_rollout - 1, target_pos)``
-pair, as in :ref:`mesh-to-emulator`.
+Use multi-target training to supervise selected intermediate point clouds. A
+final-frame run passes one ``(t_rollout - 1, target_pos)`` pair through the same
+``targets`` argument, as in :ref:`mesh-to-emulator`.
 
 Sample the intermediate shapes with
 :func:`waxmorph.data.sample_mesh_sequence`, which accepts ``(frame, path)``
@@ -35,12 +34,17 @@ pairs, then pass a list of ``(frame, positions)`` targets to ``train``:
 
 .. important::
 
-   Frame indices are zero-based rollout steps *after* updates, so frame ``9``
-   constrains the state after ten learned updates and frame ``49`` the state after
-   fifty. With ``TrainConfig(t_rollout=100)``, ``(99, target_pos)`` therefore
-   supervises the state after 100 learned updates.
+   Frame ``k`` supervises the state after ``k + 1`` complete rollout steps in
+   each model evaluation. Each step includes the learned update and configured
+   mechanics and diffusion. Optimizer updates use the epoch axis; target indices
+   use the within-trajectory frame axis.
 
-``lambda_reg`` weights the squared-displacement regularization that penalizes
-large inter-frame displacement, encouraging smoother deformations. The training
-log carries the per-epoch losses and best rollout trajectories described in
-:ref:`mesh-to-emulator`.
+Frames must be unique integers in ``[0, t_rollout)``; each target must be a
+nonempty ``[M, 3]`` point cloud.
+
+``lambda_reg`` weights
+``sum_t ||dt_gns * GNS_X,t||_F^2``, measured after the learned position head and
+before mechanics. The regularizer covers learned displacement, while the
+physics update governs prescribed mechanical displacement. Histories
+contain ``n_epochs`` post-update entries; one extra rollout evaluates the final
+update, and the selected model, loss, and trajectory align.

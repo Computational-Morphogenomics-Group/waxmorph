@@ -2,9 +2,9 @@
 
 Division grows the active prefix up to caller-owned capacity. Mechanics stores a
 potential gradient and applies ``X_next = X - lr * f_net``; the differentiable
-emulator stores a physical force and adds it. The paths share abstractions, not
-identical kernels or cell-type behavior. ``CT`` encodes mesenchymal as ``0`` and
-epithelial as ``1``.
+emulator stores a physical force and adds it. The paths share abstractions and
+provide purpose-built kernels and cell-type behavior. ``CT`` encodes
+mesenchymal as ``0`` and epithelial as ``1``.
 """
 
 from math import isfinite as _isfinite
@@ -303,7 +303,7 @@ def sticky_sphere_grads(
     r"""Accumulate type-dependent mechanics and polarity gradients.
 
     Epithelial polarity position-gradient components are clipped to
-    :math:`\pm\max(|f_{soft}|,10^{-3})`; thickness gradients are not clipped.
+    :math:`\pm\max(|f_{soft}|,10^{-3})`; thickness gradients retain their full values.
     """
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
@@ -889,7 +889,7 @@ def reaction_step_masked(
     A_next: wp.array(dtype=wp.float32),
     I_next: wp.array(dtype=wp.float32),
 ):
-    """Apply nonlinear reaction only to the selected cell type.
+    """Apply nonlinear reaction to the selected cell type and diffusion to the remaining cells.
 
     All cells diffuse; unmatched cells receive pure diffusion. Matched cells use
     the same production cap, semi-implicit damping, and output clamp as
@@ -1121,8 +1121,8 @@ def growth_step(
         \dot r_i=(1-r_i/r_i^{eq})^2.
 
     Here :math:`a_i=A_i/(V_i+EPS_DEN)`; the physical-radius ratio is regularized
-    by the same denominator constant. Physical radii move only while below their
-    target and cannot overshoot. Mesenchymal keys advance in place.
+    by the same denominator constant. Physical radii below their target advance
+    toward it and stop at that bound. Mesenchymal keys advance in place.
     Mesenchymal targets are capped at ``R_max``; epithelial targets copy through
     and physical radii approach ``R_ref``. ``dt`` and ``R_max`` must be finite and
     nonnegative; ``R_ref`` must be finite and positive.
@@ -1210,7 +1210,8 @@ def st_gumbel_softmax_bernoulli(
     ``p`` is clamped to ``[RAND_EPS, 1-RAND_EPS]``. For positive ``tau`` and
     ``tmax``, the sampled temperature is
     ``max(0.1, tau * exp(-log(tau / 0.1) * t / tmax))``.
-    :func:`division_decision` consumes only the hard sample.
+    :func:`division_decision` bases division on the hard sample; the soft relaxation remains
+    available to callers.
     """
 
     p = wp.clamp(p, RAND_EPS, 1.0 - RAND_EPS)
@@ -1266,9 +1267,9 @@ def division_decision(
     r"""Sample divisions and atomically reserve bounded daughter slots.
 
     Mesenchymal eligibility follows the radius Hill probability. Epithelial
-    cells use ``p_epi`` only beside mesenchyme and below ``epi_max_neighbors``
+    eligibility uses ``p_epi`` beside mesenchyme and below ``epi_max_neighbors``
     epithelial neighbors. Accepted parents receive unique indices below
-    ``max_particles``; the counter never exceeds capacity. ``div_count[0]`` must
+    ``max_particles``; the counter stays within capacity. ``div_count[0]`` must
     identify the first free slot, launched ``div_slots`` entries must start at
     ``-1``, and state arrays used by the division kernels must have at least
     ``max_particles`` rows. Eligible sampled cells advance their keys in place.
@@ -1383,7 +1384,7 @@ def division_logic_mes_polarity(
     """Split mesenchymal daughters along polarity and epithelial daughters across it.
 
     Inheritance, chemistry, radii, and separation distance match
-    :func:`division_logic`; only the mesenchymal separation direction differs.
+    :func:`division_logic`; mesenchymal separation follows polarity.
     """
 
     parent = wp.tid()

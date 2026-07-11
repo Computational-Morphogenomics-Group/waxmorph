@@ -1,94 +1,89 @@
 Forward and inverse modes
 =========================
 
-waxMorph runs the same cellular representation in two directions. In
-**forward** mode it prescribes every rule and integrates the resulting
-dynamics; in **inverse** mode it prescribes the known physics and learns
-the rest of the local update rule. Both modes share the cell state of
-:doc:`cell_state` and the physical primitives below.
+Forward simulation and inverse emulation share the spheroidal cell state in
+:doc:`cell_state` and provide purpose-built dynamics. Coordinates, radii,
+timesteps, and coefficients are model-scale values. External calibration maps
+them to SI or biological scales when an application requires that interpretation.
 
-Shared physical primitives
---------------------------
+Related primitives, distinct implementations
+--------------------------------------------
 
-Both modes are built from three primitives that act over the contact graph
-(:doc:`graphs_and_locality`): overdamped mechanics, a soft-sphere pairwise
-force, and graph-based molecular diffusion.
-
-Cell motion is overdamped, so velocity is proportional to net force,
-:math:`\nu_i \dot{x}_i = f^{\text{net}}_i`, with :math:`\nu_i` an effective
-friction coefficient absorbed into the mechanical parameters and the time
-scale. Continuous quantities integrate with forward Euler, and polarity vectors
-are renormalized to unit length after each update.
-
-A soft-sphere force imposes volume exclusion and short-range adhesion. For a
-neighbor pair :math:`(i, j)` with center distance :math:`d_{ij}` and unit
-direction :math:`\mathbf{d}_{ij}` pointing from :math:`j` to :math:`i`,
+Both modes use local pair interactions and graph-style molecular diffusion.
+The emulator keeps a fixed agent count and uses one uniform sticky-sphere force.
+For stabilized
+distance :math:`d=\lVert x_i-x_j\rVert_2+\epsilon_n`, direction
+:math:`u=(x_i-x_j)/d`, and :math:`s=r_i+r_j`,
 
 .. math::
 
-   f^{\text{soft}}_{ij} = \Big[ k_{\text{rep}}\,\max(r_i + r_j - \varepsilon - d_{ij},\,0)
-   - k_{\text{att}}\,\max(r_i + r_j + \varepsilon - d_{ij},\,0)\,
-   \mathbb{1}[d_{ij} > r_i + r_j - \varepsilon] \Big]\,\mathbf{d}_{ij},
+   F_{ij} = \left[2\max(s-\epsilon_d-d,0)
+   -0.5\max(s+\epsilon_d-d,0)\mathbb{1}[d>s-\epsilon_d]\right]u,
 
-where the repulsive branch acts for :math:`d_{ij} < r_i + r_j - \varepsilon`
-and a short-range attractive branch acts over the band
-:math:`[r_i + r_j - \varepsilon,\, r_i + r_j + \varepsilon]`.
+where :math:`\epsilon_d=0.01` model units. Its Euler update adds this force.
+The simulator subtracts a potential-gradient buffer, uses
+``K_REP=3``, type-dependent attraction and ranges, and ``EPS_DIST=0.25`` for
+contact-local polarity and chemistry terms.
 
-Molecular transport is diffusion over the contact graph. For a concentration
-field :math:`c`, the discrete graph Laplacian at cell :math:`i` sums the
-differences to its neighbors,
+For emulator concentrations, the graph Laplacian is
 
 .. math::
 
-   (L_G c)_i = \sum_{j:\,(i,j)\in E(t)} (c_i - c_j).
+   (L_G c)_i=\sum_{j:(i,j)\in E}(c_i-c_j), \qquad
+   c_i' = \max(c_i-D_{emu}\Delta t\,(L_Gc)_i,0).
 
-Each mode layers its own rules on top of these primitives.
+Simulator chemistry stores activator and inhibitor abundances and converts them
+to concentrations using cell volume.
 
-Forward mode case study - Epithelial / Mesenchymal Turing Spheroids
--------------------------------------------------------------------
+Forward mode: prescribed case study
+-----------------------------------
 
-The forward simulator (:mod:`waxmorph.simulator`) is appropriate when the
-scientific question concerns a specified mechanistic model rather than a learned
-shape-assembly rule. Given an explicit biophysical rule set and initial
-conditions, it integrates the resulting tissue trajectory.
+:mod:`waxmorph.simulator` implements a polarized epithelial-mesenchymal
+aggregate with type-dependent mechanics, activator-inhibitor chemistry, growth,
+and division. The case study defines a prescribed model; application-specific
+calibration connects it to a biological system.
 
-The implemented case study is a polarized epithelial-mesenchymal aggregate
-coupled to a two-component activator-inhibitor reaction-diffusion system. On top
-of the shared primitives it adds cell-type-specific potentials, growth, and
-division: epithelial polarity and thickness potentials maintain the monolayer,
-mesenchymal polarity potentials align cells and orient them up the activator
-gradient, and activator-dependent growth drives division. The activator
-:math:`A` and inhibitor :math:`I` abundances evolve by reaction and diffusion,
+With :math:`a=A/(V+\epsilon)`, :math:`i=I/(V+\epsilon)`, and contact fluxes
+:math:`\ell_A=\sum_j(a_j-a_i)` and :math:`\ell_I=\sum_j(i_j-i_i)`, one chemistry
+step is
 
 .. math::
 
-   \dot{A}_i = \gamma\Big[ -\chi D_{\text{inhib}} (L_G c_A)_i
-   + \tfrac{c_{i,A}^2}{c_{i,I}} - c_{i,A} \Big], \qquad
-   \dot{I}_i = \gamma\big[ -D_{\text{inhib}} (L_G c_I)_i + c_{i,A}^2 - c_{i,I} \big],
+   \Phi_A &= \min\!\left(\frac{a^2}{i+\epsilon},
+                 \frac{a^2}{i^2+\epsilon}\right), \\
+   A' &= \operatorname{clip}\!\left(
+          \frac{A+\Delta t\,\gamma(\chi D_I\ell_A+\Phi_A)}
+               {1+\Delta t\,\gamma},0,10^4\right), \\
+   I' &= \operatorname{clip}\!\left(
+          \frac{I+\Delta t\,\gamma(D_I\ell_I+a^2)}
+               {1+\Delta t\,\gamma},0,10^4\right).
 
-with :math:`\gamma` the reaction time scale, :math:`D_{\text{inhib}}` the
-inhibitor diffusivity, and :math:`0 \le \chi \le 1` the relative activator
-diffusivity. Mesenchymal cells grow toward an activator-driven equilibrium
-radius through a Hill function and divide with a radius-dependent probability;
-the active particle count grows up to the preallocated capacity.
+Optional cell-type masking selects the cells that receive reaction and damping.
+The remaining cells follow an explicit diffusion path, and every output stays
+within the clamp bounds. The reacting-cell update includes the production cap
+and semi-implicit damping.
 
-The inverse mode - Learned emulator for volumetric deformations
----------------------------------------------------------------
+Physical radii below their targets grow monotonically up to those targets;
+radii at or above target remain unchanged. Mesenchymal equilibrium radii are capped
+at ``R_max``. Epithelial equilibrium radii copy through while physical radii
+approach ``R_ref``. Division uses bounded atomic slot reservation, so the active
+count remains within preallocated capacity. Both daughters split chemical
+abundance; mesenchymal daughters rescale radius for half volume, while
+epithelial daughters retain the parent radius.
 
-The learned emulator is appropriate when the question concerns inferring a
-local rollout rule from given source and target morphologies. It prescribes the known
-physics — soft-sphere mechanics and graph-based diffusion — and learns the
-neighbor-dependent updates to position, polarity, and latent molecular state so
-that an initial population assembles the prescribed target volumes.
+Inverse mode: learned emulator with a fixed agent count
+-------------------------------------------------------
 
-The default emulator is a graph-network-based simulator (GNS) in
-:mod:`waxmorph.gnn`, backed by PyTorch, with a JAX/Equinox parity
-implementation under :mod:`waxmorph.jax`. Each rollout step proceeds as:
+The emulator infers a local rollout rule from source and target point clouds.
+It combines GNS updates with its own sticky-sphere mechanics and graph diffusion
+for a fixed particle population. The top-level API uses PyTorch;
+:mod:`waxmorph.jax` provides a counterpart with backend-specific graph tuples,
+loss families, PRNG, checkpoint, and runtime contracts.
 
-1. Construct a contact graph from the current state.
-2. Predict local updates with the GNS.
-3. Apply the learned updates to positions, polarities, and
-   signaling-molecule concentrations.
-4. Apply the differentiable Warp mechanics and graph-Laplacian diffusion
-   corrections.
-5. Accumulate a shape loss at one or more supervised target frames.
+Each model-evaluation step:
+
+1. Builds a learned contact graph from the current state.
+2. Predicts local position, polarity, and concentration increments with the GNS.
+3. Applies the learned increments.
+4. Applies configured differentiable mechanics and diffusion corrections.
+5. Accumulates shape loss at selected target frames.

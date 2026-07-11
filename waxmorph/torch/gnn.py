@@ -1,7 +1,7 @@
 """PyTorch Encode-Process-Decode graph network for cell-state updates.
 
-Contacts are directed COO edges. :mod:`waxmorph.jax.gnn` is a behavioral counterpart,
-not an architecture or serialization identity.
+Contacts are directed COO edges. :mod:`waxmorph.jax.gnn` is a behavioral counterpart with
+backend-specific architecture and serialization.
 Architecture: Sanchez-Gonzalez et al., "Learning to Simulate Complex Physics with Graph
 Networks" (ICML 2020).
 """
@@ -93,7 +93,7 @@ class GNS(nn.Module):
     Independent residual message-passing blocks consume encoded node and edge features.
     Named decoders map final node latents to per-node updates; defaults are ``dX: 3``,
     ``dP: 3``, and ``dc: 2``. ``num_mlp_layers`` counts linear layers in every MLP.
-    ``layer_norm`` applies to encoders and processor MLPs, not decoders.
+    ``layer_norm`` applies to encoders and processor MLPs; decoders project directly to outputs.
     ``checkpoint_processor`` recomputes processor and decoder activations during backward
     to reduce saved activation memory.
 
@@ -207,8 +207,8 @@ class GNS(nn.Module):
     def load(cls, path: str | Path, **kwargs) -> GNS:
         """Load the ``config``/``state_dict`` schema written by :meth:`save`.
 
-        ``kwargs`` pass to :func:`torch.load`. ``weights_only=False`` unpickles Python
-        objects and can execute code; load only trusted checkpoints.
+        Use checkpoints from trusted sources; ``weights_only=False`` can execute serialized
+        Python code. ``kwargs`` pass to :func:`torch.load`.
         """
         data = torch.load(path, weights_only=False, **kwargs)
         model = cls(**data["config"])

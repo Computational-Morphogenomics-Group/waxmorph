@@ -1,4 +1,4 @@
-"""PyTorch training primitives for non-growing shape assembly."""
+"""PyTorch training primitives for shape assembly with a fixed agent count."""
 
 from __future__ import annotations
 
@@ -23,11 +23,12 @@ from waxmorph.torch.warp_autograd import WarpDiffusionStep, WarpMechStep
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
-    r"""Non-growing rollout and optimizer settings.
+    r"""Rollout and optimizer settings for a fixed agent count.
 
     ``n_epochs`` counts optimizer updates; histories evaluate each resulting model, requiring
     one extra rollout. Each rollout has ``t_rollout`` learned steps. ``mech_steps`` and
-    ``diff_steps`` are prescribed substep counts; zero disables the corresponding correction.
+    ``diff_steps`` are prescribed substep counts; zero selects the identity path for that
+    correction.
     ``dt_gns`` scales all learned deltas. ``dt_mech`` and ``dt_diff`` are explicit step sizes
     whose stable range depends on the active forces and graph; nonfinite states are rejected.
     Diffusion applies :math:`c\leftarrow\max(c-D_{emu}L_Gc\,\Delta t_{diff},0)`.
@@ -38,8 +39,8 @@ class TrainConfig:
 
         L_{reg}=\sum_t\lVert\Delta t_{GNS}\,GNS_{X,t}\rVert_F^2.
 
-    The regularizer is measured before mechanics and excludes prescribed displacement.
-    ``grad_clip_norm`` caps the global L2 gradient norm; ``None`` disables clipping.
+    The regularizer measures learned displacement before the mechanics correction.
+    ``grad_clip_norm`` caps the global L2 gradient norm; ``None`` keeps the computed gradients.
     ``log_every`` controls progress output. JAX adds ``max_edges_factor`` for its static edge
     capacity.
 
@@ -291,13 +292,13 @@ def train(
     input polarities are used as supplied for the first graph, whose angle feature assumes
     unit vectors; later learned updates apply normalization. ``loss_fn`` maps predicted
     ``[N, 3]`` and target ``[M, 3]`` positions to a scalar. Targets are unique
-    ``(frame, [M, 3])`` pairs with ``0 <= frame < t_rollout``. Frame 0 supervises the state
-    after the first complete rollout step, not the source.
+    ``(frame, [M, 3])`` pairs with ``0 <= frame < t_rollout``. The source precedes indexed
+    frames; frame 0 supervises the state after the first complete rollout step.
 
     ``device`` must be accepted by Torch and Warp. A new ``save_path`` receives the best GNS
     checkpoint and compressed log. An existing trusted checkpoint must match the supplied
-    model; its weights load into that object, optimizer state is cleared, and one refinement
-    update runs without overwriting either file. See :class:`TrainResult` for the log schema.
+    model; its weights load into that object, optimizer state starts fresh, and one refinement
+    update preserves both existing files. See :class:`TrainResult` for the log schema.
     The JAX counterpart requires CUDA for its Warp custom VJPs and adds a static edge-capacity
     setting.
     """

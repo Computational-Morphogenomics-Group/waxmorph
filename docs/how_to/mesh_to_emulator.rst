@@ -72,13 +72,12 @@ straight from the graph:
    out = model(node_features, edge_index, edge_features)
    # out["dX"], out["dP"], out["dc"] are the predicted per-cell increments.
 
-The GNS does not displace cells directly — it predicts per-cell update fields.
-:func:`waxmorph.train.train` applies those fields during a rollout and
+The GNS predicts per-cell update fields. :func:`waxmorph.train.train` applies
+those fields during a rollout and
 interleaves the differentiable mechanics and diffusion corrections described in
 :doc:`../explanation/differentiable_physics`.
 
-Train and read back the result. Supervising only the endpoint passes a single
-target:
+Train and read back the result. Endpoint supervision passes a single target:
 
 .. code-block:: python
 
@@ -110,7 +109,7 @@ The training log records the per-epoch ``losses_total``, ``losses_shape``, and
 Where to go next
 ----------------
 
-* Supervise intermediate morphologies, not just the endpoint:
+* Supervise intermediate and endpoint morphologies:
   :doc:`multiple_targets`.
 * Run the same workflow on JAX: :doc:`choose_backend`.
 * Turn ``best_traj_pos`` into a movie: :doc:`render_trajectories`.

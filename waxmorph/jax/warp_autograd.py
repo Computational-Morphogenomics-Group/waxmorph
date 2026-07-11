@@ -1,9 +1,9 @@
-"""CUDA-only JAX/Warp custom-VJP bridge for frozen-pair physics.
+"""JAX/Warp custom-VJP bridge for frozen-pair physics on CUDA.
 
-Backward-enabled Warp FFI differentiates separate per-pair kernels; JAX owns endpoint
+Backward-enabled Warp FFI differentiates dedicated per-pair kernels; JAX owns endpoint
 gathers, masking, scatter aggregation, and state updates. ``pair_i`` and ``pair_j`` are
-constructed outside autodiff, so gradients treat topology as fixed. PyTorch instead records
-its emulator kernels on a :class:`warp.Tape`; the two bridges do not share kernel objects.
+constructed outside autodiff, so gradients treat topology as fixed. PyTorch records its
+emulator kernels on a :class:`warp.Tape`; JAX uses per-pair FFI kernel objects.
 
 Top-level JAX APIs are preferred; a lazy legacy fallback supports the declared Warp 1.10
 minimum.
@@ -33,8 +33,8 @@ def _load_jax_kernel():
 def _device_requires_cuda(device: str | wp.Device | None) -> str:
     """Require available CUDA-capable Warp and JAX backends.
 
-    ``None`` selects ``"cuda"``. Missing, non-CUDA, or uninitialized backends raise
-    ``RuntimeError`` rather than falling back to CPU.
+    ``None`` selects ``"cuda"``. The bridge requires initialized CUDA backends and raises
+    ``RuntimeError`` for other device configurations.
     """
     device_name = "cuda" if device is None else str(device)
     if not device_name.startswith("cuda"):
@@ -152,17 +152,17 @@ def warp_mech_step(
     ``EPS_DIST``, and :math:`\epsilon_n` is ``EPS_NORM``. JAX scatter-adds endpoint forces
     and applies :math:`\mathbf x\leftarrow\mathbf x+\mathrm{dt}\,\mathbf F`.
 
-    The custom VJP differentiates ``X`` and ``R`` through per-pair forces, not pair selection.
-    ``max`` has zero derivative on inactive branches; the strict adhesion indicator is
-    constant in backward. Values at their nonsmooth boundaries follow Warp's branch
-    convention.
+    The custom VJP differentiates ``X`` and ``R`` through per-pair forces while pair
+    selection remains a fixed forward input. ``max`` has zero derivative on inactive
+    branches; the strict adhesion indicator is constant in backward. Values at their
+    nonsmooth boundaries follow Warp's branch convention.
 
     ``pair_i`` and ``pair_j`` are unordered frozen endpoints. For a padded pair buffer,
     ``num_pairs`` masks indices beyond the real count; omitted means all pairs are real. An
     empty buffer returns ``X`` unchanged.
 
     Raises:
-        RuntimeError: If ``device`` is not a CUDA-backed Warp/JAX device.
+        RuntimeError: If CUDA-backed Warp/JAX device validation fails.
     """
     _device_requires_cuda(device)
 
@@ -222,7 +222,7 @@ def warp_diffusion_step(
     pair is real. An empty pair buffer returns ``c`` unchanged.
 
     Raises:
-        RuntimeError: If ``device`` is not a CUDA-backed Warp/JAX device.
+        RuntimeError: If CUDA-backed Warp/JAX device validation fails.
     """
     _device_requires_cuda(device)
 

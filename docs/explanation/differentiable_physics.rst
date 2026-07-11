@@ -1,54 +1,47 @@
 Emulator differentiability
 ==========================
 
-The emulator makes the prescribed biophysics differentiable, so gradients of the
-shape loss flow back through the soft-sphere mechanics and the graph diffusion.
+The learned emulator differentiates its uniform sticky-sphere mechanics and
+graph diffusion so their gradients compose with the GNS.
 
-Spatial adjacencies within an update step
------------------------------------------
+Frozen topology within each correction
+--------------------------------------
 
-Each emulation step applies the learned GNS (graph-network-based simulator)
-updates and then the prescribed
-constraints. The constraints run ``n_substeps`` times per learned update and can
-run on a faster time scale, keeping the trajectory biophysically coherent.
+Each learned update may be followed by ``mech_steps`` mechanics calls and
+``diff_steps`` diffusion calls; zero selects the identity path for that
+correction. ``dt_mech`` and ``dt_diff`` set their respective explicit step
+sizes.
 
-The differentiable path in :mod:`waxmorph.emulator` records these pairwise
-kernels while *freezing the neighbor topology for the step*, feasible for small
-enough step sizes :math:`\Delta t` and large enough trajectory length :math:`T`,
-where mechanical deformations stay smooth. The edge set :math:`E^{t+1}` is
-rebuilt from the provisional positions, then held fixed while the constraint
-forces and diffusion are computed and differentiated. As in
-:doc:`graphs_and_locality`, gradients flow through the cell states, not through
-the discrete appearance or disappearance of an edge. The spatial adjacency graph
-rather than a fully connected one reduces computational complexity drastically.
+Pair discovery occurs outside autodiff. Topology is rebuilt between correction
+calls as the state evolves, then held fixed while that call is differentiated.
+Gradients cover continuous force, flux, and state arithmetic; neighbor topology
+remains a discrete forward input. Learned graphs use a host
+:class:`scipy.spatial.cKDTree`; prescribed emulator
+corrections use a Warp HashGrid. Candidate and output work depends on local
+density and can be quadratic for dense states.
 
+Torch Tape and JAX custom VJP
+-----------------------------
 
-The Warp tape
--------------
+:mod:`waxmorph.torch.warp_autograd` wraps each mechanics or diffusion call in a
+:class:`torch.autograd.Function` with a fresh :class:`warp.Tape`. Backward seeds
+the output adjoint and replays the recorded emulator kernels. The mechanics
+bridge exposes position gradients; the diffusion bridge exposes concentration
+gradients.
 
-The bridge that makes Warp differentiable to the learning framework lives in
-:mod:`waxmorph.torch.warp_autograd` and :mod:`waxmorph.jax.warp_autograd`. On
-the forward pass it records every kernel launch on a :class:`warp.Tape`. On the
-backward pass it replays that tape in reverse to propagate gradients: the torch
-side wraps this in a :class:`torch.autograd.Function`, and the jax side exposes
-it as a custom VJP. Either way, the physics corrections become a differentiable
-node in the surrounding computation graph, and the shape-loss gradient reaches
-the GNS parameters through the physics.
+:mod:`waxmorph.jax.warp_autograd` uses custom VJPs on CUDA, backed by dedicated
+backward-enabled per-pair Warp FFI kernels. JAX owns endpoint gathers,
+padding masks, scatter-adds, and state updates. Its mechanics bridge
+differentiates positions and radii on the frozen pairs; diffusion differentiates
+concentrations. Adding a correction therefore requires backend-specific bridge
+work.
 
-Because the physics enters through a recorded tape behind a standard autograd
-interface, a new prescribed constraint can be added as a Warp kernel and exposed
-through the same bridge, without rewriting how gradients reach the network.
+Simulator derivative implementations
+====================================
 
-Simulator differentiability
-===========================
-
-The forward simulator can obtain its mechanical updates either from
-analytically derived gradients or from Warp's automatic differentiation of the
-same scalar potentials.
-
-.. note::
-
-   The two routes agree up to the baseline variation caused by nondeterministic
-   GPU execution — floating-point atomic reductions and random memory-access
-   order — which is why waxMorph offers both and treats autodiff as a drop-in
-   alternative to the closed-form forces.
+The forward simulator provides its own derivative implementations.
+``mech_step_sticky`` uses explicit pair derivatives.
+``mech_step_sticky_implicit`` uses local :func:`warp.grad` evaluation for
+polarity, thickness, mesenchymal alignment, and optional WNT terms; its
+soft-sphere derivatives remain explicit. Both paths use atomic reductions, so
+floating-point reduction order may vary on parallel devices.

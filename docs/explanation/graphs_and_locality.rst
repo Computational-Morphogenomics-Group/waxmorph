@@ -1,47 +1,45 @@
 Graphs and locality
 ===================
 
-The central modelling assumption in waxMorph is locality: a cell influences
-primarily its spatial neighbors. waxMorph evaluates every interaction — mechanics,
-polarity potentials, and molecular diffusion — over a spatial adjacency graph
-rather than over a global image grid, and it rebuilds that graph as the tissue
-deforms.
+waxMorph restricts interactions to spatial neighbors. Learned graph features
+use detached host topology; simulator and emulator Warp kernels perform their
+own HashGrid neighbor searches.
 
-How the contact graph is built
-------------------------------
+Learned contact graphs
+----------------------
 
-Graph construction lives in :mod:`waxmorph.graph`, :mod:`waxmorph.torch.graph`,
-and :mod:`waxmorph.jax.graph`, all sharing the contact-adjacency core in
-:mod:`waxmorph._graph_core` so the topology is identical across backends. The
-graph places one node per cell and connects cells :math:`i` and :math:`j` when
-their centers fall within the sum of their radii plus a small contact buffer,
+:mod:`waxmorph.torch.graph` and :mod:`waxmorph.jax.graph` share
+:mod:`waxmorph._graph_core`. Distinct cells :math:`i` and :math:`j` produce both
+directed edges when
 
 .. math::
 
-   \lVert x_i - x_j \rVert_2 \le r_i + r_j + \varepsilon.
+   \lVert x_i-x_j\rVert_2 \le r_i+r_j+\varepsilon.
 
-Node features carry the per-cell signaling-molecule concentrations. Edge
-features concatenate the center distance :math:`d_{ij} = \lVert x_i - x_j
-\rVert_2` and the polarity angle :math:`\theta_{ij} = \arccos(p_i^\top p_j)`.
-Because the graph is induced by cell positions rather than by a fixed mesh of
-cell boundaries, neighborhoods change as cells move; rebuilding the graph each
-step, combined with spatial hashing, keeps the cost :math:`O(N)` rather than
-:math:`O(N^2)`.
+The default :math:`\varepsilon` is ``0.01`` model units. A host
+:class:`scipy.spatial.cKDTree` first queries candidates within
+``2 * max(radius) + eps_dist``; the variable-radius criterion then filters
+them. Candidate and output work is density-sensitive; dense graphs realize
+quadratic pair counts. The simulator independently uses HashGrid searches and local
+``EPS_DIST=0.25`` for adjacency-gated polarity and chemistry terms.
 
-Why the topology is frozen within a step
-----------------------------------------
+Backend feature contracts
+-------------------------
 
-For PyTorch inputs, feature construction stays differentiable, but the edge
-topology is built from a *detached* snapshot of positions and radii.
+Node features are signaling-molecule concentrations. Edge features concatenate
+distance and
+:math:`\arccos(\operatorname{clip}(p_i^\top p_j))`. Polarities must be unit
+vectors because both backends use the supplied dot products directly. Torch uses the exact
+Euclidean edge norm and returns unpadded arrays. JAX regularizes real-edge
+distance as
+:math:`\sqrt{\lVert x_i-x_j\rVert_2^2+\mathrm{EPS\_NORM}^2}`, masks padded
+self-edges, and always returns the real-edge count; ``max_edges`` enables fixed
+capacity padding.
 
-.. note::
+Gradient boundary
+-----------------
 
-   Gradients therefore flow through distances, angles, signaling-molecule
-   concentrations, and model parameters — but not through the discrete event of
-   an edge appearing or disappearing within a single step.
-
-This is the standard approximation in differentiable particle systems: optimize
-the continuous state while treating the contact graph as fixed over the current
-local update. :doc:`differentiable_physics` covers how that approximation
-interacts with the Warp autodiff that propagates gradients through the physics
-corrections.
+Both backends copy positions and radii to the host to build topology. Node and
+edge features remain differentiable after the edge set is fixed. Gradients
+cover continuous feature arithmetic while edge appearance remains a discrete
+forward choice. Each graph construction rebuilds topology from the current state.

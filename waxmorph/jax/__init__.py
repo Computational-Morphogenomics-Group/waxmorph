@@ -1,8 +1,8 @@
 """Explicit JAX/Equinox backend; top-level :mod:`waxmorph` imports use PyTorch.
 
-JAX uses padded static graph buffers, Optax, explicit PRNG keys, and CUDA-only custom VJPs
-for Warp physics. Its loss factory provides OTT Sinkhorn divergence rather than PyTorch's
-broader GeomLoss family.
+JAX uses padded static graph buffers, Optax, explicit PRNG keys, and custom VJPs on CUDA
+for Warp physics. Its loss factory provides OTT Sinkhorn divergence; PyTorch provides
+GeomLoss families.
 """
 
 from .gnn import GNS, GraphNetworkBlock

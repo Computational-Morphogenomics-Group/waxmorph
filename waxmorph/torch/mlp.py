@@ -15,8 +15,8 @@ _ACTIVATIONS = {
 class MLP(nn.Module):
     """MLP with one or more linear layers.
 
-    ``num_layers`` counts all linear layers. Depth one is a single affine map with no
-    activation; deeper networks apply the selected activation after each hidden layer.
+    ``num_layers`` counts all linear layers. Depth one is a single affine map; deeper
+    networks apply the selected activation after each hidden layer.
     Optional LayerNorm follows the final projection. Activations are ``relu``, ``silu``,
     ``gelu``, and ``tanh``. Boolean, nonintegral, and nonpositive depths are rejected.
 

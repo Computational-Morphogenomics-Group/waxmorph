@@ -1,7 +1,8 @@
 """JAX losses for ordered arrays and unordered point clouds.
 
-``squared_loss`` requires row correspondence; Chamfer and Sinkhorn do not. The OTT factory
-provides only debiased Sinkhorn divergence, unlike PyTorch's broader GeomLoss factory.
+``squared_loss`` uses row correspondence; Chamfer and Sinkhorn support unordered clouds.
+The OTT factory provides debiased Sinkhorn divergence; PyTorch also provides GeomLoss
+families.
 """
 
 from __future__ import annotations
@@ -17,8 +18,7 @@ from waxmorph._validation import _validate_chamfer_shapes, _validate_same_shape
 def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
     r"""Squared Frobenius norm for row-aligned arrays of equal shape.
 
-    Use :func:`chamfer_distance` or :func:`make_sinkhorn_loss` when rows have no shared
-    identity.
+    Use :func:`chamfer_distance` or :func:`make_sinkhorn_loss` for unordered rows.
 
     .. math::
         \mathcal{L} = \lVert X^f - X^T \rVert_F^2
@@ -39,8 +39,7 @@ def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
 def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
     r"""Two directional mean distances between unordered, possibly unequal clouds.
 
-    The Euclidean, not squared, nearest-neighbor terms are permutation-invariant and
-    exchange-symmetric:
+    Euclidean nearest-neighbor terms provide permutation invariance and exchange symmetry:
 
     .. math::
 
@@ -52,7 +51,7 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
     finite zero-gradient branch.
 
     Raises:
-        ValueError: If either cloud is empty or not rank 2, or feature widths differ.
+        ValueError: If either cloud is empty, has another rank, or has a different width.
 
     Examples:
         >>> x = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -81,17 +80,17 @@ def make_sinkhorn_loss(
         -\tfrac12\mathrm{OT}_\varepsilon(\alpha,\alpha)
         -\tfrac12\mathrm{OT}_\varepsilon(\beta,\beta).
 
-    ``blur`` sets ``epsilon = blur ** p``. Without ``cost_fn``, ``p=1`` selects Euclidean
-    cost and ``p=2`` selects half squared Euclidean cost; other exponents require an
-    explicit cost. An explicit cost replaces only that selection, while ``p`` still sets the
-    epsilon exponent. ``solve_kwargs`` are forwarded to OTT.
+    ``blur`` sets ``epsilon = blur ** p``. With ``cost_fn=None``, ``p=1`` selects Euclidean
+    cost and ``p=2`` selects half squared Euclidean cost; other exponents use an explicit
+    cost. An explicit cost replaces that selection, while ``p`` still sets the epsilon
+    exponent. ``solve_kwargs`` are forwarded to OTT.
 
-    The factory is always debiased and does not map GeomLoss's MMD, Hausdorff, ``scaling``,
-    or ``reach`` options. Different solvers and option sets preclude numerical-equivalence
-    guarantees with :func:`waxmorph.torch.losses.make_samples_loss`. OTT is imported lazily.
+    The factory provides debiased Sinkhorn divergence with OTT options. PyTorch's GeomLoss
+    factory additionally provides MMD, Hausdorff, ``scaling``, and ``reach`` contracts.
+    Numerical values follow each solver's options. OTT is imported lazily.
 
     Raises:
-        ImportError: If ``ott-jax`` is not installed.
+        ImportError: If importing ``ott-jax`` fails.
     """
     from ott.geometry import costs, pointcloud
     from ott.tools import sinkhorn_divergence as sd

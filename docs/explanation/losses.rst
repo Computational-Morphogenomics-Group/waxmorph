@@ -1,15 +1,15 @@
 Shape losses
 ============
 
-The shape loss measures how close a predicted cell population is to a target
-morphology. :mod:`waxmorph.losses` provides both families.
+Shape losses compare predicted positions with target point clouds.
 
 When cell identity is known
 ---------------------------
 
 ``squared_loss`` applies when each predicted cell has a known target identity
 and row order is meaningful — the loss compares cell :math:`i` against target
-:math:`i` directly. Use it only when the experiment tracks cell identities.
+:math:`i` directly. Input shapes must match exactly. Use it for experiments
+that track cell identities.
 
 When the target is an unordered cloud
 -------------------------------------
@@ -19,7 +19,7 @@ clouds are unordered, so the loss must be a distributional distance between
 point sets. ``chamfer_distance`` and ``make_samples_loss`` apply here.
 
 ``chamfer_distance`` sums the mean nearest-neighbor distance in each direction,
-so exchanging clouds with different point counts does not change the value:
+giving the same value when clouds with different point counts are exchanged:
 
 .. math::
 
@@ -28,30 +28,32 @@ so exchanging clouds with different point counts does not change the value:
 
 Both clouds must be nonempty rank-2 arrays with the same feature width.
 
-The shape loss sums a distributional distance over the supervised goal frames,
+Training sums the selected distance over supervised frames,
 
 .. math::
 
    L_{\text{shape}} = \sum_{k=1}^{K} d\big(X_{\tau_k}, \tilde{X}_{\tau_k}\big),
 
-reducing to :math:`d(X_T, \tilde{X}_T)` for a single terminal target. The
+reducing to :math:`d(X_T, \tilde{X}_T)` for a single terminal target. PyTorch's
 GeomLoss-backed ``make_samples_loss`` exposes maximum mean discrepancy,
-Hausdorff divergence, and debiased Sinkhorn divergence. The default is the
-Sinkhorn divergence, a fast approximation of the 2-Wasserstein distance between
-the empirical measures of the two clouds.
+Hausdorff divergence, and debiased Sinkhorn divergence. JAX's
+``make_sinkhorn_loss`` exposes debiased OTT Sinkhorn divergence. Numerical
+values follow each backend's cost, solver, and option contract. In the
+PyTorch factory, omitted ``truncate`` uses ``5`` while explicit ``None`` is
+preserved.
 
 Regularizing the trajectory
 ---------------------------
 
-Supervising only a few goal frames leaves the in-between motion underconstrained.
-A regularizer penalizes large position changes between consecutive frames,
+The training regularizer penalizes the learned position head before prescribed
+mechanics,
 
 .. math::
 
-   L_{\text{reg}} = \lambda \sum_{t=1}^{T-1}
-   \lVert X_t - X_{t+1} \rVert_F^2,
+   L_{\text{reg}} = \sum_t
+   \lVert \Delta t_{\mathrm{GNS}}\,\mathrm{GNS}_{X,t} \rVert_F^2.
 
-with strength :math:`\lambda` (the ``lambda_reg`` knob) and
-:math:`\lVert \cdot \rVert_F` the Frobenius norm. It discourages trajectories
-that satisfy the goals only at the supervised time points. The total trajectory
-loss optimized by the emulator is :math:`L = L_{\text{shape}} + L_{\text{reg}}`.
+``lambda_reg`` supplies its weight, so the optimized loss is
+:math:`L=L_{\mathrm{shape}}+\lambda_{\mathrm{reg}}L_{\mathrm{reg}}`.
+This regularizer measures learned displacement; the physics update governs
+prescribed mechanical displacement.

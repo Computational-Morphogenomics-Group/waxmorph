@@ -1,9 +1,10 @@
 """Torch autograd adapters for Warp mechanics and diffusion.
 
 Each forward call owns a fresh :class:`warp.Tape` and a frozen neighbor list. Backward seeds
-the output adjoint and replays that tape; only the documented Torch state receives a gradient.
-Torch uses the input's Warp-compatible device. JAX instead uses CUDA-only custom VJPs; the
-bridges do not promise identical gradients.
+the output adjoint and replays that tape. The gradient contract covers the documented Torch
+state.
+Torch uses the input's Warp-compatible device. JAX uses custom VJPs on CUDA. Each bridge
+provides its documented gradient contract.
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ from waxmorph.emulator import (
 
 
 class WarpMechStep(torch.autograd.Function):
-    r"""Sticky-sphere Euler step differentiating positions only.
+    r"""Sticky-sphere Euler step with position gradients.
 
     Forward gives Warp a zero-copy view of contiguous detached Torch storage, discovers pairs
     outside a fresh tape, and records :math:`X_{out}=X+\Delta t\,F(X,R)` on that frozen list.
-    Backward returns :math:`dL/dX`; radii and scratch objects receive no Torch gradient.
+    Backward returns :math:`dL/dX`; radii and scratch objects remain constants in Torch.
     """
 
     @staticmethod
@@ -35,7 +36,7 @@ class WarpMechStep(torch.autograd.Function):
         f_net_wp: wp.array,
         grid: wp.HashGrid | None,
     ) -> torch.Tensor:
-        # Warp shares storage only with the contiguous detached tensor.
+        # Warp shares storage with the contiguous detached tensor.
         X_wp = wp.from_torch(X_torch.detach().contiguous(), dtype=wp.vec3f)
         X_wp.requires_grad = True
 
@@ -61,12 +62,12 @@ class WarpMechStep(torch.autograd.Function):
 
 
 class WarpDiffusionStep(torch.autograd.Function):
-    r"""Graph diffusion step differentiating concentrations only.
+    r"""Graph diffusion step with concentration gradients.
 
     On frozen pairs, forward records
     :math:`c_{out}=\max(c-D_{emu}L_Gc\,\Delta t,0)` independently per molecule.
-    Positions and radii determine topology but receive no gradient. Warp views contiguous
-    flattened Torch storage reshaped to ``[N, C]``.
+    Positions and radii determine fixed topology; concentrations receive the gradient. Warp
+    views contiguous flattened Torch storage reshaped to ``[N, C]``.
     """
 
     @staticmethod

@@ -13,10 +13,9 @@ waxMorph
      <p class="wm-tagline">A differentiable cell-based framework for three-dimensional morphogenesis.</p>
      <p class="wm-sub">
        Cells build tissues through local exchanges of force and information.
-       waxMorph represents tissue as interacting spheroidal cells and makes the
-       governing mechanochemical dynamics differentiable, so the same model runs
-       forward to simulate prescribed shape programs and inverse to reconstruct
-       continuous morphogenetic trajectories from static tissue volumes.
+       waxMorph represents tissue as interacting spheroidal cells and couples a
+       prescribed forward simulator with a differentiable learned inverse
+       emulator. They share state conventions and provide purpose-built dynamics.
      </p>
      <div class="wm-cta">
        <a class="wm-btn wm-btn-primary" href="installation.html">Install</a>
@@ -88,8 +87,8 @@ Explore
       :link-type: doc
       :class-card: wm-card
 
-      The public modules, with PyTorch defaults and JAX/Equinox parity
-      variants.
+      Public modules with PyTorch defaults and explicit JAX/Equinox
+      counterparts.
 
    .. grid-item-card:: Contributing
       :link: contributing

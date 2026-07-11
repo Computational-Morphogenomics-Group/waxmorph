@@ -21,12 +21,12 @@ _ACTIVATIONS = {
 class MLP(eqx.Module):
     """MLP with optional LayerNorm on its output.
 
-    ``num_layers`` counts linear maps; one layer is affine with no activation. Hidden layers
+    ``num_layers`` counts linear maps; one layer is affine. Hidden layers
     support ``relu``, ``silu``, ``gelu``, and ``tanh``. Callers must supply a PRNG ``key``;
     independent modules need independently split keys.
 
     Raises:
-        TypeError: If ``num_layers`` is not a non-boolean integer.
+        TypeError: If ``num_layers`` is boolean or nonintegral.
         ValueError: If ``num_layers < 1`` or the activation is unsupported.
 
     Examples:

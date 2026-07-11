@@ -14,3 +14,4 @@ it does. For specific tasks, see the :doc:`../how_to/index`; for the API, see th
    differentiable_physics
    losses
    architecture
+   ../adr/0001-runtime-and-numerical-contracts

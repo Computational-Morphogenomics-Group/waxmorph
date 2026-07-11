@@ -13,12 +13,18 @@ trajectory — a quick static view, an interactive session, or an exported movie
 
 ``WarpMovieRenderer``
    Export a trajectory through Warp, with ``backend="usd"`` for a USD stage and
-   ``backend="opengl"`` for a headless video file.
+   ``backend="opengl"`` for a headless video file. USD requires ``usd-core``,
+   supplied by the ``simulation`` extra.
+
+``WarpMovieRenderer`` packs fixed-capacity Warp buffers, then copies points,
+radii, and colors to host NumPy for either backend. USD consumes the full buffer
+with zero-radius inactive slots; OpenGL consumes the active prefix and flips
+framebuffer rows from OpenGL to image origin.
 
 Rendering a rollout movie
 -------------------------
 
-Feed simulator or emulator states directly to a renderer:
+Pass simulator or emulator states to a renderer:
 
 .. code-block:: python
 

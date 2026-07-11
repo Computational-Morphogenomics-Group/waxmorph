@@ -1,7 +1,7 @@
 """JAX graph construction with detached topology and differentiable features.
 
-Positions and radii are copied to the host for adjacency; gradients flow only through the
-JAX node and edge features built from live state arrays.
+Positions and radii are copied to the host for adjacency. The gradient contract covers JAX
+node and edge features built from live state arrays.
 """
 
 from __future__ import annotations
@@ -64,9 +64,9 @@ def build_edge_index(
 
     A detached float32 host snapshot includes both directions when ``i != j`` and
     ``dist(X[i], X[j]) <= R[i] + R[j] + eps_dist``. Nonpositive ``particle_count`` uses all
-    rows. Without ``max_edges``, the result is ``[2, E]`` with ``num_edges == E``. With a
-    capacity, it is ``[2, max_edges]`` padded by ``(0, 0)``; callers must mask columns at
-    indices greater than or equal to ``num_edges``. Capacity overflow raises ``ValueError``.
+    rows. ``max_edges=None`` returns ``[2, E]`` with ``num_edges == E``. A fixed capacity
+    returns ``[2, max_edges]`` padded by ``(0, 0)``; real edges occupy columns below
+    ``num_edges``. Capacity overflow raises ``ValueError``.
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -131,10 +131,10 @@ def build_edge_features(
         \theta_{ij} &= \arccos\!\left(\operatorname{clip}
         (p_i^\top p_j,-1+\mathrm{ANGLE\_EPS},1-\mathrm{ANGLE\_EPS})\right).
 
-    Unlike the PyTorch counterpart's exact norm, JAX regularizes every real-edge distance by
-    ``EPS_NORM``. ``P`` must contain unit vectors because its raw dot products are not
-    normalized. Clamping keeps ``arccos`` gradients finite. Self-edge padding is masked to
-    zero in both columns.
+    JAX regularizes every real-edge distance by ``EPS_NORM``; PyTorch uses the exact norm.
+    ``P`` must contain unit vectors because the feature uses supplied dot products directly.
+    Clamping keeps ``arccos`` gradients finite. Self-edge padding is masked to zero in both
+    columns.
 
     Examples:
         >>> X = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -221,7 +221,7 @@ def build_graph(
     edge_index, num_edges = build_edge_index(X, R, active, eps_dist, max_edges)
     node_features = build_node_features(c, active)
     if active == 0 and edge_index.shape[1]:
-        # Padding refers to node 0, which does not exist in an empty graph.
+        # Empty graphs construct padding features directly because they have zero nodes.
         pos = _as_jax(X, active).astype(jnp.float32)
         pol = _as_jax(P, active).astype(jnp.float32)
         _validate_feature_shapes(active, positions=pos, polarities=pol)

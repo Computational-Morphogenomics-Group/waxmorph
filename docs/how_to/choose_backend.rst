@@ -1,17 +1,16 @@
 Choose a learning backend
 =========================
 
-Reach for the PyTorch backend by default and the JAX backend only when your
-surrounding stack calls for it.
+PyTorch provides the default learning path. JAX integrates with surrounding
+JAX, Equinox, and Optax stacks and supports static-shape compilation.
 
 Use PyTorch (the default)
 -------------------------
 
 The top-level imports resolve to the PyTorch backend, giving you the most direct
-path from ``build_graph`` to ``GNS`` to ``train`` shown in :ref:`gns-primer`. Warp's
-automatic differentiation integrates through
-:class:`torch.autograd.Function`, so the physics gradients flow without extra
-plumbing.
+path from ``build_graph`` to ``GNS`` to ``train`` shown in :ref:`gns-primer`.
+Warp's automatic differentiation integrates directly through
+:class:`torch.autograd.Function`.
 
 Use JAX when your stack already does
 ------------------------------------
@@ -27,10 +26,10 @@ through explicit imports:
    from waxmorph.jax.losses import make_sinkhorn_loss
    from waxmorph.jax.train import TrainConfig, train
 
-Two interface differences follow from JAX's compile-time shape requirements.
-The JAX graph builder pads edge arrays to a fixed capacity through
-``max_edges`` so that JIT-compiled functions keep stable shapes, and it returns
-the observed edge count as a fourth value:
+JAX model construction uses an explicit PRNG key. Its graph builder always
+returns the observed edge count as a fourth value. Supplying ``max_edges`` pads
+the edge arrays to that capacity for stable compiled shapes; the default returns
+edge arrays sized to the observed graph:
 
 .. code-block:: python
 
@@ -40,11 +39,17 @@ the observed edge count as a fourth value:
        X, P, R, particle_count, c=c, max_edges=max_edges
    )
 
-The JAX training call takes an Optax optimizer and its optimizer state rather
-than a PyTorch optimizer.
+PyTorch training takes a mutable optimizer and restores it to the selected best
+model. JAX training takes an Optax transformation and optimizer state;
+``TrainResult`` contains the selected model and log, while callers manage Optax
+state separately.
 
 .. note::
 
-   Because the JAX path requires an upper bound on the number of edges, it uses
-   more memory than the PyTorch path; see :doc:`../explanation/architecture` for
-   the design rationale behind the two-backend split.
+   JAX training bounds directed edges and neighbor pairs by
+   ``N * max_edges_factor`` and raises on overflow. Its Warp mechanics and
+   diffusion custom VJPs run on CUDA; CPU training uses zero for both prescribed
+   step counts. PyTorch accepts supported Torch/Warp CPU or CUDA devices.
+
+PyTorch exposes GeomLoss Sinkhorn, MMD, and Hausdorff families. JAX exposes
+debiased OTT Sinkhorn divergence. See :doc:`../explanation/losses`.

@@ -68,7 +68,7 @@ class GraphNetworkBlock(eqx.Module):
         """Return residual node and edge latents.
 
         ``edge_index`` is directed COO ``[2, E]`` (senders, receivers). Entries at indices
-        greater than or equal to ``num_edges`` contribute no message.
+        greater than or equal to ``num_edges`` contribute zero messages.
         """
         senders, receivers = edge_index[0], edge_index[1]
 

@@ -3,7 +3,7 @@ Reference
 
 waxMorph's top-level modules default to the PyTorch backend, exposing the
 graph-network-based simulator, contact-graph construction, shape losses, and the
-training entry point. The JAX parity variants live under :mod:`waxmorph.jax`.
+training entry point. Explicit JAX counterparts live under :mod:`waxmorph.jax`.
 
 Module map
 ----------
@@ -23,7 +23,7 @@ Module map
    neighbor-dependent update rules over the contact graph.
 
 ``waxmorph.train``
-   Runs the non-growing emulator training loop, coupling learned updates with
+   Trains the emulator with a fixed agent count by coupling learned updates with
    differentiable physical constraints. Re-exports the PyTorch training API.
 
 ``waxmorph.losses``
@@ -32,10 +32,10 @@ Module map
 
 ``waxmorph.simulator`` and ``waxmorph.emulator``
    Warp kernels for explicit mechanochemical forward simulation and for the
-   differentiable non-growing physics corrections. The simulator integrates
-   soft-sphere mechanics, reaction-diffusion, growth, and division; the
-   emulator freezes neighbor topology within a step so gradients propagate
-   through the physics.
+   differentiable physics corrections used in rollouts with a fixed agent
+   count. The simulator integrates soft-sphere mechanics, reaction-diffusion,
+   growth, and division; the emulator freezes neighbor topology within a step
+   so gradients propagate through the physics.
 
 ``waxmorph.render``
    Static, interactive, and movie renderers for trajectories of spheroidal
@@ -53,10 +53,10 @@ graph-network processor predicts increments ``dX``, ``dP``, and ``dc`` over thes
 fields. See :doc:`../explanation/cell_state` for the field shapes and index
 conventions.
 
-For a worked, runnable version of the ``build_graph`` → ``GNS`` → ``train``
-flow, see :ref:`gns-primer`. The JAX parity backend mirrors that interface,
-except its ``build_graph`` returns a fourth value, the active edge count
-``num_edges``, for static-shape compilation; see :doc:`../how_to/choose_backend`.
+For a worked ``build_graph`` → ``GNS`` → ``train`` flow, see
+:ref:`gns-primer`. JAX provides backend-specific graph returns and padding,
+loss families, PRNG, optimizer and checkpoint behavior, and CUDA execution for
+Warp physics; see :doc:`../how_to/choose_backend`.
 
 Training and external APIs
 --------------------------

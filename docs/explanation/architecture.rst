@@ -1,48 +1,44 @@
 Architecture
 ============
 
-waxMorph is a biophysically constrained trajectory learning stack layered over a shared `Warp <https://nvidia.github.io/warp/stable/>`_ physics
-core, plus rendering.
+waxMorph couples a prescribed forward simulator, a learned emulator with a
+fixed agent count, and trajectory renderers. The simulator and emulator share
+spheroidal state conventions and provide purpose-built physics implementations.
 
-The shared Warp physics core
-----------------------------
+Simulation and emulation
+------------------------
 
-The forward simulator and the inverse `PyTorch <https://docs.pytorch.org/docs/2.12/index.html>`_ / `JAX <https://docs.jax.dev/en/latest/>`_ learning modules build on the same `Warp <https://nvidia.github.io/warp/stable/>`_ kernels, keeping simulation and emulation physically consistent and their primitives transferable.
+* :mod:`waxmorph.simulator` implements cell-type-dependent mechanics,
+  activator-inhibitor chemistry, growth, and division. Division grows an active
+  prefix up to caller-owned capacity.
+* :mod:`waxmorph.emulator` implements uniform sticky-sphere mechanics and
+  graph-Laplacian diffusion for fixed-size learned rollouts. Neighbor discovery
+  stays outside autodiff; each differentiated operation uses a frozen pair list.
 
-* :mod:`waxmorph.simulator` holds the explicit mechanochemical kernels for
-  forward simulation, exemplified by sticky-sphere mechanics, activator-inhibitor
-  reaction-diffusion, growth, neighbor counting, and division. Running these prescribed models generates cheap data and, via cell division, grows
-  the active particle count up to a preallocated ``max_particles``.
-* :mod:`waxmorph.emulator` holds the mechanics and graph-Laplacian
-  diffusion kernels for the differentiable, non-growing path. Its
-  differentiable entry points record pairwise kernels on a :class:`warp.Tape`
-  while freezing neighbor topology for the step
-  (:doc:`differentiable_physics`).
+Each path uses its own constants and update conventions. Simulator contact-local
+polarity and chemistry use ``EPS_DIST=0.25`` alongside type-dependent forces.
+Emulator contacts use ``EPS_DIST=0.01`` and one pair-force law.
+:mod:`waxmorph._graph_core` separately builds detached learned-graph topology
+shared by the Torch and JAX graph APIs.
 
-Two framework-agnostic helpers sit alongside the kernels:
-:mod:`waxmorph._graph_core` builds the contact adjacency once and shares it
-across backends, and :mod:`waxmorph.constants` holds the EPS values, hash-grid
-dimension, and force constants the kernels read.
+Learning backends
+-----------------
 
-Two backends, one interface
----------------------------
+The top-level ``gnn``, ``graph``, ``train``, ``losses``, and ``mlp`` modules
+re-export :mod:`waxmorph.torch`; ``from waxmorph import GNS, train, build_graph``
+therefore selects PyTorch. :mod:`waxmorph.jax` is an explicit behavioral
+counterpart with backend-specific interfaces and runtime contracts.
 
-The learning layer exists twice, at parity, over that core.
-
-The top-level modules ``waxmorph/{gnn,graph,train,losses,mlp}.py`` are thin
-re-exports of ``waxmorph/torch/*``. PyTorch is the default backend, so
-``from waxmorph import GNS, train, build_graph`` resolves to the ``torch/``
-implementations. Changing learning behavior means editing
-``waxmorph/torch/<module>.py`` and then mirroring the change in
-``waxmorph/jax/<module>.py`` to keep the backends in sync.
-
-The `JAX <https://docs.jax.dev/en/latest/>`_/`Equinox <https://docs.kidger.site/equinox/>`_ backend is reached only through explicit
-``from waxmorph.jax import ...`` imports. It uses an `Optax <https://optax.readthedocs.io/en/latest/>`_ optimizer and
-static-shape array compilation to trigger recompiles minimally.
+JAX uses explicit PRNG keys, Optax, optional fixed-capacity graph padding, and a
+four-value graph return. Its Warp bridge uses custom VJPs on CUDA over
+per-pair kernels. PyTorch uses mutable optimizers, unpadded graph returns, and a
+Warp Tape behind :class:`torch.autograd.Function`. Each backend also provides
+its own checkpoint format and loss families.
 
 Rendering
 ---------
 
-:mod:`waxmorph.render` provides three renderers over the same trajectory
-arrays: ``MPLInterface`` for static views built over `Matplotlib <https://matplotlib.org/stable/>`_, ``PyVistaInterface`` for interactive
-inspection built on `PyVista <https://pyvista.org/>`_, and ``WarpMovieRenderer`` using `Warp rendering primitives <https://nvidia.github.io/warp/stable/api_reference/warp_render.html>`_ for exporting `USD stages <https://openusd.org/release/index.html>`_ or headless `OpenGL <https://www.opengl.org/>`_ movies. ``write_frame_from_numpy`` renders learned rollouts; ``write_frame_from_state`` renders live simulation state.
+:mod:`waxmorph.render` provides Matplotlib static views, PyVista interactive
+glyphs, and ``WarpMovieRenderer`` for USD stages or headless OpenGL videos.
+``write_frame_from_numpy`` renders learned rollouts;
+``write_frame_from_state`` renders live Warp state.

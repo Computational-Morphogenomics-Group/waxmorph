@@ -92,9 +92,9 @@ def build_edge_index(
 
     A detached float32 CPU snapshot includes both orientations when :math:`i\ne j` and
     :math:`\lVert x_i-x_j\rVert_2\le R_i+R_j+\varepsilon`, where
-    :math:`\varepsilon=\mathtt{eps\_dist}`. This excludes topology from autodiff. Nonpositive
-    ``particle_count`` uses all rows; ``device`` otherwise defaults from the inputs. JAX can
-    pad to a fixed edge capacity and returns an additional edge count.
+    :math:`\varepsilon=\mathtt{eps\_dist}`. Autodiff treats this topology as fixed.
+    Nonpositive ``particle_count`` uses all rows; ``device`` otherwise defaults from the
+    inputs. JAX can pad to a fixed edge capacity and returns an additional edge count.
 
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -147,8 +147,8 @@ def build_edge_features(
         [d_{ij},\theta_{ij}]
         = [\lVert x_i-x_j\rVert_2,\arccos(p_i^\top p_j)].
 
-    ``P`` must contain unit vectors because its dot products are not normalized. The dot
-    product is clamped to ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` before ``acos``. Torch uses
+    ``P`` must contain unit vectors because the feature uses supplied dot products directly.
+    The dot product is clamped to ``[-1 + ANGLE_EPS, 1 - ANGLE_EPS]`` before ``acos``. Torch uses
     the exact Euclidean norm; JAX uses ``sqrt(||x_i-x_j||^2 + EPS_NORM^2)`` and masks padded
     edges. Torch inputs retain gradients through positions and polarities. The output shape
     is ``[E, 2]``.
@@ -198,8 +198,8 @@ def build_graph(
     """Return ``(node_features, edge_index, edge_features)``.
 
     Shapes are ``[N, C]``, ``[2, E]``, and ``[E, 2]``. Torch features remain
-    differentiable, but contacts use a detached position/radius snapshot. ``c`` is required.
-    JAX instead returns a 4-tuple with an edge count and optional padding.
+    differentiable, while contacts use a detached position/radius snapshot. ``c`` is required.
+    JAX returns a 4-tuple with an edge count and optional padding.
 
     Examples:
         >>> X = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])

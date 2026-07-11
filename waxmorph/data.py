@@ -1,11 +1,11 @@
 r"""Normalize meshes and sample their volumes for rollout point clouds.
 
 For mesh volume ``V`` and requested count ``N``, ``r = (3V / 4 pi N)^(1/3)`` and
-the Poisson exclusion distance is ``d_min = 1.2 r``. This permits equal-radius overlap
-but guarantees neither contact nor graph connectivity. ``N=2000`` is a public default,
-not an invariant. Exact-count wrappers may reduce ``r`` and ``d_min`` together; returned
-radius fields report that effective value. Source and target are sampled independently, not
-as correspondences.
+the Poisson exclusion distance is ``d_min = 1.2 r``. This permits equal-radius overlap;
+contact and graph connectivity remain sample-dependent. ``N=2000`` is a public default, and
+callers may choose another count. Exact-count wrappers may reduce ``r`` and ``d_min``
+together; returned radius fields report that effective value. Source and target use
+independent samples, so row order carries independent draws.
 """
 
 from collections.abc import Sequence
@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 # N equal sphere volumes sum to V when this is 1.0.
 _PACKING_FRACTION = 1.0
-# d_min=1.2r permits overlap but guarantees neither contact nor connectivity.
+# d_min=1.2r permits overlap; contact and connectivity remain sample-dependent.
 _CONTACT_SPACING_RATIO = 1.2
 _UNIT_SPHERE_VOLUME = 4.0 * np.pi / 3.0
 
@@ -26,7 +26,8 @@ _UNIT_SPHERE_VOLUME = 4.0 * np.pi / 3.0
 def load_mesh(path: str | Path) -> trimesh.Trimesh:
     """Load one mesh, reorient its normals, and fill small holes in place.
 
-    Repair does not guarantee watertightness. :func:`normalize_mesh` handles scale separately.
+    Repair addresses common mesh defects; watertightness remains mesh-dependent.
+    :func:`normalize_mesh` handles scale independently.
     """
     mesh = trimesh.load(path, force="mesh")
     trimesh.repair.fix_normals(mesh)
@@ -86,7 +87,7 @@ def _radius_from_mesh(mesh: trimesh.Trimesh, n_points: int) -> float:
 
 
 def _connected_poisson_min_dist(radius: float) -> float:
-    """Compute ``d_min=1.2r``; this permits overlap without guaranteeing contact."""
+    """Compute ``d_min=1.2r``; overlap is permitted and contact remains sample-dependent."""
     radius = _validate_extent("radius", radius)
     return _CONTACT_SPACING_RATIO * radius
 
@@ -220,7 +221,8 @@ def sample_volume(
 
     Defaults use ``r=(3V/4 pi N)^(1/3)``, ``min_dist=1.2r``, and ``pitch=0.4*min_dist``.
     ``seed`` fixes candidate order. Returns float32 ``[M,3]``, ``M <= n_points``; an empty
-    fill returns ``[0,3]``. This function does not relax spacing to reach the requested count.
+    fill returns ``[0,3]``. The requested spacing stays fixed, so output may contain fewer
+    points than ``n_points``.
 
     Examples:
         >>> mesh = trimesh.creation.box(extents=(1, 1, 1))
@@ -329,8 +331,8 @@ def sample_mesh_pair(
         \qquad d_{\min} = 1.2\,r,
 
     Exact-count sampling may lower ``r`` and ``d_min`` together; returned radius fields hold
-    the effective values. Source and target use ``seed`` and ``seed+1``. Their reproducible
-    samples are not paired correspondences. ``target_extent=None`` means 10;
+    the effective values. Source and target use ``seed`` and ``seed+1``. Their rows contain
+    reproducible independent samples. ``target_extent=None`` means 10;
     ``source_extent`` defaults to the target extent. Recorded ``max_particles`` is never below
     ``n_points``.
 

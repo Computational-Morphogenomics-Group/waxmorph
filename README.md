@@ -12,9 +12,9 @@
 Cells build tissues through local exchanges of force and information, yet the
 rules governing these interactions are difficult to infer from sparse
 observations. waxMorph represents tissue as interacting spheroidal cells and
-makes the governing mechanochemical dynamics differentiable, so the same model
-can be run forward to simulate prescribed shape programs and inverse to
-reconstruct continuous morphogenetic trajectories from static tissue volumes.
+couples a prescribed forward simulator with a differentiable, learned inverse
+emulator over that shared state representation. The two paths implement
+different dynamics.
 
 📖 **[Documentation](https://waxmorph.readthedocs.io/en/latest)** ·
 [Tutorials](https://waxmorph.readthedocs.io/en/latest/tutorials/index.html) ·
@@ -38,9 +38,9 @@ The package is organized around three connected workflows:
 | **Emulation** | Learned emulation in which a graph-network-based simulator (GNS) assembles a fixed population of agents into a target morphology under differentiable physics | `waxmorph.data`, `waxmorph.graph`, `waxmorph.gnn`, `waxmorph.train` |
 | **Rendering** | Visualization of states, trajectories, and learned rollouts as static views, interactive views, USD stages, or OpenGL videos | `waxmorph.render` |
 
-The default learning path resolves the PyTorch implementations through the
-top-level imports. JAX and Equinox implementations provide a parity backend
-under `waxmorph.jax`.
+Top-level learning imports resolve to PyTorch. Explicit JAX and Equinox
+counterparts with documented API and runtime differences live under
+`waxmorph.jax`.
 
 ## Installation
 
@@ -80,9 +80,9 @@ pip install -e ".[all]"
 pre-commit install
 ```
 
-The simulation kernels and the principal movie-rendering paths are implemented
-on NVIDIA Warp and are intended to run on CUDA. The graph and data utilities are
-available on CPU, but the full examples are GPU-oriented. USD export relies on
+The simulation kernels and principal movie-rendering paths use NVIDIA Warp and
+target CUDA. Graph and data utilities run on CPU, while the full examples target
+GPUs. USD export relies on
 Warp's USD renderer; the `simulation` extra installs `usd-core` for that path.
 
 ## Quickstart: mesh-to-mesh shape assembly
@@ -96,8 +96,7 @@ Inputs:
 
 - `meshes/bunny.ply`: source morphology sampled into initial cell centers.
 - `meshes/armadillo.ply`: target morphology sampled into training targets.
-- `n_points`: fixed number of agents. This learned-emulation workflow neither
-  adds nor removes particles during the rollout.
+- `n_points`: fixed number of agents preserved throughout the learned rollout.
 
 Outputs:
 
@@ -210,25 +209,24 @@ with WarpMovieRenderer(
 ```
 
 A shorter smoke test follows from reducing `n_points`, `n_epochs`, and
-`t_rollout`. Assembly quality depends on those values, so small settings serve
-API validation rather than assessment of morphology quality.
+`t_rollout`. Small settings validate the API; larger settings support
+morphology-quality assessment.
 
 ## Simulation workflow
 
-Forward simulation is appropriate when the scientific question concerns a
-specified mechanistic model rather than a learned shape-assembly rule. The
-`simulation_with_autodiff.ipynb` notebook demonstrates the main components:
+Forward simulation serves questions about the prescribed mechanistic model.
+The learned emulator serves source-target shape assembly.
+`simulation_with_autodiff.ipynb` demonstrates the main simulation components:
 
 1. Allocate fixed-capacity Warp arrays for centers `X`, radii `R`, equilibrium
    radii `R_eq`, polarities `P`, activator `A`, inhibitor `I`, and cell types
    `CT`.
-2. Relax geometry under the soft-sphere potential with
-   `simulator.mech_step_sticky`, or with the autodiff-consistent
-   `simulator.mech_step_sticky_implicit`.
+2. Relax geometry with `simulator.mech_step_sticky`; the
+   `mech_step_sticky_implicit` variant uses local autodiff for selected polarity
+   and thickness terms while retaining explicit soft-sphere derivatives.
 3. Pattern the activator and inhibitor fields by reaction-diffusion with
-   `simulator.chem_step`, parameterized by `chi` (the spatial characteristic of
-   the activator), `gamma` (the reaction rate), and `D_inhib` (the inhibitor
-   diffusivity).
+   `simulator.chem_step`, parameterized by `chi` (activator diffusivity relative
+   to inhibitor), `gamma` (reaction rate), and `D_inhib` (inhibitor diffusivity).
 4. Grow cells with `simulator.growth_step`, parameterized by the growth Hill
    exponent `alpha_grow` and the switch concentration `ell_sw`.
 5. Count neighbors and divide cells with `simulator.count_neighbors_step`,
@@ -236,10 +234,10 @@ specified mechanistic model rather than a learned shape-assembly rule. The
 6. Write frames from the live Warp state with
    `render.WarpMovieRenderer.write_frame_from_state`.
 
-Inputs are Warp arrays and scalar parameters such as time steps, diffusivities,
-growth constants, and division thresholds. Outputs are state arrays updated
-in-place and, when requested, rendered frames. The simulation path can grow the
-active particle count up to the preallocated `max_particles` capacity.
+Scalar parameters use model units. Mechanics, chemistry, and growth write
+caller-supplied next-state arrays; growth also advances mesenchymal RNG keys.
+Division mutates shared state arrays and grows the active prefix within the
+preallocated `max_particles` capacity.
 
 The notebook includes long-running examples with tens of thousands of particles
 over many time steps. Lower particle counts and fewer steps are advisable when
@@ -259,16 +257,16 @@ objective of inferring a local rollout rule. The standard PyTorch flow is:
 4. Construct `GNS` with output heads matching the variables to update, namely
    `{"dX": 3, "dP": 3, "dc": num_molecules}`.
 5. Train with `train(..., targets=[(frame, target_pos), ...])`.
-6. Inspect `TrainResult.log`, in particular `losses_total` and `best_traj_pos`.
+6. Inspect the post-update `losses_total` history and aligned `best_traj_pos`.
 
-Frame indices in `targets` are zero-based rollout steps after updates. For
-example, `(99, target_pos)` supervises the state after 100 learned updates under
-`TrainConfig(t_rollout=100)`. Molecule diffusion during the rollout is
-controlled by `TrainConfig.D_emu`, and the squared-displacement regularization
-by `TrainConfig.lambda_reg`. The corresponding concentration trajectory is
-recorded in `result.log["best_traj_c"]`.
+Frame indices in `targets` are zero-based within a model evaluation. For
+example, `(99, target_pos)` supervises the state after 100 complete rollout
+steps under `TrainConfig(t_rollout=100)`. Molecule diffusion during the rollout is
+controlled by `TrainConfig.D_emu`; `TrainConfig.lambda_reg` weights the squared
+learned position increments before mechanics. The corresponding concentration
+trajectory is recorded in `result.log["best_traj_c"]`.
 
-The JAX/Equinox backend follows the same data flow with explicit backend
+The JAX/Equinox backend follows the corresponding workflow with explicit backend
 imports:
 
 ```python

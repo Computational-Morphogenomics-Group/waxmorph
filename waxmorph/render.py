@@ -371,7 +371,7 @@ class _BaseBackend:
     """Backend contract for fixed-capacity Warp rendering.
 
     USD consumes the full buffer with zero-radius inactive slots; OpenGL
-    consumes only the active prefix.
+    consumes the active prefix.
     """
 
     needs_full_buffer: bool = False
@@ -507,8 +507,8 @@ class _OpenGLVideoBackend(_BaseBackend):
 class _UsdStageBackend(_BaseBackend):
     """USD PointInstancer with fixed capacity and zero-radius inactive slots.
 
-    Mesh overlays are unsupported. The stage saves on close or after each frame
-    when ``save_every_frame`` is enabled.
+    OpenGL provides mesh overlays. The USD stage saves on close or after each
+    frame when ``save_every_frame`` is enabled.
     """
 
     needs_full_buffer: bool = True
@@ -568,7 +568,8 @@ class WarpMovieRenderer:
 
     NumPy frames provide RGB directly; Warp-state frames derive HSV colors on
     the selected device before this implementation copies them to NumPy. USD
-    requires ``usd-core`` and ignores OpenGL-only options.
+    uses ``usd-core`` and ``usd_*`` options; OpenGL uses camera, scene,
+    encoding, and ``opengl_*`` options.
     """
 
     def __init__(
@@ -581,7 +582,7 @@ class WarpMovieRenderer:
         height: int = 720,
         fps: int = 60,
         device: str = "cuda",
-        # OpenGL-only options are ignored by the USD backend.
+        # Camera, scene, and encoding options configure OpenGL.
         camera_pos=(0.0, 2.0, 10.0),
         camera_front=(0.0, 0.0, -1.0),
         camera_up=(0.0, 1.0, 0.0),
@@ -692,7 +693,7 @@ class WarpMovieRenderer:
         s = wp.max(morph_scale, wp.float32(1e-8))
         m = wp.clamp(m / s, wp.float32(0.0), wp.float32(1.0))
 
-        # Warp kernels cannot call colorsys; use its six-sector HSV transform.
+        # Six-sector HSV arithmetic runs directly in Warp kernels.
         h = hue
         sat = m
         v = wp.float32(1.0)
@@ -794,8 +795,7 @@ class WarpMovieRenderer:
         return n
 
     def _render(self, t: float, n_active: int, mesh_points=None, mesh_indices=None) -> None:
-        # Copy packed arrays to host. USD consumes full capacity with zero-radius
-        # inactive slots; OpenGL consumes only n_active.
+        # USD receives full capacity with zero-radius inactive slots; OpenGL receives n_active.
         if self._backend.needs_full_buffer:
             pts = self._points_f32.numpy()
             rad = self._radii_f32.numpy()
@@ -831,7 +831,7 @@ class WarpMovieRenderer:
         ``particle_count`` is clamped to ``[0, max_particles]`` and arrays are
         sliced to that count, then zero-padded. Centers and colors must have
         shape ``[N,3]`` and radii ``[N]``, with ``N`` at least the clamped count.
-        Mesh overlays are OpenGL-only and ignored by USD.
+        OpenGL frames include supplied mesh overlays; USD frames render packed particles.
         """
         n = int(particle_count)
         n = max(0, min(n, self.max_particles))
@@ -875,7 +875,8 @@ class WarpMovieRenderer:
         The active count is clamped to renderer capacity, inactive slots are
         zeroed, and packed buffers are copied to NumPy. Centers use ``wp.vec3f``;
         radii, A, and I use ``wp.float32`` on ``self.device``, each with at least
-        the clamped count. Mesh overlays are OpenGL-only and ignored by USD.
+        the clamped count. OpenGL frames include supplied mesh overlays; USD frames render
+        packed particles.
         """
         n = self._pack_gpu_buffers(
             centers_wp,

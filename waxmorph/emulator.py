@@ -1,18 +1,17 @@
 """Differentiable Warp mechanics and graph diffusion for fixed-size tissue.
 
-Each step discovers neighbors outside :class:`warp.Tape` and replays a frozen
-pair list, excluding topology and hash-grid construction from gradients.
+Each step discovers neighbors before :class:`warp.Tape` recording and replays a
+frozen pair list. The gradient contract covers recorded state arithmetic.
 Mechanics records radii in its pair arithmetic when they require gradients;
-package bridges expose only their documented differentiated inputs. The forward
-simulator instead uses type-dependent forces, chemistry, growth, and division.
+package bridges expose gradients for their documented inputs. The forward simulator
+provides type-dependent forces, chemistry, growth, and division.
 """
 
 import warp as wp
 
 from .constants import EPS_DIST, EPS_NORM, HASH_GRID_DIM
 
-# Unlike the simulator's type-dependent attraction, the emulator uses one
-# coefficient for every pair.
+# The emulator uses one attraction coefficient per pair; the simulator selects by cell type.
 K_REP = 2.0
 K_ATT = 0.5
 
@@ -39,8 +38,8 @@ def _sticky_sphere_forces(
     Here :math:`k_{\mathrm{rep}}=K_REP`, :math:`k_{\mathrm{att}}=K_ATT`, and
     :math:`\varepsilon=EPS_DIST`. The result is treated as a force and added by
     :func:`_gd_update`; the simulator's descent buffer is subtracted. Max clamps
-    use Warp's pathwise derivative; the strict attraction gate contributes no
-    derivative.
+    use Warp's pathwise derivative; backward treats the strict attraction gate
+    as constant.
     """
     d = x_i - x_j
     dist = wp.length(d) + EPS_NORM
@@ -73,7 +72,7 @@ def _build_neighbor_pairs(
 
     Contacts satisfy
     :math:`\lVert x_i-x_j\rVert_2+EPS_NORM\le r_i+r_j+EPS_DIST`. ``edge_count``
-    may exceed the write capacity so the host can retry without truncation.
+    may exceed write capacity; the host retries at realized capacity and preserves all pairs.
     """
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
@@ -183,7 +182,7 @@ def _molecule_diffusion_laplacian_from_pairs(
         (L_G c)_i = \sum_{j:(i,j)\in E} (c_i - c_j),
 
     The kernel scatters :math:`c_j-c_i` to ``i`` and its negation to ``j`` for
-    each molecule. Frozen pair indices exclude topology from the gradient.
+    each molecule. Frozen pair indices hold topology constant during differentiation.
     """
     e = wp.tid()
     i = edges_i[e]
@@ -212,8 +211,8 @@ def _molecule_diffusion_step_out(
         c_{i,M} \leftarrow c_{i,M} - D_{\mathrm{emu}}\,(L_G c)_{i,M}\,\Delta t,
 
     ``lap_c`` stores :math:`-L_Gc`, so the implementation adds its contribution.
-    Inactive rows copy through. ``c_out`` must not alias ``c`` because tape
-    replay would corrupt in-place adjoints; the clamp has zero gradient where it
+    Inactive rows copy through. ``c_out`` requires storage distinct from ``c``
+    so tape replay preserves adjoints; the clamp has zero gradient where it
     clips to zero.
     """
     i, g = wp.tid()
@@ -291,7 +290,7 @@ def diffusion_step_differentiable(
     dt: float = 1e-2,
     grid: "wp.HashGrid | None" = None,
 ) -> wp.array:
-    """Record graph diffusion with concentration gradients only.
+    """Record graph diffusion with concentration gradients.
 
     Positions, radii, and pair discovery remain outside the tape. Each molecule
     channel diffuses independently over the frozen topology. The caller seeds

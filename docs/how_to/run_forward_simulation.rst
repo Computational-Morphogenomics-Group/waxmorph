@@ -1,33 +1,37 @@
 Running forward simulations - Epithelial / Mesenchymal Case Study
 =================================================================
 
-Reach for the forward simulator when your question concerns a specified
-mechanistic model rather than a learned shape-assembly rule. The current case study integrates
-prescribed mechanochemical dynamics and can grow the active particle count up
-to a preallocated ``max_particles`` capacity. The ``simulation_with_autodiff``
-tutorial walks through a complete run.
+Use the forward simulator for the prescribed epithelial-mesenchymal case study;
+the learned emulator supports source-target shape assembly. Values are in model
+units; applications may supply external calibration for SI or biological
+interpretation.
+The active particle prefix can grow to a preallocated ``max_particles``
+capacity. The ``simulation_with_autodiff`` tutorial walks through a complete run.
 
 1. Allocate fixed-capacity Warp arrays for centers ``X``, radii ``R``,
    equilibrium radii ``R_eq``, polarities ``P``, activator ``A``, inhibitor
    ``I``, and cell types ``CT``.
-2. Relax geometry under the soft-sphere potential with
-   ``simulator.mech_step_sticky``, or with the autodiff-consistent
-   ``simulator.mech_step_sticky_implicit``.
+2. Relax geometry with ``simulator.mech_step_sticky``. The
+   ``mech_step_sticky_implicit`` variant uses local ``warp.grad`` for polarity,
+   thickness, alignment, and optional WNT terms; soft-sphere derivatives remain
+   explicit.
 3. Pattern the activator and inhibitor fields by reaction-diffusion with
-   ``simulator.chem_step``, parameterized by ``chi`` (the activator diffusivity
-   relative to the inhibitor, the spatial characteristic), ``gamma`` (the
-   reaction rate), and ``D_inhib`` (the inhibitor diffusivity).
-4. Grow cells with ``simulator.growth_step``, parameterized by the growth Hill
-   exponent ``alpha_grow`` and the switch concentration ``ell_sw``.
+   ``simulator.chem_step``, parameterized by ``chi`` (activator diffusivity
+   relative to the inhibitor), ``gamma`` (reaction rate), and ``D_inhib``
+   (inhibitor diffusivity).
+4. Grow cells with ``simulator.growth_step``. Radii below their targets increase
+   up to those targets; mesenchymal equilibrium radii are capped at ``R_max`` and
+   epithelial equilibrium radii copy through.
 5. Count neighbors and divide cells with ``simulator.count_neighbors_step``,
    ``simulator.division_decision``, and ``simulator.division_logic``.
 6. Write frames from the live Warp state with
    ``render.WarpMovieRenderer.write_frame_from_state`` (see
    :doc:`render_trajectories`).
 
-Inputs are Warp arrays and scalar parameters: time steps, diffusivities, growth
-constants, and division thresholds. Outputs are the state arrays, updated
-in place, and any rendered frames you request.
+Mechanics, chemistry, and growth write caller-supplied next-state arrays; growth
+also advances mesenchymal RNG keys. Division mutates shared state arrays and
+reserves unique daughter slots within capacity. Mesenchymal daughter
+radii conserve half volume; epithelial daughter radii copy.
 
 .. tip::
 

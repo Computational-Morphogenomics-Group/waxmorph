@@ -1,4 +1,4 @@
-"""JAX/Equinox training primitives for non-growing shape assembly."""
+"""JAX/Equinox training primitives for shape assembly with a fixed agent count."""
 
 from __future__ import annotations
 
@@ -30,11 +30,12 @@ _CAPACITY_BUCKET = 1024
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
-    r"""Hyperparameters for JAX non-growing shape assembly.
+    r"""JAX rollout and optimizer settings for a fixed agent count.
 
     ``n_epochs`` counts optimizer updates. Histories evaluate every post-update model, so
-    training performs one additional rollout. Zero ``mech_steps`` or ``diff_steps`` disables
-    that prescribed update. ``dt_mech`` and ``dt_diff`` are explicit-Euler steps; diffusion
+    training performs one additional rollout. Zero ``mech_steps`` or ``diff_steps`` selects
+    the identity path for that prescribed update. ``dt_mech`` and ``dt_diff`` are
+    explicit-Euler steps; diffusion
     stability depends on ``D_emu * dt_diff`` and graph degree. ``dt_gns`` scales the raw
     ``dX``, ``dP``, and ``dc`` heads before state updates.
 
@@ -45,10 +46,10 @@ class TrainConfig:
         L=L_{shape}+\lambda_{reg}\sum_t
         \lVert \Delta t_{GNS}\,GNS_{X,t}\rVert_F^2,
 
-    where the displacement term is measured before mechanics. ``grad_clip_norm=None``
-    disables global-norm clipping. JAX adds ``max_edges_factor``: both directed-edge and
-    neighbor-pair buffers are bounded by ``N * max_edges_factor``; exceeding either bound
-    raises instead of recompiling to an unbounded shape.
+    where the displacement term is measured before mechanics. ``grad_clip_norm=None`` keeps
+    the computed gradients. JAX adds ``max_edges_factor``: both directed-edge and
+    neighbor-pair buffers are bounded by ``N * max_edges_factor``; overflow raises while
+    preserving the configured static shape.
 
     Examples:
         >>> cfg = TrainConfig(n_epochs=3, t_rollout=2)
@@ -236,10 +237,10 @@ def _tree_all_finite(tree) -> jax.Array:
 
 
 def _tree_global_norm(tree) -> jax.Array:
-    """Compute global L2 norm without overflowing float32 squares.
+    """Compute the global L2 norm with scale-stable float32 squares.
 
-    ``||g|| = m * sqrt(sum (g/m)^2)`` with ``m=max|g|`` avoids enabling JAX's global x64
-    mode; all rescaled magnitudes lie in ``[0, 1]``.
+    ``||g|| = m * sqrt(sum (g/m)^2)`` with ``m=max|g|`` keeps all rescaled magnitudes in
+    ``[0, 1]`` and retains the configured JAX precision mode.
     """
     leaves = _array_leaves(tree)
     if not leaves:
@@ -289,8 +290,8 @@ def _scalar_int(value: jax.Array | int) -> int:
 def _bucketed_capacity(observed_max: int, max_capacity: int, *, name: str) -> int:
     """Inflate and bucket a static buffer size to reduce XLA recompilations.
 
-    The result lies in ``[1, max_capacity]``. Counts above the configured capacity raise
-    rather than truncate.
+    The result lies in ``[1, max_capacity]``. Counts above the configured capacity raise,
+    preserving complete topology.
     """
     if max_capacity <= 0:
         raise ValueError(f"{name} capacity must be positive.")
@@ -517,13 +518,13 @@ def _collect_topologies_and_trajectory(
     particle_count: int,
     device: str,
 ) -> tuple[tuple[_StepTopology, ...], list[dict[str, np.ndarray]]]:
-    """Roll out without gradients while recording each step's frozen topology.
+    """Collect each step's frozen topology through a detached rollout.
 
     Collection rebuilds directed GNS edges and mechanics/diffusion pairs from the evolving
     positions. :func:`_stack_topologies` pads them to bucketed static shapes, then
     :func:`_epoch_loss_with_topology_batch` replays state values differentiably through
-    ``jax.lax.scan``; adjacency and pair selection remain outside autodiff. CUDA collection
-    uses native Warp pair and physics kernels when prescribed physics is enabled.
+    ``jax.lax.scan``; adjacency and pair selection become fixed inputs to autodiff. CUDA
+    collection uses native Warp pair and physics kernels when prescribed physics is enabled.
 
     The trajectory contains ``t_rollout + 1`` detached host snapshots, including the source;
     the topology tuple contains one entry per update step.
@@ -967,7 +968,7 @@ def train(
     save_path: str | Path | None = None,
     device: str = "cuda",
 ) -> TrainResult:
-    """Train a GNS model for non-growing shape assembly (JAX backend).
+    """Train a GNS model for shape assembly with a fixed agent count (JAX backend).
 
     Each epoch performs one update. Histories, the selected model, and its trajectory all
     describe post-update states; evaluating ``n_epochs`` updates requires ``n_epochs + 1``
@@ -978,21 +979,21 @@ def train(
     nonzero particle axis. Source polarities are used as supplied for the first graph, whose
     angle feature assumes unit vectors; later learned updates apply normalization. Target
     frame ``0`` means the state after the first rollout update, and valid unique frames lie in
-    ``[0, t_rollout)``. The supplied ``opt_state`` is not returned.
+    ``[0, t_rollout)``. ``TrainResult`` contains the selected model and log; callers manage
+    Optax state separately.
 
-    A new ``save_path`` receives the best model's two-file checkpoint and log. Only trusted
-    existing checkpoints should be loaded: config, PyTree, leaf shapes, and dtypes must match;
-    saved weights replace the supplied model, Optax state is reinitialized, and exactly one
-    refinement update runs without overwriting existing files.
+    A new ``save_path`` receives the best model's two-file checkpoint and log. Use checkpoints
+    from trusted sources; config, PyTree, leaf shapes, and dtypes must match. Saved weights
+    replace the supplied model, Optax state is reinitialized, and exactly one refinement update
+    preserves existing files.
 
-    Warp mechanics or diffusion requires a CUDA-backed JAX device and uses custom VJPs;
-    CPU training is available only when both prescribed step counts are zero. See
+    Warp mechanics or diffusion uses custom VJPs on a CUDA-backed JAX device. CPU training
+    uses zero for both prescribed step counts. See
     :class:`TrainResult` for the log schema.
 
     Raises:
         TypeError: If config types, array dtypes, or target frames are invalid.
-        RuntimeError: If Warp-backed differentiable physics is requested on a
-            device where JAX cannot provide a GPU backend.
+        RuntimeError: If requested Warp physics fails CUDA-backed JAX/Warp validation.
         ValueError: If config bounds, state arrays, radii, targets, or checkpoint
             structure are invalid.
     """
