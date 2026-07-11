@@ -1,24 +1,10 @@
-"""Warp kernels for the forward mechanochemical simulator.
+"""Prescribed Warp mechanics, chemistry, growth, and division in model units.
 
-Think of this module as the *forward mode* of waxMorph: every rule (mechanical
-potentials, activator-inhibitor reaction-diffusion, growth, division) is
-prescribed, and the kernels integrate the resulting dynamics on the GPU. Unlike
-the differentiable emulator, the active particle count is allowed to *grow*
-through division up to a preallocated ``max_particles`` capacity, which makes
-this path well suited to generating cheap training data and to running specified
-mechanistic models. The case study modeled here is a polarized
-epithelial-mesenchymal spheroid coupled to a two-component Turing system.
-
-Sign-convention note: here the accumulated ``f_net`` is treated as a *descent
-gradient* of the prescribed potential, so :func:`gd_update` integrates with a
-``-`` sign (``X_next = X - lr * f_net``). The differentiable
-:mod:`waxmorph.emulator` instead stores a physical force (``-grad U``) in its
-``f_net`` and integrates with a ``+`` sign; the extra unary minus in
-:func:`sticky_sphere_forces` is what reconciles the two conventions.
-
-See Also:
-    waxmorph.emulator: the non-growing, differentiable counterpart that shares
-        the soft-sphere force and graph-Laplacian diffusion.
+Division grows the active prefix up to caller-owned capacity. Mechanics stores a
+potential gradient and applies ``X_next = X - lr * f_net``; the differentiable
+emulator stores a physical force and adds it. The paths share abstractions, not
+identical kernels or cell-type behavior. ``CT`` encodes mesenchymal as ``0`` and
+epithelial as ``1``.
 """
 
 from math import isfinite as _isfinite
@@ -27,91 +13,58 @@ import warp as wp
 
 from .constants import EPS_DEN, EPS_NORM, FOUR_THIRDS_PI, HASH_GRID_DIM, RAND_EPS
 
-############################################################
-############################################################
-############################################################
-
-# CONSTANTS / HELPERS
-
-############################################################
-############################################################
-############################################################
-
 EPS_DIST = 25e-2
 
-# Soft-sphere force constants. The single repulsion coefficient k_rep is
-# shared by every pair; the attraction coefficient k_att and the attraction-band
-# width are set per cell-type pair to encode differential interface tension.
-# EE = epithelial-epithelial, MM = mesenchymal-mesenchymal,
-# EM = epithelial-mesenchymal (heterotypic).
 
-K_REP = 3.0  # k_rep: soft-sphere repulsion coefficient
+K_REP = 3.0
 
-K_ATT_EE = 1.5  # k_att for epi-epi: strong cohesion holds the monolayer together
-K_ATT_MM = 0.15  # k_att for mes-mes: medium cohesion within the core
-K_ATT_EM = 0.15  # k_att for epi-mes: weak heterotypic adhesion (interface tension)
+K_ATT_EE = 1.5
+K_ATT_MM = 0.15
+K_ATT_EM = 0.15
 
-# Attraction-band widths eps. ATR_EE_CUTOFF is the wider extent of the
-# stiffening EE adhesion spring; ATR_* are the band widths for the ramped
-# (non-EE) attraction branch.
-ATR_EE_CUTOFF = 0.25  # outer cutoff of the EE stiffening-spring attraction
-ATR_EE = 0.14  # EE characteristic length scaling the cubic stiffening term
-ATR_MM = 0.1  # mes-mes attraction-band width
-ATR_EM = 0.06  # epi-mes attraction-band width (short range)
 
-# Heterotypic preferred-distance offset: EM pairs sit slightly farther apart than
-# r_i + r_j, sharpening the epithelial-mesenchymal boundary.
+ATR_EE_CUTOFF = 0.25
+ATR_EE = 0.14
+ATR_MM = 0.1
+ATR_EM = 0.06
+
+
 D_SHIFT_EM = 0.08
 
-K_THICK_EE = 6.0  # kappa_thk: epithelial-thickness stiffness
-H_THICK_EE = 0.08  # h_thk: epithelial-thickness offset / slack
+K_THICK_EE = 6.0
+H_THICK_EE = 0.08
 
 
 @wp.func
 def safe_div(num: wp.float32, den: wp.float32) -> wp.float32:
-    """Numerically stable divide."""
     return num / (den + EPS_DEN)
 
 
 @wp.func
 def volume_from_radius(r: wp.float32) -> wp.float32:
-    """Sphere volume proxy used for concentration normalization."""
     return FOUR_THIRDS_PI * r * r * r
 
 
 @wp.func
 def adj_weight(dist: wp.float32, ri: wp.float32, rj: wp.float32) -> wp.bool:
-    """Neighborhood predicate for contact/adjacency graph edges."""
     return wp.bool((dist - (ri + rj)) <= EPS_DIST)
 
 
 @wp.func
 def probs(p: wp.float32, ref: wp.float32):
-    r"""Per-step division probability for a size-driven mesenchymal cell.
+    r"""Size-driven mesenchymal division probability.
 
     .. math::
-        p^{\mathrm{Div\text{-}Mes}}_i = \frac{r_i^{\alpha_{\mathrm{div}}}}
-        {r_i^{\alpha_{\mathrm{div}}} + r_{\mathrm{ref}}^{\alpha_{\mathrm{div}}}}
 
-    Args:
-        p: Current cell radius :math:`r_i`.
-        ref: Reference radius :math:`r_{\mathrm{ref}}`.
+        p_i = \frac{r_i^{20}}{r_i^{20} + r_{\mathrm{ref}}^{20}}.
 
-    Returns:
-        Division probability in ``[0, 1]``.
-
-    Note:
-        The hard-coded exponent ``20`` is the division Hill exponent
-        :math:`\alpha_{\mathrm{div}}`. Such a steep exponent makes the
-        probability switch on sharply as the radius approaches the maximum,
-        approximating a size threshold while staying smooth.
+    The fixed Hill exponent makes the transition steep near ``ref``.
     """
     return (p**20.0) / ((p**20.0) + (ref**20.0))
 
 
 @wp.func
 def softmax2d(p: wp.vec2f):
-    """Two-logit softmax used by Gumbel-Softmax sampling."""
     m = wp.max(p.x, p.y)
     ex = wp.exp(p.x - m)
     ey = wp.exp(p.y - m)
@@ -121,7 +74,7 @@ def softmax2d(p: wp.vec2f):
 
 @wp.func
 def gumbel(key: wp.uint32):
-    """Draw one Gumbel variate and advance RNG key."""
+    """Draw one Gumbel variate while advancing the per-particle key."""
     u = wp.randf(key, 0.0, 1.0)
     u = wp.clamp(u, RAND_EPS, 1.0 - RAND_EPS)
     return wp.randu(key), -wp.log(-wp.log(u))
@@ -131,29 +84,17 @@ def gumbel(key: wp.uint32):
 def fill_key_array(
     key_array: wp.array(dtype=wp.uint32),
 ) -> None:
-    """Initialize per-particle random keys deterministically by index."""
 
     i = wp.tid()
     key_array[i] = wp.rand_init(i)
 
 
 def gen_key_array(size: int, device: str = "cuda") -> wp.array:
-    """Allocate and fill RNG key array for stochastic kernels."""
+    """Initialize one deterministic RNG key per array index."""
 
     key_array = wp.zeros(shape=size, dtype=wp.uint32, device=device)
     wp.launch(fill_key_array, dim=key_array.size, inputs=[key_array], device=device)
     return key_array
-
-
-############################################################
-############################################################
-############################################################
-
-# MECHANICS
-
-############################################################
-############################################################
-############################################################
 
 
 @wp.func
@@ -165,56 +106,24 @@ def sticky_sphere_forces(
     ct_i: wp.uint32,
     ct_j: wp.uint32,
 ):
-    r"""Soft-sphere pairwise force with cell-type-dependent adhesion.
+    r"""Cell-type soft-sphere potential gradient for one pair.
 
-    Specialized to three cell-type pairings. The repulsive branch is always a
-    linear spring in compression; the attractive branch differs by pairing.
+    For :math:`q=x_i-x_j`, :math:`d=\lVert q\rVert_2+EPS_NORM`,
+    :math:`u=q/d`, and
+    :math:`d_0=r_i+r_j+\mathrm{d\_shift}`,
 
     .. math::
-        f^{\mathrm{soft}}_{ij} = \Big[
-        k_{\mathrm{rep}}\,\max(r_i + r_j - \varepsilon - d_{ij},\, 0)
-        - k_{\mathrm{att}}\,\max(r_i + r_j + \varepsilon - d_{ij},\, 0)\,
-        \mathbb{1}[d_{ij} > r_i + r_j - \varepsilon]
-        \Big]\,\hat{\mathbf{u}}_{ij}
 
-    Three pairings (see the module constants) specialize the attractive branch:
+        f_{ij}=\left[k_{\mathrm{rep}}\max(d_0-d,0)
+        -f_{\mathrm{att}}(d)\right](-u).
 
-    - **EE (epithelial-epithelial):** a *stiffening* adhesion spring whose
-      magnitude is :math:`k_{\mathrm{att}}(\delta + \delta^3/\ell^2)` over the
-      extension :math:`\delta = d_{ij} - d_0`, with :math:`\ell` = ``ATR_EE``;
-      it is truncated beyond an outer cutoff :math:`d_0 + \text{ATR\_EE\_CUTOFF}`.
-    - **MM / EM (non-EE):** the *ramped* attraction, linear in
-      :math:`(d_0 + \varepsilon) - d_{ij}` and gated to act only in extension
-      (:math:`d_{ij} > d_0`); zero beyond :math:`d_0 + \varepsilon`.
-
-    Here the preferred (zero-force) center distance is
-    :math:`d_0 = r_i + r_j + \text{d\_shift}`. ``d_shift`` is zero except for
-    heterotypic EM pairs (``D_SHIFT_EM``), which prefer to sit slightly farther
-    apart to sharpen the tissue interface.
-
-    Args:
-        x_i: Center of cell :math:`i`.
-        x_j: Center of cell :math:`j`.
-        r_i: Radius of cell :math:`i`.
-        r_j: Radius of cell :math:`j`.
-        ct_i: Cell type of :math:`i` (``1`` = epithelial, ``0`` = mesenchymal).
-        ct_j: Cell type of :math:`j`.
-
-    Returns:
-        The pair ``(F_ij, -F_ij)``: the force on cell :math:`i` and its
-        Newton's-third-law reaction on cell :math:`j` (:math:`f_{ji} = -f_{ij}`).
-
-    Note:
-        The returned force is built as ``fmag * -u`` where ``u`` points from
-        :math:`j` toward :math:`i`. The extra unary minus turns the physical
-        force into the *descent gradient* expected by :func:`gd_update`
-        (which subtracts it); the differentiable :mod:`waxmorph.emulator`
-        instead returns ``fmag * u`` and adds it. This non-smooth piecewise
-        law uses Warp's subgradient at the clamp/cutoff break points.
-
-    See Also:
-        waxmorph.emulator._sticky_sphere_forces: the differentiable twin with a
-            single attraction branch and the opposite integration sign.
+    For EE, :math:`\delta=\max(d-d_0,0)` and attraction is
+    :math:`k_{\mathrm{att}}[\delta+\delta^3/(ATR_{EE}^2+EPS_NORM)]` until its
+    outer support boundary :math:`d\le d_0+ATR_{EE\_CUTOFF}`. MM and EM use
+    :math:`k_{\mathrm{att}}\max(d_0+ATR_{pair}-d,0)\mathbb{1}[d>d_0]`, where
+    :math:`ATR_{pair}` is ``ATR_MM`` or ``ATR_EM``. ``D_SHIFT_EM`` offsets the
+    heterotypic preferred distance. The result is a potential-gradient buffer
+    subtracted by :func:`gd_update`.
     """
     d = x_i - x_j
     dist = wp.length(d) + EPS_NORM
@@ -222,7 +131,6 @@ def sticky_sphere_forces(
 
     rs = r_i + r_j
 
-    # defaults: mes-mes
     k_att = K_ATT_MM
     atr = ATR_MM
     d_shift = 0.0
@@ -239,22 +147,18 @@ def sticky_sphere_forces(
         atr = ATR_EM
         d_shift = D_SHIFT_EM
 
-    # preferred distance
     d0 = rs + d_shift
 
-    # compression/extension relative to preferred distance
     t = dist - d0
     comp = wp.max(-t, wp.float32(0.0))
     ext = wp.max(t, wp.float32(0.0))
 
-    # repulsion (always from compression)
     f_rep = K_REP * comp
 
-    # attraction
     f_att = 0.0
 
     if is_ee:
-        # EE: stiffening spring in extension
+
         invL2 = wp.float32(1.0) / (atr * atr + EPS_NORM)
         f_att = k_att * (ext + ext * ext * ext * invL2)
 
@@ -280,64 +184,34 @@ def epi_polarity_grads(
     p_i: wp.vec3f,
     p_j: wp.vec3f,
 ):
-    r"""Analytic gradients of the epithelial-polarity potential.
-
-    Closed-form analytic gradient of the pairwise epithelial-polarity term
-    with respect to both positions and both polarities. The potential is
-    minimized when neighboring epithelial polarities are perpendicular to their
-    displacement vector, orienting polarity normal to the sheet.
+    r"""Implemented epithelial-polarity derivative mapping for one pair.
 
     .. math::
-        U_{\mathrm{Epi\text{-}Pol}} = \tfrac{1}{2}(\mathbf{p}_i^\top
-        \hat{\mathbf{u}})^2 + \tfrac{1}{2}(\mathbf{p}_j^\top \hat{\mathbf{u}})^2
 
-    with :math:`\hat{\mathbf{u}} = (\mathbf{x}_i - \mathbf{x}_j)/d_{ij}`. Writing
-    :math:`a = \mathbf{p}_i^\top\hat{\mathbf{u}}`,
-    :math:`b = \mathbf{p}_j^\top\hat{\mathbf{u}}`, the polarity gradients are
-    :math:`\nabla_{\mathbf{p}_i}U = a\,\hat{\mathbf{u}}`,
-    :math:`\nabla_{\mathbf{p}_j}U = b\,\hat{\mathbf{u}}`, and the position
-    gradient applies the projector :math:`(I - \hat{\mathbf{u}}
-    \hat{\mathbf{u}}^\top)/d_{ij}` to :math:`a\mathbf{p}_i + b\mathbf{p}_j`
-    (with :math:`\nabla_{\mathbf{x}_j} = -\nabla_{\mathbf{x}_i}`).
+        s=\lVert x_i-x_j\rVert_2+EPS_NORM,\qquad
+        u=(x_i-x_j)/s.
 
-    Args:
-        x_i: Center of epithelial cell :math:`i`.
-        x_j: Center of epithelial cell :math:`j`.
-        p_i: Unit polarity of cell :math:`i`.
-        p_j: Unit polarity of cell :math:`j`.
-
-    Returns:
-        ``(grad_x_i, grad_x_j, grad_p_i, grad_p_j)`` for the pair.
-
-    See Also:
-        epi_polarity_potential: the scalar potential differentiated here, used
-            by the autodiff path via :func:`warp.grad`.
+    With :math:`a=p_i^Tu`, :math:`b=p_j^Tu`, and :math:`g=ap_i+bp_j`, the
+    polarity outputs are :math:`au` and :math:`bu`; the position output is
+    :math:`[g-u(u^Tg)]/s`, with the opposite sign on ``j``.
     """
-    # Aligning polarity to be perpendicular to connections
 
-    # d, ||d||, u = d/||d||
     d = x_i - x_j
     dist = wp.length(d) + EPS_NORM
     u = d / dist
 
-    # a = p_i·u, b = p_j·u
     a = wp.dot(p_i, u)
     b = wp.dot(p_j, u)
 
-    # grads wrt polarities
     grad_p_i = a * u
     grad_p_j = b * u
 
-    # dU/du = a p_i + b p_j
     g_u = a * p_i + b * p_j
 
-    # (I - uu^T) g_u = g_u - u (u·g_u)
     proj = g_u - u * wp.dot(u, g_u)
 
-    # d u / d d = (1/||d||) (I - uu^T)
     grad_d = proj / dist
 
-    # d = x_i - x_j
     grad_x_i = grad_d
     grad_x_j = -grad_d
 
@@ -346,49 +220,19 @@ def epi_polarity_grads(
 
 @wp.func
 def epi_thickness_grads(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j: wp.vec3f):
-    r"""Analytic gradients of the epithelial-thickness potential.
-
-    Closed-form analytic position gradient of the thickness penalty, which
-    penalizes displacement of neighboring epithelial cells along the local sheet
-    normal and so discourages cell stacking.
+    r"""Analytic position gradient of the epithelial thickness penalty.
 
     .. math::
-        U_{\mathrm{Epi\text{-}Thk}} = \tfrac{1}{2}\kappa_{\mathrm{thk}}
-        \big[\max(|(\mathbf{x}_i - \mathbf{x}_j)^\top \hat{\mathbf{n}}_{ij}|
-        - h_{\mathrm{thk}},\, 0)\big]^2
 
-    The local normal :math:`\hat{\mathbf{n}}_{ij}` is the normalized sum of the
-    sign-aligned polarities (so the two polarities point the same way). The
-    gradient is
+        U=\tfrac12 K_{\mathrm{thick}}
+        \max(|(x_i-x_j)^Tn|-H_{\mathrm{thick}},0)^2.
 
-    .. math::
-        \nabla_{\mathbf{x}_i}U_{\mathrm{Epi\text{-}Thk}} = \kappa_{\mathrm{thk}}
-        \max(|\cdot| - h_{\mathrm{thk}},\, 0)\,
-        \operatorname{sign}((\mathbf{x}_i-\mathbf{x}_j)^\top\hat{\mathbf{n}}_{ij})
-        \,\hat{\mathbf{n}}_{ij}
-
-    with :math:`\nabla_{\mathbf{x}_j} = -\nabla_{\mathbf{x}_i}`. The hinge is
-    flat inside the slack band, so the pair contributes the zero subgradient when
-    :math:`|(\mathbf{x}_i-\mathbf{x}_j)^\top\hat{\mathbf{n}}_{ij}| \le
-    h_{\mathrm{thk}}`. Here :math:`\kappa_{\mathrm{thk}}` = ``K_THICK_EE`` and
-    :math:`h_{\mathrm{thk}}` = ``H_THICK_EE``; the interpolated normal is held
-    fixed when differentiating with respect to position.
-
-    Args:
-        x_i: Center of epithelial cell :math:`i`.
-        x_j: Center of epithelial cell :math:`j`.
-        p_i: Unit polarity of cell :math:`i`.
-        p_j: Unit polarity of cell :math:`j`.
-
-    Returns:
-        ``(grad_x_i, grad_x_j)`` for the pair.
-
-    See Also:
-        epi_thickness_potential: the scalar potential differentiated here, used
-            by the autodiff path via :func:`warp.grad`.
+    ``n`` is the sign-aligned polarity sum divided by its norm plus ``EPS_NORM``
+    and is held fixed with respect to position. The hinge contributes zero
+    inside its slack band.
     """
     d = x_i - x_j
-    # Pick correct normal (inward / outward, not explicit in our opt scheme)
+
     if wp.dot(p_i, -p_j) > wp.dot(p_i, p_j):
         p_j = -p_j
 
@@ -397,13 +241,10 @@ def epi_thickness_grads(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j: wp.vec
     n = s / ns
     dn = wp.dot(d, n)
 
-    # normal separation (signed)
     adn = wp.abs(dn)
 
-    # hinge: only penalize if |dn| exceeds thickness slack h
     excess = wp.max(adn - H_THICK_EE, wp.float32(0.0))
 
-    # d/d(dn) 0.5*k*excess^2 = k*excess*sign(dn)
     sign = wp.float32(1.0)
 
     if dn < wp.float32(0.0):
@@ -417,32 +258,15 @@ def epi_thickness_grads(x_i: wp.vec3f, x_j: wp.vec3f, p_i: wp.vec3f, p_j: wp.vec
 
 @wp.func
 def mes_polarity_grads(p_i: wp.vec3f, p_j: wp.vec3f):
-    r"""Analytic gradients of the mesenchymal-polarity alignment potential.
-
-    Closed-form analytic polarity gradient of the pairwise alignment term,
-    which aligns the polarity *axes* of neighboring mesenchymal cells without
-    distinguishing orientation (the inner product is squared).
+    r"""Analytic gradient of unoriented mesenchymal polarity alignment.
 
     .. math::
-        U_{\mathrm{Mes\text{-}Pol}} = -\tfrac{1}{2}(\mathbf{p}_i^\top
-        \mathbf{p}_j)^2
 
-    Writing :math:`c = \mathbf{p}_i^\top\mathbf{p}_j`, the gradients are
-    :math:`\nabla_{\mathbf{p}_i}U = -c\,\mathbf{p}_j` and
-    :math:`\nabla_{\mathbf{p}_j}U = -c\,\mathbf{p}_i`.
-
-    Args:
-        p_i: Unit polarity of mesenchymal cell :math:`i`.
-        p_j: Unit polarity of mesenchymal cell :math:`j`.
-
-    Returns:
-        ``(grad_p_i, grad_p_j)`` for the pair.
-
-    See Also:
-        mes_polarity_potential: the scalar potential differentiated here, used
-            by the autodiff path via :func:`warp.grad`.
+        U=-\tfrac12(p_i^Tp_j)^2,\qquad
+        \nabla_{p_i}U=-(p_i^Tp_j)p_j,
+        \quad \nabla_{p_j}U=-(p_i^Tp_j)p_i.
     """
-    # U = -0.5 (p_i·p_j)^2
+
     c = wp.dot(p_i, p_j)
     grad_p_i = -c * p_j
     grad_p_j = -c * p_i
@@ -451,35 +275,15 @@ def mes_polarity_grads(p_i: wp.vec3f, p_j: wp.vec3f):
 
 @wp.func
 def mes_wnt_polarity_grads(p_i: wp.vec3f, u_to_higher_wnt: wp.vec3f, w_higher: wp.float32):
-    r"""Analytic gradient of the WNT-aligned mesenchymal-polarity potential.
-
-    Closed-form analytic polarity gradient of the term that turns a
-    mesenchymal cell's polarity toward whichever neighbor carries higher
-    activator/WNT concentration (the simulator's ``Mes-Align`` potential). Only
-    the gradient with respect to :math:`\mathbf{p}_i` is returned; positions and
-    concentrations are held fixed.
+    r"""Analytic mesenchymal-polarity gradient toward higher WNT.
 
     .. math::
-        U_{\mathrm{Mes\text{-}Align}} = -\tfrac{1}{2}\,c_{j,A}\,
-        (\mathbf{p}_i^\top \hat{\mathbf{u}}_{ji})^2,\qquad
-        \nabla_{\mathbf{p}_i}U = -c_{j,A}\,(\mathbf{p}_i^\top
-        \hat{\mathbf{u}}_{ji})\,\hat{\mathbf{u}}_{ji}
 
-    where :math:`\hat{\mathbf{u}}_{ji}` points toward the higher-WNT neighbor.
+        U=-\tfrac12 c_{j,A}(p_i^Tu_{ji})^2,\qquad
+        \nabla_{p_i}U=-c_{j,A}(p_i^Tu_{ji})u_{ji}.
 
-    Args:
-        p_i: Unit polarity of mesenchymal cell :math:`i`.
-        u_to_higher_wnt: Unit vector from :math:`i` toward the higher-WNT
-            neighbor :math:`\hat{\mathbf{u}}_{ji}`.
-        w_higher: Activator/WNT concentration of that neighbor
-            :math:`c_{j,A}`, used as the per-pair weight.
-
-    Returns:
-        The gradient with respect to :math:`\mathbf{p}_i`.
-
-    See Also:
-        mes_wnt_polarity_potential: the scalar potential differentiated here,
-            used by the autodiff path via :func:`warp.grad`.
+    Callers use :math:`u_{ji}=(x_j-x_i)/(\lVert x_j-x_i\rVert+EPS_NORM)`;
+    positions and concentrations are held fixed.
     """
     c = wp.dot(p_i, u_to_higher_wnt)
     return -w_higher * c * u_to_higher_wnt
@@ -493,10 +297,14 @@ def sticky_sphere_grads(
     P: wp.array(dtype=wp.vec3f),
     CT: wp.array(dtype=wp.uint32),
     query_radius: wp.float32,
-    f_net: wp.array(dtype=wp.vec3f),  # net mechanical force on positions
-    f_pol: wp.array(dtype=wp.vec3f),  # polarity gradient/torque accumulator
+    f_net: wp.array(dtype=wp.vec3f),
+    f_pol: wp.array(dtype=wp.vec3f),
 ):
-    """Accumulate mechanics and polarity gradients over all unordered pairs."""
+    r"""Accumulate type-dependent mechanics and polarity gradients.
+
+    Epithelial polarity position-gradient components are clipped to
+    :math:`\pm\max(|f_{soft}|,10^{-3})`; thickness gradients are not clipped.
+    """
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
 
@@ -514,24 +322,20 @@ def sticky_sphere_grads(
         c_j = CT[j]
         p_j = P[j]
 
-        # Forces
         grad_x_i_f, grad_x_j_f = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
         wp.atomic_add(f_net, i, grad_x_i_f)
         wp.atomic_add(f_net, j, grad_x_j_f)
 
-        # Polarity Neighbors
         dist = wp.norm_l2(x_i - x_j)
         w = adj_weight(dist, r_i, r_j)
 
         if not wp.bool(w):
             continue
 
-        # Polarities - epithelium
         if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
             grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = epi_polarity_grads(x_i, x_j, p_i, p_j)
             grad_x_i_t, grad_x_j_t = epi_thickness_grads(x_i, x_j, p_i, p_j)
 
-            # # Match magnitudes so movement doesn't blink
             for k in range(3):
                 v_i = wp.max(wp.abs(grad_x_i_f[k]), wp.float32(1e-3))
                 v_j = wp.max(wp.abs(grad_x_j_f[k]), wp.float32(1e-3))
@@ -546,7 +350,6 @@ def sticky_sphere_grads(
             wp.atomic_add(f_pol, i, grad_p_i)
             wp.atomic_add(f_pol, j, grad_p_j)
 
-        # Polarities - mesenchyme
         if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
             grad_p_i, grad_p_j = mes_polarity_grads(p_i, p_j)
             wp.atomic_add(f_pol, i, grad_p_i)
@@ -564,7 +367,7 @@ def sticky_sphere_wnt_grads(
     query_radius: wp.float32,
     gp: wp.array(dtype=wp.vec3f),
 ):
-    """Accumulate optional WNT-driven mesenchymal polarity gradients only."""
+    """Accumulate optional WNT-driven mesenchymal polarity gradients."""
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
 
@@ -602,22 +405,12 @@ def sticky_sphere_wnt_grads(
 
 @wp.kernel
 def gd_update(
-    X: wp.array(dtype=wp.vec3f),  # (N, 3)
-    f_net: wp.array(dtype=wp.vec3f),  # (N, 3) net mechanical force on positions
+    X: wp.array(dtype=wp.vec3f),
+    f_net: wp.array(dtype=wp.vec3f),
     lr: wp.float32,
-    X_next: wp.array(dtype=wp.vec3f),  # (N, 3)
+    X_next: wp.array(dtype=wp.vec3f),
 ):
-    """Forward-Euler position update by descent on the prescribed potential.
-
-    Integrates ``X_next = X - lr * f_net``. The accumulated ``f_net`` is treated
-    here as a *descent gradient* of the prescribed potential, so the update
-    subtracts it. This is the opposite integration sign from
-    :func:`waxmorph.emulator._gd_update`, whose ``f_net`` holds a physical force
-    (``-grad U``) and is therefore *added*.
-
-    See Also:
-        waxmorph.emulator._gd_update: the differentiable-path twin (``+`` sign).
-    """
+    r"""Apply :math:`X_{next}=X-lr\,f_{net}` for a potential-gradient buffer."""
 
     i = wp.tid()
     X_next[i] = X[i] - lr * f_net[i]
@@ -625,17 +418,15 @@ def gd_update(
 
 @wp.kernel
 def gd_update_normalized(
-    P: wp.array(dtype=wp.vec3f),  # (N, 3)
-    f_pol: wp.array(dtype=wp.vec3f),  # (N, 3) polarity gradient/torque accumulator
+    P: wp.array(dtype=wp.vec3f),
+    f_pol: wp.array(dtype=wp.vec3f),
     lr: wp.float32,
-    P_next: wp.array(dtype=wp.vec3f),  # (N, 3)
+    P_next: wp.array(dtype=wp.vec3f),
 ):
-    """Euler polarity update with normalization back to unit-like vectors."""
+    """Apply polarity descent and renormalize nonzero vectors."""
 
     i = wp.tid()
-    P_next[i] = wp.normalize(
-        P[i] - lr * f_pol[i]
-    )  # Normals pointing both inward / outward, but direction is used only
+    P_next[i] = wp.normalize(P[i] - lr * f_pol[i])
 
 
 def mech_step_sticky(
@@ -653,40 +444,14 @@ def mech_step_sticky(
     *,
     wnt: "wp.array | None" = None,
 ):
-    """Advance positions and polarities by one prescribed-potential mechanics step.
+    """Advance prescribed mechanics using explicit pair derivatives.
 
-    Accumulates the soft-sphere force and the cell-type-specific polarity/thickness
-    potential gradients over all neighbor pairs, then applies forward-Euler
-    updates to positions (descent on the potential) and to renormalized
-    polarities. Uses analytically derived gradients; see
-    :func:`mech_step_sticky_implicit` for the :func:`warp.grad` autodiff twin.
-
-    Args:
-        X: Position array with dtype ``wp.vec3f``, shape ``(N, 3)``.
-        R: Radius array with dtype ``wp.float32``, shape ``(N,)``.
-        P: Unit-polarity array with dtype ``wp.vec3f``, shape ``(N, 3)``.
-        CT: Cell-type array with epithelial cells encoded as ``1``.
-        particle_count: Number of active particles.
-        dt: Mechanical Euler step :math:`\\Delta t_{\\mathrm{mech}}`.
-        X_next: Output positions, shape ``(N, 3)``.
-        P_next: Output renormalized polarities, shape ``(N, 3)``.
-        device: Warp device.
-        grad_consist: Emit gradient-consistency read/write marks for differentiable
-            replay when ``True``.
-        grid: Optional reusable :class:`warp.HashGrid`.
-        wnt: Optional WNT/activator abundance array; when given, adds the
-            WNT-aligned mesenchymal polarity gradients.
-
-    Returns:
-        The net position-force buffer ``f_net``, dtype ``wp.vec3f``, shape
-        ``(N, 3)`` (a descent gradient; see :func:`gd_update`).
-
-    See Also:
-        mech_step_sticky_implicit: the autodiff (:func:`warp.grad`) twin.
-        waxmorph.emulator: the differentiable, non-growing mechanics path.
+    The active contact graph is rebuilt with a Warp HashGrid. Optional WNT adds
+    mesenchymal polarity alignment; epithelial polarity position gradients use
+    the componentwise soft-force clamp documented by :func:`sticky_sphere_grads`.
+    ``grad_consist`` emits replay markers.
     """
 
-    # Set up gradients
     f_net = wp.zeros_like(X, device=device)
     f_pol = wp.zeros_like(P, device=device)
 
@@ -742,17 +507,6 @@ def mech_step_sticky(
     return f_net
 
 
-############################################################
-############################################################
-############################################################
-
-# MECHANICS - AUTODIFF
-
-############################################################
-############################################################
-############################################################
-
-
 @wp.func
 def epi_polarity_potential(
     x_i: wp.vec3f,
@@ -760,16 +514,12 @@ def epi_polarity_potential(
     p_i: wp.vec3f,
     p_j: wp.vec3f,
 ) -> wp.float32:
-    """Scalar potential enforcing epithelial polarity perpendicular to connection axis.
+    r"""Epithelial polarity potential.
 
     .. math::
-        U = \\tfrac{1}{2}(\\mathbf{p}_i \\cdot \\hat{\\mathbf{u}})^2
-          + \\tfrac{1}{2}(\\mathbf{p}_j \\cdot \\hat{\\mathbf{u}})^2
 
-    where :math:`\\hat{\\mathbf{u}} = (\\mathbf{x}_i - \\mathbf{x}_j) / \\|\\cdot\\|`.
-
-    See Also:
-        epi_polarity_grads: the analytic-gradient twin of this potential.
+        U=\tfrac12(p_i\cdot u)^2+\tfrac12(p_j\cdot u)^2,
+        \qquad u=\frac{x_i-x_j}{\lVert x_i-x_j\rVert_2+EPS_NORM}.
     """
     d = x_i - x_j
     dist = wp.length(d) + EPS_NORM
@@ -786,18 +536,14 @@ def epi_thickness_potential(
     p_i: wp.vec3f,
     p_j: wp.vec3f,
 ) -> wp.float32:
-    """Scalar potential penalizing excessive normal-direction separation.
+    r"""Epithelial thickness potential.
 
     .. math::
-        U = \\tfrac{1}{2} K_{\\mathrm{thick}}
-            \\max(|\\mathbf{d} \\cdot \\hat{\\mathbf{n}}| - H, 0)^2
 
-    where :math:`\\hat{\\mathbf{n}} = (\\mathbf{p}_i + \\mathbf{p}_j') / \\|\\cdot\\|`
-    (sign-corrected so polarities point the same way), :math:`K` =
-    ``K_THICK_EE``, and :math:`H` = ``H_THICK_EE``.
+        U=\tfrac12K_{\mathrm{thick}}
+        \max(|d\cdot n|-H_{\mathrm{thick}},0)^2.
 
-    See Also:
-        epi_thickness_grads: the analytic-gradient twin of this potential.
+    ``n`` is the sign-aligned polarity sum divided by its norm plus ``EPS_NORM``.
     """
     d = x_i - x_j
     p_j_use = p_j
@@ -814,13 +560,9 @@ def epi_thickness_potential(
 
 @wp.func
 def mes_polarity_potential(p_i: wp.vec3f, p_j: wp.vec3f) -> wp.float32:
-    """Scalar potential for mesenchymal polarity alignment.
+    r"""Unoriented mesenchymal polarity potential.
 
-    .. math::
-        U = -\\tfrac{1}{2}(\\mathbf{p}_i \\cdot \\mathbf{p}_j)^2
-
-    See Also:
-        mes_polarity_grads: the analytic-gradient twin of this potential.
+    .. math:: U=-\tfrac12(p_i\cdot p_j)^2.
     """
     c = wp.dot(p_i, p_j)
     return wp.float32(-0.5) * c * c
@@ -832,19 +574,11 @@ def mes_wnt_polarity_potential(
     u_to_higher_wnt: wp.vec3f,
     w_higher: wp.float32,
 ) -> wp.float32:
-    r"""Scalar WNT-aligned potential for mesenchymal polarity (torque only).
+    r"""Mesenchymal polarity potential toward higher WNT.
 
-    Aligns a mesenchymal cell's polarity toward the neighbor of higher
-    activator/WNT concentration (the simulator's ``Mes-Align`` term).
+    .. math:: U=-\tfrac12c_{j,A}(p_i^Tu_{ji})^2.
 
-    .. math::
-        U = -\tfrac{1}{2}\,c_{j,A}\,(\mathbf{p}_i^\top \hat{\mathbf{u}}_{ji})^2
-
-    where :math:`\hat{\mathbf{u}}_{ji}` points toward the higher-WNT neighbor and
-    :math:`c_{j,A}` (``w_higher``) is that neighbor's concentration.
-
-    See Also:
-        mes_wnt_polarity_grads: the analytic-gradient twin of this potential.
+    Callers supply :math:`u=(x_j-x_i)/(\lVert x_j-x_i\rVert+EPS_NORM)`.
     """
     c = wp.dot(p_i, u_to_higher_wnt)
     return wp.float32(-0.5) * w_higher * c * c
@@ -858,10 +592,14 @@ def sticky_sphere_grads_implicit(
     P: wp.array(dtype=wp.vec3f),
     CT: wp.array(dtype=wp.uint32),
     query_radius: wp.float32,
-    f_net: wp.array(dtype=wp.vec3f),  # net mechanical force on positions
-    f_pol: wp.array(dtype=wp.vec3f),  # polarity gradient/torque accumulator
+    f_net: wp.array(dtype=wp.vec3f),
+    f_pol: wp.array(dtype=wp.vec3f),
 ):
-    """Autodiff-based counterpart of ``sticky_sphere_grads`` using :func:`warp.grad`."""
+    """Use :func:`warp.grad` for polarity and thickness potentials.
+
+    Soft-sphere gradients remain explicit. Epithelial polarity position-gradient
+    components use the same soft-force clamp as :func:`sticky_sphere_grads`.
+    """
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
 
@@ -879,26 +617,22 @@ def sticky_sphere_grads_implicit(
         c_j = CT[j]
         p_j = P[j]
 
-        # Forces
         grad_x_i_f, grad_x_j_f = sticky_sphere_forces(x_i, x_j, r_i, r_j, c_i, c_j)
         wp.atomic_add(f_net, i, grad_x_i_f)
         wp.atomic_add(f_net, j, grad_x_j_f)
 
-        # Polarity Neighbors
         dist = wp.norm_l2(x_i - x_j)
         w = adj_weight(dist, r_i, r_j)
 
         if not wp.bool(w):
             continue
 
-        # Polarities - epithelium
         if (c_i == wp.uint32(1)) and (c_j == wp.uint32(1)):
             grad_x_i_p, grad_x_j_p, grad_p_i, grad_p_j = wp.grad(epi_polarity_potential)(
                 x_i, x_j, p_i, p_j
             )
             grad_x_i_t, grad_x_j_t, _, _ = wp.grad(epi_thickness_potential)(x_i, x_j, p_i, p_j)
 
-            # Match magnitudes so movement doesn't blink
             for k in range(3):
                 v_i = wp.max(wp.abs(grad_x_i_f[k]), wp.float32(1e-3))
                 v_j = wp.max(wp.abs(grad_x_j_f[k]), wp.float32(1e-3))
@@ -913,7 +647,6 @@ def sticky_sphere_grads_implicit(
             wp.atomic_add(f_pol, i, grad_p_i)
             wp.atomic_add(f_pol, j, grad_p_j)
 
-        # Polarities - mesenchyme
         if (c_i == wp.uint32(0)) and (c_j == wp.uint32(0)):
             grad_p_i, grad_p_j = wp.grad(mes_polarity_potential)(p_i, p_j)
             wp.atomic_add(f_pol, i, grad_p_i)
@@ -931,7 +664,7 @@ def sticky_sphere_wnt_grads_implicit(
     query_radius: wp.float32,
     gp: wp.array(dtype=wp.vec3f),
 ):
-    """Autodiff counterpart of ``sticky_sphere_wnt_grads``."""
+    """Accumulate WNT alignment with a local :func:`warp.grad` derivative."""
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
 
@@ -983,7 +716,7 @@ def mech_step_sticky_implicit(
     *,
     wnt: "wp.array | None" = None,
 ):
-    """Mechanics step matching ``mech_step_sticky`` but using :func:`warp.grad` locally."""
+    """Advance mechanics with local autodiff for polarity and thickness potentials."""
 
     f_net = wp.zeros_like(X, device=device)
     f_pol = wp.zeros_like(P, device=device)
@@ -1028,29 +761,18 @@ def mech_step_sticky_implicit(
     return f_net
 
 
-############################################################
-############################################################
-############################################################
-
-# DIFFUSION
-
-############################################################
-############################################################
-############################################################
-
-
 @wp.kernel
 def reaction_diffs(
     grid: wp.uint64,
-    X: wp.array(dtype=wp.vec3f),  # (N, 3)
-    R: wp.array(dtype=wp.float32),  # (N,)
+    X: wp.array(dtype=wp.vec3f),
+    R: wp.array(dtype=wp.float32),
     query_radius: wp.float32,
-    A: wp.array(dtype=wp.float32),  # (N,)
-    I: wp.array(dtype=wp.float32),  # (N,)
-    lapA: wp.array(dtype=wp.float32),  # (N,) out (accum)
-    lapI: wp.array(dtype=wp.float32),  # (N,) out (accum)
+    A: wp.array(dtype=wp.float32),
+    I: wp.array(dtype=wp.float32),
+    lapA: wp.array(dtype=wp.float32),
+    lapI: wp.array(dtype=wp.float32),
 ):
-    """Accumulate graph-laplacian diffusion terms for A/I channels."""
+    """Accumulate symmetric contact-graph diffusion for activator and inhibitor."""
 
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
@@ -1068,7 +790,6 @@ def reaction_diffs(
         dist = wp.norm_l2(x_i - X[j])
         w = adj_weight(dist, Ri, Rj)
 
-        # Prune non neighbors
         if not wp.bool(w):
             continue
 
@@ -1076,11 +797,9 @@ def reaction_diffs(
         cAj = safe_div(A[j], Vj)
         cIj = safe_div(I[j], Vj)
 
-        # Pairwise flux contribution: w * (c_j - c_i)
         dA = wp.float32(w) * (cAj - cAi)
         dI = wp.float32(w) * (cIj - cIi)
 
-        # Symmetric accumulation: +d to i, -d to j
         wp.atomic_add(lapA, i, dA)
         wp.atomic_add(lapA, j, -dA)
         wp.atomic_add(lapI, i, dI)
@@ -1089,58 +808,48 @@ def reaction_diffs(
 
 @wp.kernel
 def reaction_step(
-    A: wp.array(dtype=wp.float32),  # (N,)
-    I: wp.array(dtype=wp.float32),  # (N,)
+    A: wp.array(dtype=wp.float32),
+    I: wp.array(dtype=wp.float32),
     R: wp.array(dtype=wp.float32),
-    lapA: wp.array(dtype=wp.float32),  # (N,)
-    lapI: wp.array(dtype=wp.float32),  # (N,)
-    chi: wp.array(dtype=wp.float32),  # chi: spatial characteristic of activator
-    gamma: wp.array(dtype=wp.float32),  # gamma: reaction rate
-    D_inhib: wp.float32,  # D_inhib: inhibitor diffusivity scaling
+    lapA: wp.array(dtype=wp.float32),
+    lapI: wp.array(dtype=wp.float32),
+    chi: wp.array(dtype=wp.float32),
+    gamma: wp.array(dtype=wp.float32),
+    D_inhib: wp.float32,
     dt: wp.float32,
-    A_next: wp.array(dtype=wp.float32),  # (N,)
-    I_next: wp.array(dtype=wp.float32),  # (N,)
+    A_next: wp.array(dtype=wp.float32),
+    I_next: wp.array(dtype=wp.float32),
 ):
-    r"""Advance the activator-inhibitor (Turing) reaction-diffusion by one step.
+    r"""Advance the activator-inhibitor system by one bounded discrete step.
 
-    For cell :math:`i` the abundances evolve as
+    With regularized concentrations :math:`a=A/(V+EPS_DEN)`,
+    :math:`i=I/(V+EPS_DEN)`, and contact fluxes
+    :math:`\ell_A=\sum_j(a_j-a_i)`, :math:`\ell_I=\sum_j(i_j-i_i)`,
 
     .. math::
-        \dot{A}_i = \gamma\Big[-\chi D_{\mathrm{inhib}}(L_G c_A)_i
-        + \frac{c_{i,A}^2}{c_{i,I}} - c_{i,A}\Big],\qquad
-        \dot{I}_i = \gamma\Big[-D_{\mathrm{inhib}}(L_G c_I)_i + c_{i,A}^2
-        - c_{i,I}\Big]
 
-    with :math:`\chi` = ``chi``, :math:`\gamma` = ``gamma``,
-    :math:`D_{\mathrm{inhib}}` = ``D_inhib``, and :math:`L_G` the shared graph
-    Laplacian, here supplied precomputed in ``lapA``/``lapI``.
+        A_i' = \operatorname{clip}\!\left(
+        \frac{A_i+dt\,\gamma[\chi D_I\ell_A+
+        \min(\frac{a_i^2}{i_i+EPS_DEN},
+        \frac{a_i^2}{i_i^2+EPS_DEN})]}{1+dt\,\gamma},0,10^4\right),
 
-    Two implementation choices stabilize the explicit integration:
+        I_i' = \operatorname{clip}\!\left(
+        \frac{I_i+dt\,\gamma[D_I\ell_I+a_i^2]}{1+dt\,\gamma},0,10^4\right).
 
-    - **Production cap.** Activator self-production uses the smaller of the
-      standard form :math:`c_{i,A}^2/c_{i,I}` and a quadratic-denominator variant
-      :math:`c_{i,A}^2/c_{i,I}^2`, so that high inhibitor caps production and the
-      field cannot blow up.
-    - **Linear damping.** The linear decay term :math:`-c` is applied
-      implicitly as the post-step factor :math:`1/(1 + \Delta t\,\gamma)`, which
-      is unconditionally stable for that term.
-
-    Both channels are finally clamped to ``[0, 1e4]`` to bound the explicit step.
+    The production cap, semi-implicit linear damping, and output clamp differ
+    from an uncapped explicit reaction-diffusion ODE.
     """
 
     i = wp.tid()
 
     V = volume_from_radius(R[i])
 
-    # Reaction terms (on concentrations)
     cA = safe_div(A[i], V)
     cI = safe_div(I[i], V)
 
     cA2 = cA * cA
     ciI = cI
 
-    # Activator self-production, saturating: take the smaller of the two
-    # forms so high inhibitor caps production and the field cannot blow up.
     prodA_lin = safe_div(cA2, ciI)
     prodA_quad = safe_div(cA2, ciI * ciI)
 
@@ -1150,15 +859,12 @@ def reaction_step(
 
     prodI = cA2
 
-    # Diffusion with graph laplacian
     diffA = (chi[0] * D_inhib) * lapA[i]
     diffI = D_inhib * lapI[i]
 
-    # Explicit Euler step with temporal scaling
     zAi = A[i] + dt * gamma[0] * (diffA + prodA)
     zIi = I[i] + dt * gamma[0] * (diffI + prodI)
 
-    # Linear damping
     inv = 1.0 / (1.0 + dt * gamma[0])
     Ai_next = zAi * inv
     Ii_next = zIi * inv
@@ -1169,39 +875,29 @@ def reaction_step(
 
 @wp.kernel
 def reaction_step_masked(
-    A: wp.array(dtype=wp.float32),  # (N,)
-    I: wp.array(dtype=wp.float32),  # (N,)
+    A: wp.array(dtype=wp.float32),
+    I: wp.array(dtype=wp.float32),
     R: wp.array(dtype=wp.float32),
-    lapA: wp.array(dtype=wp.float32),  # (N,)
-    lapI: wp.array(dtype=wp.float32),  # (N,)
-    chi: wp.array(dtype=wp.float32),  # chi: spatial characteristic of activator
-    gamma: wp.array(dtype=wp.float32),  # gamma: reaction rate
-    D_inhib: wp.float32,  # D_inhib: inhibitor diffusivity scaling
+    lapA: wp.array(dtype=wp.float32),
+    lapI: wp.array(dtype=wp.float32),
+    chi: wp.array(dtype=wp.float32),
+    gamma: wp.array(dtype=wp.float32),
+    D_inhib: wp.float32,
     dt: wp.float32,
     CT: wp.array(dtype=wp.uint32),
     reaction_cell_type: wp.uint32,
-    A_next: wp.array(dtype=wp.float32),  # (N,)
-    I_next: wp.array(dtype=wp.float32),  # (N,)
+    A_next: wp.array(dtype=wp.float32),
+    I_next: wp.array(dtype=wp.float32),
 ):
-    r"""Advance the activator-inhibitor (Turing) system on one masked cell type.
+    """Apply nonlinear reaction only to the selected cell type.
 
-    Cell-type-restricted variant of :func:`reaction_step` for surface-patterning
-    experiments: graph-Laplacian diffusion runs on every cell, but the
-    nonlinear reaction terms of the activator-inhibitor system are applied only
-    to cells whose type matches ``reaction_cell_type``. Non-reacting cells take a
-    pure-diffusion update. The same production cap and the same implicit linear
-    damping :math:`1/(1 + \Delta t\,\gamma)` as :func:`reaction_step` are used on
-    the reacting cells, and both channels are clamped to ``[0, 1e4]``.
-
-    See Also:
-        reaction_step: the unmasked counterpart (reaction on all cells).
+    All cells diffuse; unmatched cells receive pure diffusion. Matched cells use
+    the same production cap, semi-implicit damping, and output clamp as
+    :func:`reaction_step`.
     """
 
     i = wp.tid()
 
-    # Diffusion with graph laplacian. The reaction rate gamma is intentionally
-    # kept consistent with reaction_step so masked and unmasked calls use the
-    # same effective diffusion coefficient.
     diffA = (chi[0] * D_inhib) * lapA[i]
     diffI = D_inhib * lapI[i]
 
@@ -1214,15 +910,12 @@ def reaction_step_masked(
 
     V = volume_from_radius(R[i])
 
-    # Reaction terms (on concentrations)
     cA = safe_div(A[i], V)
     cI = safe_div(I[i], V)
 
     cA2 = cA * cA
     ciI = cI
 
-    # Activator self-production, saturating: take the smaller of the two
-    # forms so high inhibitor caps production and the field cannot blow up.
     prodA_lin = safe_div(cA2, ciI)
     prodA_quad = safe_div(cA2, ciI * ciI)
 
@@ -1232,11 +925,9 @@ def reaction_step_masked(
 
     prodI = cA2
 
-    # Explicit Euler step with temporal scaling
     zAi = A[i] + dt * gamma[0] * (diffA + prodA)
     zIi = I[i] + dt * gamma[0] * (diffI + prodI)
 
-    # Linear damping on reacting cells only.
     inv = 1.0 / (1.0 + dt * gamma[0])
     Ai_next = zAi * inv
     Ii_next = zIi * inv
@@ -1252,9 +943,9 @@ def chem_step(
     R: wp.array,
     lapA: wp.array,
     lapI: wp.array,
-    chi: wp.array,  # chi: spatial characteristic of activator
-    gamma: wp.array,  # gamma: reaction rate
-    D_inhib: float,  # D_inhib: inhibitor diffusivity scaling
+    chi: wp.array,
+    gamma: wp.array,
+    D_inhib: float,
     dt: float,
     particle_count: int,
     A_next: wp.array,
@@ -1266,45 +957,12 @@ def chem_step(
     CT: "wp.array | None" = None,
     reaction_cell_type: int | None = None,
 ):
-    r"""Run one chemistry stage: graph-Laplacian diffusion then reaction update.
+    """Run contact diffusion followed by masked or unmasked reaction.
 
-    First accumulates the activator/inhibitor graph Laplacians over
-    hash-grid neighbors, then advances the activator-inhibitor (Turing) system by
-    one explicit step via :func:`reaction_step` (or :func:`reaction_step_masked`
-    when a single reacting cell type is requested).
-
-    Args:
-        A: Activator abundance array, shape ``(N,)``.
-        I: Inhibitor abundance array, shape ``(N,)``.
-        X: Position array with dtype ``wp.vec3f``, shape ``(N, 3)``.
-        R: Radius array with dtype ``wp.float32``, shape ``(N,)``.
-        lapA: Scratch/output activator Laplacian buffer, shape ``(N,)``.
-        lapI: Scratch/output inhibitor Laplacian buffer, shape ``(N,)``.
-        chi: Single-element array holding :math:`\chi`, the relative activator
-            diffusivity (spatial characteristic).
-        gamma: Single-element array holding the reaction rate :math:`\gamma`.
-        D_inhib: Inhibitor diffusivity :math:`D_{\mathrm{inhib}}`.
-        dt: Reaction-diffusion Euler step :math:`\Delta t_{\mathrm{chem}}`.
-        particle_count: Number of active particles.
-        A_next: Output activator abundances, shape ``(N,)``.
-        I_next: Output inhibitor abundances, shape ``(N,)``.
-        device: Warp device.
-        grad_consist: Emit gradient-consistency read/write marks when ``True``.
-        grid: Optional reusable :class:`warp.HashGrid`.
-        CT: Cell-type array; required when ``reaction_cell_type`` is set.
-        reaction_cell_type: If given, restrict the nonlinear reaction to this
-            cell type (diffusion still runs everywhere); otherwise react on all
-            cells.
-
-    Returns:
-        None. Results are written in place to ``A_next`` and ``I_next``.
-
-    Raises:
-        ValueError: If ``reaction_cell_type`` is set but ``CT`` is ``None``.
-
-    See Also:
-        reaction_step: the unmasked explicit reaction-diffusion update.
-        reaction_step_masked: the cell-type-restricted reaction update.
+    ``reaction_cell_type`` restricts nonlinear reaction while retaining
+    diffusion for every cell and requires ``CT``. ``grad_consist`` emits replay
+    markers. ``lapA`` and ``lapI`` must be zeroed by the caller because pair
+    fluxes accumulate atomically.
     """
 
     if reaction_cell_type is not None and CT is None:
@@ -1316,7 +974,6 @@ def chem_step(
         grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
     grid.build(X[:particle_count], query_radius)
 
-    # Cache laplacian
     wp.launch(
         reaction_diffs,
         dim=particle_count,
@@ -1329,9 +986,6 @@ def chem_step(
         lapA.mark_write()
         lapI.mark_write()
 
-    # Update molecules. By default this is the unmasked chemistry
-    # path. The masked path is opt-in for surface-patterning experiments where
-    # only one cell type should run the local reaction-diffusion updates
     if reaction_cell_type is None:
         wp.launch(
             reaction_step,
@@ -1361,7 +1015,6 @@ def chem_step(
             device=device,
         )
 
-    # Gradient consistency checks
     if grad_consist:
         lapA.mark_read()
         lapI.mark_read()
@@ -1370,17 +1023,6 @@ def chem_step(
 
         A_next.mark_write()
         I_next.mark_write()
-
-
-# ############################################################
-# ############################################################
-# ############################################################
-
-#             # GROWTH
-
-# ############################################################
-# ############################################################
-# ############################################################
 
 
 @wp.kernel
@@ -1394,7 +1036,6 @@ def count_neighbors(
     n_epi: wp.array(dtype=wp.int32),
     n_mes: wp.array(dtype=wp.int32),
 ):
-    """Count local neighborhood totals and type-specific neighbors."""
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid, tid)
     x_i = X[i]
@@ -1411,11 +1052,9 @@ def count_neighbors(
         if not wp.bool(w):
             continue
 
-        # total counts
         wp.atomic_add(n_tot, i, 1)
         wp.atomic_add(n_tot, j, 1)
 
-        # type-specific (neighbor type)
         if CT[j] == wp.uint32(1):
             wp.atomic_add(n_epi, i, 1)
         else:
@@ -1438,19 +1077,7 @@ def count_neighbors_step(
     device: str = "cuda",
     grid: "wp.HashGrid | None" = None,
 ) -> None:
-    """Count neighbors using :class:`warp.HashGrid` acceleration.
-
-    Args:
-        X: Position array with dtype ``wp.vec3f``.
-        R: Radius array with dtype ``wp.float32``.
-        CT: Cell-type array with epithelial cells encoded as ``1``.
-        particle_count: Number of active particles.
-        n_tot: Pre-zeroed output array for total neighbor counts.
-        n_epi: Pre-zeroed output array for epithelial neighbor counts.
-        n_mes: Pre-zeroed output array for mesenchymal neighbor counts.
-        device: Warp device.
-        grid: Optional reusable :class:`warp.HashGrid`.
-    """
+    """Atomically accumulate into caller-zeroed neighbor counters."""
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + EPS_DIST
     if grid is None:
@@ -1472,8 +1099,8 @@ def growth_step(
     A: wp.array(dtype=wp.float32),
     CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
-    alpha_grow: wp.array(dtype=wp.float32),  # alpha_grow: growth Hill exponent
-    ell_sw: wp.array(dtype=wp.float32),  # ell_sw: switch concentration
+    alpha_grow: wp.array(dtype=wp.float32),
+    ell_sw: wp.array(dtype=wp.float32),
     dt: float,
     R_ref: wp.float32,
     R_max: wp.float32,
@@ -1483,49 +1110,22 @@ def growth_step(
     device: str = "cuda",
     grad_consist: bool = True,
 ) -> None:
-    r"""Dispatch one bounded growth update for all particles.
+    r"""Apply bounded growth in model units.
 
-    Launches :func:`growth_step_inner`, which advances the mesenchymal Hill
-    growth rule for the equilibrium radius and relaxes the physical radius toward
-    it:
+    Mesenchymal equilibrium radii use a stochastic rate in ``[0.8, 1)`` and
 
     .. math::
-        \dot{r}^{\mathrm{eq}}_i = \lambda_{\mathrm{ref},i}\,
-        \frac{c_{i,A}^{\alpha_{\mathrm{grow}}}}
-        {\ell_{\mathrm{sw}}^{\alpha_{\mathrm{grow}}}
-        + c_{i,A}^{\alpha_{\mathrm{grow}}}},\qquad
-        \dot{r}_i = \Big(1 - \frac{r_i}{r^{\mathrm{eq}}_i}\Big)^2
 
-    with :math:`\lambda_{\mathrm{ref},i}\sim\mathcal{U}(0.8, 1)` drawn per step,
-    :math:`\ell_{\mathrm{sw}}` = ``ell_sw``, and
-    :math:`\alpha_{\mathrm{grow}}` = ``alpha_grow``. Epithelial cells
-    instead relax deterministically toward ``R_ref``. Physical radii advance
-    only while below their target and cannot overshoot it. Mesenchymal
-    equilibrium radii are capped at ``R_max``; epithelial values are copied.
+        \dot r_i^{eq}=\lambda_i\frac{a_i^{\alpha}}
+        {\ell_{sw}^{\alpha}+a_i^{\alpha}+EPS_DEN},\qquad
+        \dot r_i=(1-r_i/r_i^{eq})^2.
 
-    Args:
-        R: Physical-radius array, shape ``(N,)``.
-        R_eq: Equilibrium (target) radius array, shape ``(N,)``.
-        A: Activator abundance array, shape ``(N,)``.
-        CT: Cell-type array with epithelial cells encoded as ``1``.
-        keys: Per-particle RNG keys, advanced in place.
-        alpha_grow: Single-element array holding the growth Hill exponent.
-        ell_sw: Single-element array holding the growth Hill switch concentration.
-        dt: Growth Euler step :math:`\Delta t_{\mathrm{grow}}`.
-        R_ref: Epithelial reference radius for deterministic relaxation.
-        R_max: Upper bound for mesenchymal equilibrium radii.
-        particle_count: Number of active particles.
-        R_next: Output physical radii, shape ``(N,)``.
-        R_eq_next: Output equilibrium radii, shape ``(N,)``.
-        device: Warp device.
-        grad_consist: Emit gradient-consistency read/write marks when ``True``.
-
-    Returns:
-        None. Results are written in place to ``R_next`` and ``R_eq_next``.
-
-    Raises:
-        ValueError: If ``dt`` or ``R_max`` is negative or non-finite, or
-            ``R_ref`` is nonpositive or non-finite.
+    Here :math:`a_i=A_i/(V_i+EPS_DEN)`; the physical-radius ratio is regularized
+    by the same denominator constant. Physical radii move only while below their
+    target and cannot overshoot. Mesenchymal keys advance in place.
+    Mesenchymal targets are capped at ``R_max``; epithelial targets copy through
+    and physical radii approach ``R_ref``. ``dt`` and ``R_max`` must be finite and
+    nonnegative; ``R_ref`` must be finite and positive.
     """
     if not _isfinite(dt) or dt < 0:
         raise ValueError("dt must be finite and nonnegative")
@@ -1541,7 +1141,6 @@ def growth_step(
         device=device,
     )
 
-    # Gradient consistency checks
     if grad_consist:
         R.mark_read()
         R_eq.mark_read()
@@ -1557,18 +1156,16 @@ def growth_step_inner(
     A: wp.array(dtype=wp.float32),
     CT: wp.array(dtype=wp.uint32),
     keys: wp.array(dtype=wp.uint32),
-    alpha_grow: wp.array(dtype=wp.float32),  # alpha_grow: growth Hill exponent
-    ell_sw: wp.array(dtype=wp.float32),  # ell_sw: switch concentration
+    alpha_grow: wp.array(dtype=wp.float32),
+    ell_sw: wp.array(dtype=wp.float32),
     dt: wp.float32,
     R_ref: wp.float32,
     R_max: wp.float32,
     R_next: wp.array(dtype=wp.float32),
     R_eq_next: wp.array(dtype=wp.float32),
 ) -> None:
-    """Per-particle growth rule conditioned on cell type and local chemistry."""
     i = wp.tid()
 
-    # Mesenchyme: activator-driven growth of the target (equilibrium) radius.
     if CT[i] == wp.uint32(0):
         r_i = R[i]
         target = wp.min(R_eq[i], R_max)
@@ -1577,9 +1174,9 @@ def growth_step_inner(
         num = safe_div(A[i], V) ** alpha_grow[0]
 
         key = keys[i]
-        lam = wp.randf(key, 0.8, 1.0)  # per-step stochastic growth rate
+        lam = wp.randf(key, 0.8, 1.0)
         key = wp.randu(key)
-        # Hill switch on activator concentration (half-max at ell_sw)
+
         frac = safe_div(num, (ell_sw[0] ** alpha_grow[0]) + num)
 
         R_eq_next[i] = wp.min(target + frac * lam * dt, R_max)
@@ -1590,7 +1187,6 @@ def growth_step_inner(
             R_next[i] = r_i
         keys[i] = key
 
-    # Epithelium: deterministic relaxation toward the reference radius R_ref.
     if CT[i] == wp.uint32(1):
         r_i = R[i]
         R_eq_next[i] = R_eq[i]
@@ -1609,25 +1205,19 @@ def st_gumbel_softmax_bernoulli(
     tmax: wp.float32,
     tau: wp.float32,
 ):
-    """Straight-through Gumbel-Softmax Bernoulli sample with annealed temperature.
+    """Return hard Gumbel-Softmax Bernoulli sample and soft relaxation.
 
-    Draws a hard 0/1 division decision from probability ``p`` while keeping a soft
-    relaxed value for gradient flow (straight-through estimator). The softmax
-    temperature ``tau`` is annealed geometrically from its initial value toward a
-    floor of ``0.1`` over the horizon ``tmax`` (the rate ``k`` is set so the floor
-    is reached at ``t == tmax``), sharpening samples toward true Bernoulli draws as
-    the simulation progresses. The ``0.1`` floor keeps the relaxed softmax
-    numerically well conditioned and prevents the temperature from collapsing to
-    zero.
+    ``p`` is clamped to ``[RAND_EPS, 1-RAND_EPS]``. For positive ``tau`` and
+    ``tmax``, the sampled temperature is
+    ``max(0.1, tau * exp(-log(tau / 0.1) * t / tmax))``.
+    :func:`division_decision` consumes only the hard sample.
     """
 
     p = wp.clamp(p, RAND_EPS, 1.0 - RAND_EPS)
 
-    # # Gumbel softmax
     key, g0 = gumbel(key)
     key, g1 = gumbel(key)
 
-    # # Anneal temp toward the 0.1 floor (k chosen so the floor is hit at t=tmax)
     k = wp.log(tau / 0.1) / tmax
     tau = wp.max(0.1, tau * wp.exp(-k * t))
 
@@ -1673,17 +1263,15 @@ def division_decision(
     tau: wp.float32,
     max_particles: wp.int32,
 ):
-    r"""Sample which parents divide and reserve daughter slots atomically.
+    r"""Sample divisions and atomically reserve bounded daughter slots.
 
-    Mesenchymal cells divide with the size-driven Hill probability
-    :math:`p = r^{\alpha_{\mathrm{div}}}/(r^{\alpha_{\mathrm{div}}}
-    + r_{\mathrm{ref}}^{\alpha_{\mathrm{div}}})` (:func:`probs`). Epithelial cells
-    do not undergo activator-driven growth; one is instead eligible to divide
-    (probability ``p_epi``) only when it has at least one mesenchymal neighbor and
-    fewer than ``epi_max_neighbors`` epithelial neighbors, which lets the
-    monolayer expand as the enclosed mesenchyme grows. The hard 0/1 decision is
-    drawn through :func:`st_gumbel_softmax_bernoulli`, and accepted parents claim a
-    unique child slot via an atomic counter (capped at ``max_particles``).
+    Mesenchymal eligibility follows the radius Hill probability. Epithelial
+    cells use ``p_epi`` only beside mesenchyme and below ``epi_max_neighbors``
+    epithelial neighbors. Accepted parents receive unique indices below
+    ``max_particles``; the counter never exceeds capacity. ``div_count[0]`` must
+    identify the first free slot, launched ``div_slots`` entries must start at
+    ``-1``, and state arrays used by the division kernels must have at least
+    ``max_particles`` rows. Eligible sampled cells advance their keys in place.
     """
     parent = wp.tid()
 
@@ -1705,7 +1293,6 @@ def division_decision(
     else:
         p = probs(R[parent], R_div_ref)
 
-    # Sample division (Gumbel-ST)
     key, s_hard, _s_soft = st_gumbel_softmax_bernoulli(p, key, t, tmax, tau)
     keys[parent] = key
 
@@ -1730,16 +1317,14 @@ def division_logic(
     CT: wp.array(dtype=wp.uint32),
     div_slots: wp.array(dtype=wp.int32),
 ):
-    """Apply state transitions for accepted divisions (perpendicular-surface axis).
+    """Split accepted parents along a polarity-perpendicular surface.
 
-    Each accepted parent is replaced by two daughters of the same type and
-    polarity, with abundances split equally and radii rescaled to conserve volume
-    (mesenchyme; epithelium copies the parent radius). Daughters are separated
-    along the surface perpendicular to the polarity.
-
-    See Also:
-        division_logic_mes_polarity: variant that separates mesenchymal daughters
-            *along* the polarity axis instead.
+    Both daughters inherit type and polarity and receive half the chemical
+    abundance. Mesenchymal physical radii conserve half-volume; epithelial
+    physical radii copy. Both equilibrium radii reset to the resulting daughter
+    radius. Under the unit-polarity caller contract, each center moves
+    ``1.02 * daughter_radius`` along a perpendicular axis, giving separation
+    ``2.04 * daughter_radius``.
     """
 
     parent = wp.tid()
@@ -1749,21 +1334,17 @@ def division_logic(
     if child == -1:
         return
 
-    # Split chemical states evenly
     a_p, i_p = A[parent], I[parent]
     A[parent] = 0.5 * a_p
     A[child] = 0.5 * a_p
     I[parent] = 0.5 * i_p
     I[child] = 0.5 * i_p
 
-    # Daughter inherits the parent's cell type (no de novo / random type).
     ct = CT[parent]
     CT[child] = ct
 
-    # Half volume, cuberoot 2 r
     r = R[parent]
 
-    # Epithelium extends, mesenchyme splits in half volume
     if ct == wp.uint32(0):
         r = r / wp.cbrt(2.0)
 
@@ -1772,11 +1353,9 @@ def division_logic(
     R[parent] = r
     R_eq[parent] = r
 
-    # Pass parent polarity
     v = P[parent]
     P[child] = v
 
-    # # Polarized division - divide on perpendicular surface
     a = wp.vec3f(1.0, 0.0, 0.0)
     if wp.abs(v[0]) > wp.float32(0.9):
         a = wp.vec3f(0.0, 1.0, 0.0)
@@ -1784,9 +1363,7 @@ def division_logic(
     u = wp.normalize(wp.cross(v, a))
 
     x = X[parent]
-    # Place daughters on opposite sides of the parent center, separated by
-    # slightly more than one daughter radius (1.02*r leaves a small gap so the
-    # repulsive branch of the soft-sphere force does not immediately fire).
+
     sep = 1.02 * r
     X[parent] = x + u * sep
     X[child] = x - u * sep
@@ -1803,16 +1380,10 @@ def division_logic_mes_polarity(
     CT: wp.array(dtype=wp.uint32),
     div_slots: wp.array(dtype=wp.int32),
 ):
-    """Apply divisions with mesenchymal daughters separated along polarity.
+    """Split mesenchymal daughters along polarity and epithelial daughters across it.
 
-    Like :func:`division_logic` (same equal split of abundances, type and
-    polarity inheritance, and volume-conserving radii), except mesenchymal
-    daughters are placed *along* the parent polarity axis; epithelial daughters
-    still split on the perpendicular surface to preserve the monolayer.
-
-    See Also:
-        division_logic: variant that always separates daughters on the
-            perpendicular surface.
+    Inheritance, chemistry, radii, and separation distance match
+    :func:`division_logic`; only the mesenchymal separation direction differs.
     """
 
     parent = wp.tid()
@@ -1822,21 +1393,17 @@ def division_logic_mes_polarity(
     if child == -1:
         return
 
-    # Split chemical states evenly
     a_p, i_p = A[parent], I[parent]
     A[parent] = 0.5 * a_p
     A[child] = 0.5 * a_p
     I[parent] = 0.5 * i_p
     I[child] = 0.5 * i_p
 
-    # Daughter inherits the parent's cell type (no de novo / random type).
     ct = CT[parent]
     CT[child] = ct
 
-    # Half volume, cuberoot 2 r
     r = R[parent]
 
-    # Epithelium extends, mesenchyme splits in half volume
     if ct == wp.uint32(0):
         r = r / wp.cbrt(2.0)
 
@@ -1845,15 +1412,12 @@ def division_logic_mes_polarity(
     R[parent] = r
     R_eq[parent] = r
 
-    # Pass parent polarity
     v = P[parent]
     P[child] = v
 
-    # Mesenchyme divides *along* the polarity axis; epithelium divides on the
-    # perpendicular surface to keep the monolayer intact.
     u = wp.normalize(v)
     if ct == wp.uint32(1):
-        # Polarized epithelial division remains on the perpendicular surface.
+
         a = wp.vec3f(1.0, 0.0, 0.0)
         if wp.abs(v[0]) > wp.float32(0.9):
             a = wp.vec3f(0.0, 1.0, 0.0)
@@ -1861,9 +1425,7 @@ def division_logic_mes_polarity(
         u = wp.normalize(wp.cross(v, a))
 
     x = X[parent]
-    # Place daughters on opposite sides of the parent center, separated by
-    # slightly more than one daughter radius (1.02*r leaves a small gap so the
-    # repulsive branch of the soft-sphere force does not immediately fire).
+
     sep = 1.02 * r
     X[parent] = x + u * sep
     X[child] = x - u * sep
