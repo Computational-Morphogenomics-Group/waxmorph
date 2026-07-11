@@ -42,10 +42,9 @@ def _validate_graph_geometry(pos: np.ndarray, rad: np.ndarray, eps_dist: float) 
         raise ValueError(f"radii must have shape [N], got {rad.shape}.")
     if len(pos) != len(rad):
         raise ValueError(f"Position/radius lengths differ: {len(pos)} != {len(rad)}.")
-    if not np.isfinite(pos).all():
-        raise ValueError("positions must contain only finite values.")
-    if not np.isfinite(rad).all():
-        raise ValueError("radii must contain only finite values.")
+    for name, array in (("positions", pos), ("radii", rad)):
+        if not np.isfinite(array).all():
+            raise ValueError(f"{name} must contain only finite values.")
     if (rad < 0).any():
         raise ValueError("radii must be nonnegative.")
 
@@ -69,10 +68,9 @@ def _validate_feature_shapes(
     concentrations=None,
     edge_index=None,
 ) -> None:
-    if positions is not None and tuple(positions.shape) != (active, 3):
-        raise ValueError(f"positions must have shape [{active}, 3], got {positions.shape}.")
-    if polarities is not None and tuple(polarities.shape) != (active, 3):
-        raise ValueError(f"polarities must have shape [{active}, 3], got {polarities.shape}.")
+    for name, array in (("positions", positions), ("polarities", polarities)):
+        if array is not None and tuple(array.shape) != (active, 3):
+            raise ValueError(f"{name} must have shape [{active}, 3], got {array.shape}.")
     if concentrations is not None and (
         concentrations.ndim not in (1, 2) or concentrations.shape[0] != active
     ):

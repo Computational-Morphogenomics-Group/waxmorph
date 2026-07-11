@@ -1,8 +1,8 @@
 """PyTorch MLP used by the graph network."""
 
-from numbers import Integral as _Integral
-
 import torch.nn as nn
+
+from waxmorph._validation import _validate_mlp_config
 
 _ACTIVATIONS = {
     "relu": nn.ReLU,
@@ -38,15 +38,7 @@ class MLP(nn.Module):
     ):
         super().__init__()
 
-        if activation not in _ACTIVATIONS:
-            raise ValueError(
-                f"Unknown activation '{activation}'. Choose from {list(_ACTIVATIONS)}."
-            )
-        if isinstance(num_layers, bool) or not isinstance(num_layers, _Integral):
-            raise TypeError("num_layers must be a non-boolean integer")
-        if num_layers < 1:
-            raise ValueError("num_layers must be at least 1")
-        num_layers = int(num_layers)
+        num_layers = _validate_mlp_config(activation, _ACTIVATIONS, num_layers)
 
         self.activation_name = activation
         act_cls = _ACTIVATIONS[activation]

@@ -11,6 +11,8 @@ from typing import Any
 
 import jax.numpy as jnp
 
+from waxmorph._validation import _validate_chamfer_shapes, _validate_same_shape
+
 
 def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
     r"""Squared Frobenius norm for row-aligned arrays of equal shape.
@@ -30,29 +32,8 @@ def squared_loss(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
         >>> print(float(squared_loss(x, y)))
         1.0
     """
-    if X_pred.shape != X_target.shape:
-        raise ValueError(
-            f"squared_loss requires the same shape, got "
-            f"{tuple(X_pred.shape)} and {tuple(X_target.shape)}"
-        )
+    _validate_same_shape("squared_loss", X_pred.shape, X_target.shape)
     return jnp.sum((X_pred - X_target) ** 2)
-
-
-def _validate_chamfer_inputs(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> None:
-    pred_shape = tuple(X_pred.shape)
-    target_shape = tuple(X_target.shape)
-    if len(pred_shape) != 2 or len(target_shape) != 2:
-        raise ValueError(
-            f"chamfer_distance requires rank-2 inputs, got {pred_shape} and {target_shape}"
-        )
-    if X_pred.size == 0 or X_target.size == 0:
-        raise ValueError(
-            f"chamfer_distance requires nonempty inputs, got {pred_shape} and {target_shape}"
-        )
-    if pred_shape[1] != target_shape[1]:
-        raise ValueError(
-            f"chamfer_distance requires equal feature width, got {pred_shape} and {target_shape}"
-        )
 
 
 def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
@@ -79,7 +60,7 @@ def chamfer_distance(X_pred: jnp.ndarray, X_target: jnp.ndarray) -> jnp.ndarray:
         >>> print(float(chamfer_distance(x, y)))
         1.0
     """
-    _validate_chamfer_inputs(X_pred, X_target)
+    _validate_chamfer_shapes(X_pred.shape, X_target.shape)
     diff = X_pred[:, None, :] - X_target[None, :, :]
     sq = jnp.sum(diff * diff, axis=-1)
     dist = jnp.where(sq > 0.0, jnp.sqrt(jnp.where(sq > 0.0, sq, 1.0)), 0.0)

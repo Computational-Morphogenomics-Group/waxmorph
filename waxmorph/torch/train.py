@@ -80,21 +80,29 @@ class TrainResult:
     log: dict
 
 
+def _nonfinite_details(tensor: torch.Tensor) -> str | None:
+    finite_mask = torch.isfinite(tensor)
+    if bool(finite_mask.all()):
+        return None
+
+    nonfinite_mask = ~finite_mask
+    bad_indices = nonfinite_mask.nonzero(as_tuple=False)
+    first_bad = tuple(int(i) for i in bad_indices[0].tolist())
+    bad_value = tensor[first_bad].detach().cpu().item()
+    return (
+        f"total_bad={int(nonfinite_mask.sum().item())}, first_bad_index={first_bad}, "
+        f"first_bad_value={bad_value!r}"
+    )
+
+
 def _validate_finite_tensor(
     name: str, tensor: torch.Tensor, *, rollout_step: int, phase: str
 ) -> None:
-    finite_mask = torch.isfinite(tensor)
-    if bool(finite_mask.all()):
-        return
-
-    bad_indices = (~finite_mask).nonzero(as_tuple=False)
-    first_bad = tuple(int(i) for i in bad_indices[0].tolist())
-    bad_value = tensor[first_bad].detach().cpu().item()
-    raise ValueError(
-        f"Non-finite values detected in {name} during {phase} at rollout step {rollout_step}: "
-        f"total_bad={int((~finite_mask).sum().item())}, first_bad_index={first_bad}, "
-        f"first_bad_value={bad_value!r}"
-    )
+    if (details := _nonfinite_details(tensor)) is not None:
+        raise ValueError(
+            f"Non-finite values detected in {name} during {phase} "
+            f"at rollout step {rollout_step}: {details}"
+        )
 
 
 def _raise_on_nonfinite_named_tensors(
@@ -107,33 +115,21 @@ def _raise_on_nonfinite_named_tensors(
     for name, tensor in named_tensors:
         if tensor is None:
             continue
-
-        finite_mask = torch.isfinite(tensor)
-        if bool(finite_mask.all()):
-            continue
-
-        bad_indices = (~finite_mask).nonzero(as_tuple=False)
-        first_bad = tuple(int(i) for i in bad_indices[0].tolist())
-        bad_value = tensor[first_bad].detach().cpu().item()
-        raise ValueError(
-            f"Non-finite values detected in model {kind} during {phase} at epoch {epoch}: "
-            f"parameter={name!r}, total_bad={int((~finite_mask).sum().item())}, "
-            f"first_bad_index={first_bad}, first_bad_value={bad_value!r}"
-        )
+        if (details := _nonfinite_details(tensor)) is not None:
+            raise ValueError(
+                f"Non-finite values detected in model {kind} during {phase} at epoch {epoch}: "
+                f"parameter={name!r}, {details}"
+            )
 
 
 def _format_gradient_stats(stats, *, limit: int = 5) -> str:
     if not stats:
         return "none"
 
-    ordered = sorted(stats, key=lambda item: item["norm"], reverse=True)
-    entries = []
-    for item in ordered[:limit]:
-        entries.append(
-            "{name}: norm={norm:.6g}, max_abs={max_abs:.6g}, "
-            "shape={shape}, dtype={dtype}, device={device}".format(**item)
-        )
-    return "; ".join(entries)
+    return "; ".join(
+        "{}: norm={:.6g}, max_abs={:.6g}, shape={}, dtype={}, device={}".format(*item)
+        for item in sorted(stats, key=lambda item: item[1], reverse=True)[:limit]
+    )
 
 
 def _clip_grad_norm_stable(named_parameters, max_norm: float, *, epoch: int) -> torch.Tensor:
@@ -147,37 +143,20 @@ def _clip_grad_norm_stable(named_parameters, max_norm: float, *, epoch: int) -> 
     norm_sq_total = torch.zeros((), dtype=torch.float64)
     stats = []
     for name, grad in grad_entries:
-        finite_mask = torch.isfinite(grad)
-        if not bool(finite_mask.all()):
-            bad_indices = (~finite_mask).nonzero(as_tuple=False)
-            first_bad = tuple(int(i) for i in bad_indices[0].tolist())
-            bad_value = grad[first_bad].detach().cpu().item()
+        if (details := _nonfinite_details(grad)) is not None:
             raise ValueError(
                 "Non-finite gradient detected during clipping at epoch "
-                f"{epoch}: parameter={name!r}, total_bad={int((~finite_mask).sum().item())}, "
-                f"first_bad_index={first_bad}, first_bad_value={bad_value!r}"
+                f"{epoch}: parameter={name!r}, {details}"
             )
 
         grad_detached = grad.detach()
-        if grad_detached.numel() == 0:
-            norm_sq = torch.zeros((), dtype=torch.float64)
-            grad_norm = 0.0
-            max_abs = 0.0
-        else:
-            grad64 = grad_detached.to(dtype=torch.float64)
-            norm_sq = grad64.square().sum().cpu()
-            grad_norm = torch.sqrt(norm_sq).item()
-            max_abs = grad_detached.abs().max().detach().cpu().item()
+        grad64 = grad_detached.to(dtype=torch.float64)
+        norm_sq = grad64.square().sum().cpu()
+        grad_norm = torch.sqrt(norm_sq).item()
+        max_abs = grad_detached.abs().max().detach().cpu().item() if grad.numel() else 0.0
         norm_sq_total = norm_sq_total + norm_sq
         stats.append(
-            {
-                "name": name,
-                "norm": grad_norm,
-                "max_abs": max_abs,
-                "shape": tuple(grad.shape),
-                "dtype": str(grad.dtype),
-                "device": str(grad.device),
-            }
+            (name, grad_norm, max_abs, tuple(grad.shape), str(grad.dtype), str(grad.device))
         )
 
     total_norm = torch.sqrt(norm_sq_total)
@@ -231,14 +210,12 @@ def _run_epoch(
     loss_l2 = torch.tensor(0.0, device=torch_device)
     loss_shape = torch.tensor(0.0, device=torch_device)
 
-    _validate_finite_tensor("X_t", X_t, rollout_step=0, phase="epoch start")
-    _validate_finite_tensor("P_t", P_t, rollout_step=0, phase="epoch start")
-    _validate_finite_tensor("c_t", c_t, rollout_step=0, phase="epoch start")
+    for name, tensor in (("X_t", X_t), ("P_t", P_t), ("c_t", c_t)):
+        _validate_finite_tensor(name, tensor, rollout_step=0, phase="epoch start")
 
     for _t in range(config.t_rollout):
-        _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="pre-graph build")
-        _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="pre-graph build")
-        _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="pre-graph build")
+        for name, tensor in (("X_t", X_t), ("P_t", P_t), ("c_t", c_t)):
+            _validate_finite_tensor(name, tensor, rollout_step=_t, phase="pre-graph build")
 
         node_feats, edge_index, edge_feats = build_graph(
             X_t,
@@ -252,18 +229,16 @@ def _run_epoch(
         dX = out["dX"] * config.dt_gns
         dP = out["dP"] * config.dt_gns
         dc = out["dc"] * config.dt_gns
-        _validate_finite_tensor("dX", dX, rollout_step=_t, phase="gns output")
-        _validate_finite_tensor("dP", dP, rollout_step=_t, phase="gns output")
-        _validate_finite_tensor("dc", dc, rollout_step=_t, phase="gns output")
+        for name, tensor in (("dX", dX), ("dP", dP), ("dc", dc)):
+            _validate_finite_tensor(name, tensor, rollout_step=_t, phase="gns output")
 
         loss_l2 = loss_l2 + dX.square().sum()
 
         X_t = X_t + dX
         P_t = torch.nn.functional.normalize(P_t + dP, dim=-1, eps=EPS_POLARITY)
         c_t = torch.clamp_min(c_t + dc, 0.0)
-        _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="post-gns update")
-        _validate_finite_tensor("P_t", P_t, rollout_step=_t, phase="post-gns update")
-        _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="post-gns update")
+        for name, tensor in (("X_t", X_t), ("P_t", P_t), ("c_t", c_t)):
+            _validate_finite_tensor(name, tensor, rollout_step=_t, phase="post-gns update")
 
         for _ in range(config.mech_steps):
             X_t = WarpMechStep.apply(X_t, R_wp, N, config.dt_mech, f_net, grid)

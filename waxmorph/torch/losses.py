@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from waxmorph._validation import _validate_chamfer_shapes, _validate_same_shape
+
 if TYPE_CHECKING:
     from geomloss import SamplesLoss
 
@@ -29,29 +31,8 @@ def squared_loss(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
         >>> print(squared_loss(x, y))
         tensor(1.)
     """
-    if X_pred.shape != X_target.shape:
-        raise ValueError(
-            f"squared_loss requires the same shape, got "
-            f"{tuple(X_pred.shape)} and {tuple(X_target.shape)}"
-        )
+    _validate_same_shape("squared_loss", X_pred.shape, X_target.shape)
     return (X_pred - X_target).pow(2).sum()
-
-
-def _validate_chamfer_inputs(X_pred: torch.Tensor, X_target: torch.Tensor) -> None:
-    pred_shape = tuple(X_pred.shape)
-    target_shape = tuple(X_target.shape)
-    if len(pred_shape) != 2 or len(target_shape) != 2:
-        raise ValueError(
-            f"chamfer_distance requires rank-2 inputs, got {pred_shape} and {target_shape}"
-        )
-    if X_pred.numel() == 0 or X_target.numel() == 0:
-        raise ValueError(
-            f"chamfer_distance requires nonempty inputs, got {pred_shape} and {target_shape}"
-        )
-    if pred_shape[1] != target_shape[1]:
-        raise ValueError(
-            f"chamfer_distance requires equal feature width, got {pred_shape} and {target_shape}"
-        )
 
 
 def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tensor:
@@ -73,7 +54,7 @@ def chamfer_distance(X_pred: torch.Tensor, X_target: torch.Tensor) -> torch.Tens
         >>> print(chamfer_distance(x, y))
         tensor(1.)
     """
-    _validate_chamfer_inputs(X_pred, X_target)
+    _validate_chamfer_shapes(X_pred.shape, X_target.shape)
     diff = X_pred.unsqueeze(1) - X_target.unsqueeze(0)
     dist = diff.norm(dim=-1)
     return dist.min(dim=1).values.mean() + dist.min(dim=0).values.mean()
