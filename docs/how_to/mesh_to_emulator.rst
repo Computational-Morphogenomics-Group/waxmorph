@@ -24,9 +24,11 @@ The build_graph → GNS → train primer
 ------------------------------------
 
 Sample the source and target shapes. ``sample_mesh_pair`` normalizes each mesh
-and returns matched-size point clouds together with a uniform radius:
+and returns independent equal-count clouds with effective source and target radii:
 
 .. code-block:: python
+
+   import numpy as np
 
    from waxmorph.data import sample_mesh_pair
 
@@ -39,7 +41,7 @@ and returns matched-size point clouds together with a uniform radius:
    )
    source_pos = pair["source_pos"]
    target_pos = pair["target_pos"]
-   radii = pair["radius"]
+   radii = np.full(len(source_pos), pair["source_radius"], dtype=np.float32)
 
 Build the contact graph from the live state;
 :doc:`../explanation/graphs_and_locality` derives the contact-adjacency rule.

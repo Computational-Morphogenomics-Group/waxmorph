@@ -1,36 +1,32 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## 0.1.1 - 2026-07-11
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+### Changed
 
-## [Unreleased]
+- Declare SciPy, PyTorch, tqdm, and Warp 1.10+ as core dependencies; add USD support to the
+  simulation extra; preserve caller-managed Warp caches during import.
+- Apply shared validation to graph, loss, MLP, rendering, and training inputs across Torch
+  and JAX.
+- Align histories, selected models, trajectories, and checkpoint refinement with post-update
+  states; restore matching Torch optimizer state and initialize JAX Optax state from loaded
+  weights.
+- Prefer Warp's public JAX kernel API while retaining compatibility with Warp 1.10's
+  experimental FFI.
 
-### 2026-07-10
+### Fixed
 
-- Chamfer loss now uses directional means, preserving argument symmetry for unequal clouds.
-- Squared loss rejects unequal shapes; Chamfer rejects empty or incompatible clouds.
-- Torch and JAX MLPs reject invalid depths consistently.
-- GeomLoss options preserve explicit `None`, reject unknown keys, and expose `truncate=5`.
-- Growth now holds radii at or above their targets, clamps overshoot, caps mesenchymal
-  equilibrium radii, and copies epithelial equilibrium radii.
-- Growth rejects invalid `dt`, `R_ref`, and `R_max` before launching a kernel.
-- Division reserves slots with compare-and-swap; the raw counter cannot exceed capacity.
-- Mechanics now preserves values and identity gradients for rows beyond `particle_count`.
-- Diffusion kernels no longer accept unused positions or radii; public signatures and
-  Torch/JAX results are unchanged.
-- Torch and JAX graph builders now reject invalid geometry, particle counts, feature shapes,
-  and edge indices.
-- PyVista categorical points ignore morphogen length and reject short polarity arrays.
-- Torch and JAX trainers validate configurations and convert states and targets to contiguous
-  float32 before device or checkpoint setup.
-- Torch checkpoint refinement preserves model and optimizer bindings, rejects incompatible
-  architectures, and clears stale optimizer state.
-- JAX checkpoint refinement rejects incompatible model trees and initializes fresh optimizer
-  state from loaded weights on the requested device.
-- Torch and JAX histories and selected models now use post-update rollouts; Torch restores
-  matching optimizer state.
+- Fix Chamfer loss to use Euclidean directional means; validate squared and Chamfer input
+  shapes; preserve explicit GeomLoss options and reject unknown keys.
+- Fix growth and division to respect target and capacity bounds; preserve inactive emulator
+  rows and their identity gradients.
+- Fix categorical rendering point counts and polarity validation.
 
-## [0.1.0] 2026-07-03
+### Documentation
+
+- Document the purpose-built simulator and fixed-agent emulator, backend-specific contracts,
+  model units, CUDA acceptance, and runtime decisions in ADR 0001.
+
+## 0.1.0 - 2026-07-03
 
 Initial release of waxMorph.
