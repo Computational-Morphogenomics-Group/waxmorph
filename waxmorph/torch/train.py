@@ -281,9 +281,8 @@ def _run_epoch(
     Positions and concentrations stay on the :mod:`torch.autograd` computation
     graph throughout. Physics corrections are applied via WarpMechStep /
     WarpDiffusionStep autograd functions, so gradients flow through the full
-    trajectory. This is the single-pass torch counterpart of the JAX two-phase
-    collect-then-replay design (see :func:`waxmorph.jax.train._run_epoch`):
-    torch keeps the whole tape live, so no frozen-topology cache is needed.
+    trajectory. JAX collects and replays frozen topology in two passes; Torch
+    keeps the whole tape live and needs no topology cache.
 
     ``targets_by_frame`` maps rollout-step index -> target position tensor.
     A shape loss is accumulated at every tagged post-update state; frame ``0``

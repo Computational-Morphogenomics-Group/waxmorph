@@ -53,6 +53,63 @@ def _make_model(num_molecules):
     )
 
 
+class _ScalarStepModel(eqx.Module):
+    weight: jax.Array
+
+    def __init__(self, value=1.0):
+        self.weight = jnp.asarray(value, dtype=jnp.float32)
+
+    def __call__(self, node_feats, edge_index, edge_feats, num_edges=None):
+        del edge_index, edge_feats, num_edges
+        num_nodes = node_feats.shape[0]
+        return {
+            "dX": jnp.broadcast_to(self.weight, (num_nodes, 3)),
+            "dP": jnp.zeros((num_nodes, 3), dtype=node_feats.dtype),
+            "dc": jnp.zeros_like(node_feats),
+        }
+
+
+def _run_batched_epoch(model, config, source_pos, polarities, c, radii, targets_by_frame):
+    jax_device = jax.devices("cpu")[0]
+    with jax.default_device(jax_device):
+        X = jnp.asarray(source_pos)
+        P = jnp.asarray(polarities)
+        concentrations = jnp.asarray(c)
+        R = jnp.asarray(radii)
+        targets = {
+            frame: jax.device_put(target, jax_device) for frame, target in targets_by_frame.items()
+        }
+        topologies, trajectory = jax_train_module._collect_topologies_and_trajectory(
+            model=model,
+            config=config,
+            X=X,
+            P=P,
+            c=concentrations,
+            R=R,
+            particle_count=len(source_pos),
+            device="cpu",
+        )
+        topology_batch = jax_train_module._stack_topologies(
+            topologies,
+            config=config,
+            max_pairs=jax_train_module._max_edges_for_config(config, len(source_pos)),
+        )
+        loss_shape, loss_l2 = jax_train_module._epoch_loss_with_topology_batch(
+            model=model,
+            config=config,
+            X_source=X,
+            P_source=P,
+            c_source=concentrations,
+            R=R,
+            particle_count=len(source_pos),
+            targets_by_frame=targets,
+            topology_batch=topology_batch,
+            loss_fn=squared_loss,
+            device="cpu",
+        )
+    return loss_shape, loss_l2, trajectory
+
+
 class TestTreeGlobalNorm:
     """Overflow-safe global gradient norm; parity with the torch float64 clip path."""
 
@@ -80,7 +137,7 @@ class TestTreeGlobalNorm:
         assert float(jax_train_module._tree_global_norm({})) == 0.0
 
 
-def test_run_epoch_accumulates_loss_across_tagged_frames():
+def test_batched_epoch_accumulates_loss_across_tagged_frames():
     source_pos, polarities, c, radii = _minimal_inputs()
     config = jax_train_module.TrainConfig(
         n_epochs=1,
@@ -93,17 +150,14 @@ def test_run_epoch_accumulates_loss_across_tagged_frames():
     target_a = jnp.asarray(source_pos + 0.1)
     target_b = jnp.asarray(source_pos + 0.3)
 
-    loss_shape, _loss_l2, trajectory = jax_train_module._run_epoch(
-        model=ZeroStepModel(),
-        config=config,
-        source_pos=source_pos,
-        polarities=polarities,
-        c=c,
-        R=jnp.asarray(radii),
-        particle_count=source_pos.shape[0],
-        targets_by_frame={0: target_a, 2: target_b},
-        loss_fn=squared_loss,
-        device="cpu",
+    loss_shape, _loss_l2, trajectory = _run_batched_epoch(
+        ZeroStepModel(),
+        config,
+        source_pos,
+        polarities,
+        c,
+        radii,
+        {0: target_a, 2: target_b},
     )
 
     expected = squared_loss(jnp.asarray(source_pos), target_a) + squared_loss(
@@ -114,7 +168,7 @@ def test_run_epoch_accumulates_loss_across_tagged_frames():
     assert len(trajectory) == config.t_rollout + 1
 
 
-def test_run_epoch_frame_zero_supervises_post_step_state():
+def test_batched_epoch_frame_zero_supervises_post_step_state():
     source_pos, polarities, c, radii = _minimal_inputs()
 
     class FixedStepModel:
@@ -137,17 +191,14 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
     )
     target_frame0 = jnp.asarray(source_pos + 0.25)
 
-    loss_shape, _loss_l2, trajectory = jax_train_module._run_epoch(
-        model=FixedStepModel(),
-        config=config,
-        source_pos=source_pos,
-        polarities=polarities,
-        c=c,
-        R=jnp.asarray(radii),
-        particle_count=source_pos.shape[0],
-        targets_by_frame={0: target_frame0},
-        loss_fn=squared_loss,
-        device="cpu",
+    loss_shape, _loss_l2, trajectory = _run_batched_epoch(
+        FixedStepModel(),
+        config,
+        source_pos,
+        polarities,
+        c,
+        radii,
+        {0: target_frame0},
     )
 
     assert float(loss_shape) == pytest.approx(0.0, abs=1e-6)
@@ -259,6 +310,159 @@ def _has_jax_warp_cuda() -> bool:
         return bool(wp.is_device_available("cuda") and jax.devices("gpu"))
     except Exception:
         return False
+
+
+JAX_TRAIN_DEVICES = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not _has_jax_warp_cuda(), reason="JAX CUDA required"),
+    ),
+]
+
+
+@pytest.mark.parametrize("device", JAX_TRAIN_DEVICES)
+@pytest.mark.parametrize("n_epochs", [1, 3])
+def test_train_logs_post_update_model_rollouts(monkeypatch, device, n_epochs):
+    source_pos, polarities, c, radii = _minimal_inputs()
+    model = _ScalarStepModel()
+    optimizer = optax.adamw(0.5, b1=0.8, b2=0.9, weight_decay=0.0)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    evaluations = []
+    train_steps = []
+    collect_topologies = jax_train_module._collect_topologies_and_trajectory
+    make_train_step = jax_train_module._make_train_step
+
+    def capture_collection(*, model, **kwargs):
+        evaluations.append((float(jax.device_get(model.weight)), model.weight.device.platform))
+        return collect_topologies(model=model, **kwargs)
+
+    def capture_train_step(**kwargs):
+        train_step = make_train_step(**kwargs)
+
+        def counted_train_step(model, *args):
+            updated = train_step(model, *args)
+            train_steps.append(
+                (
+                    float(jax.device_get(model.weight)),
+                    float(jax.device_get(updated[0].weight)),
+                )
+            )
+            return updated
+
+        return counted_train_step
+
+    monkeypatch.setattr(
+        jax_train_module,
+        "_collect_topologies_and_trajectory",
+        capture_collection,
+    )
+    monkeypatch.setattr(jax_train_module, "_make_train_step", capture_train_step)
+    config = jax_train_module.TrainConfig(
+        n_epochs=n_epochs,
+        t_rollout=1,
+        mech_steps=0,
+        diff_steps=0,
+        dt_gns=1.0,
+        lambda_reg=0.0,
+        grad_clip_norm=None,
+        log_every=n_epochs + 1,
+    )
+
+    result = jax_train_module.train(
+        model,
+        optimizer,
+        opt_state,
+        squared_loss,
+        source_pos=source_pos,
+        polarities=polarities,
+        c=c,
+        radii=radii,
+        targets=[(0, source_pos)],
+        config=config,
+        device=device,
+    )
+
+    weights = np.array([weight for weight, _platform in evaluations])
+    expected_losses = source_pos.size * np.square(weights[1:])
+    expected_platform = "gpu" if device == "cuda" else "cpu"
+    assert len(evaluations) == n_epochs + 1
+    assert len(train_steps) == n_epochs
+    assert {platform for _weight, platform in evaluations} == {expected_platform}
+    assert result.model.weight.device.platform == expected_platform
+    assert all(before != after for before, after in train_steps)
+    for name in ("losses_total", "losses_shape", "losses_l2"):
+        np.testing.assert_allclose(result.log[name], expected_losses, rtol=1e-5, atol=1e-6)
+    best_epoch = int(np.argmin(expected_losses))
+    assert result.log["best_epoch"] == best_epoch
+    assert result.log["best_loss"] == pytest.approx(expected_losses[best_epoch], rel=1e-5)
+    assert float(jax.device_get(result.model.weight)) == pytest.approx(
+        weights[best_epoch + 1], rel=1e-5
+    )
+    np.testing.assert_allclose(
+        result.log["best_traj_pos"][-1],
+        source_pos + weights[best_epoch + 1],
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    assert result.log["losses_total"][-1] == pytest.approx(expected_losses[-1], rel=1e-5)
+    expected_keys = [
+        "losses_total",
+        "losses_shape",
+        "losses_l2",
+        "best_traj_pos",
+        "best_traj_pol",
+        "best_traj_c",
+        "best_epoch",
+        "best_loss",
+        "target_frames",
+        *(f"config_{name}" for name in config.__dataclass_fields__),
+    ]
+    assert list(result.log) == expected_keys
+    assert all(result.log[name].shape == (n_epochs,) for name in expected_keys[:3])
+    assert all(result.log[name].dtype == np.float64 for name in expected_keys[:3])
+    assert result.log["best_traj_pos"].shape == (2, len(source_pos), 3)
+    assert result.log["best_traj_pol"].shape == (2, len(source_pos), 3)
+    assert result.log["best_traj_c"].shape == (2, len(source_pos), c.shape[1])
+    assert result.log["target_frames"].dtype == np.int64
+
+
+def test_train_rejects_nonfinite_post_update_loss():
+    source_pos, polarities, c, radii = _minimal_inputs()
+    model = _ScalarStepModel()
+    optimizer = optax.adamw(0.5, b1=0.8, b2=0.9, weight_decay=0.0)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+
+    def finite_then_nan_loss(prediction, target):
+        return jnp.where(
+            prediction[0, 0] < 0.75,
+            jnp.asarray(jnp.nan, dtype=prediction.dtype),
+            squared_loss(prediction, target),
+        )
+
+    with pytest.raises(ValueError, match="post-update evaluation"):
+        jax_train_module.train(
+            model,
+            optimizer,
+            opt_state,
+            finite_then_nan_loss,
+            source_pos=source_pos,
+            polarities=polarities,
+            c=c,
+            radii=radii,
+            targets=[(0, source_pos)],
+            config=jax_train_module.TrainConfig(
+                n_epochs=1,
+                t_rollout=1,
+                mech_steps=0,
+                diff_steps=0,
+                dt_gns=1.0,
+                lambda_reg=0.0,
+                grad_clip_norm=None,
+                log_every=2,
+            ),
+            device="cpu",
+        )
 
 
 @pytest.mark.skipif(not _has_jax_warp_cuda(), reason="JAX/Warp bridge requires CUDA")
@@ -466,16 +670,7 @@ def _train_from_checkpoint(model, optimizer, opt_state, save_path, device="cpu")
     )
 
 
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(not _has_jax_warp_cuda(), reason="JAX CUDA required"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("device", JAX_TRAIN_DEVICES)
 def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monkeypatch, device):
     checkpoint_model = jax.tree.map(
         lambda value: jnp.full_like(value, 0.05) if eqx.is_array(value) else value,
@@ -508,6 +703,7 @@ def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monk
     stale_state = {"count": jnp.array(99, dtype=jnp.int32)}
     source_pos, polarities, c, _ = _minimal_inputs()
     collected_models = []
+    evaluated_models = []
     step_calls = []
 
     def collect_topologies(*, model, **_kwargs):
@@ -543,21 +739,33 @@ def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monk
 
         return train_step
 
+    def evaluate_batch(*, model, **_kwargs):
+        evaluated_models.append(model)
+        first_leaf = jax_train_module._array_leaves(model)[0]
+        return (
+            jax.device_put(jnp.array(1.0, dtype=jnp.float32), first_leaf.device),
+            jax.device_put(jnp.array(0.0, dtype=jnp.float32), first_leaf.device),
+        )
+
     monkeypatch.setattr(jax_train_module, "_collect_topologies_and_trajectory", collect_topologies)
     monkeypatch.setattr(jax_train_module, "_stack_topologies", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(jax_train_module, "_make_train_step", make_train_step)
+    monkeypatch.setattr(jax_train_module, "_epoch_loss_with_topology_batch", evaluate_batch)
 
     result = _train_from_checkpoint(
         _checkpoint_model(), optimizer, stale_state, checkpoint_path, device=device
     )
 
     assert len(init_calls) == 1
-    assert len(collected_models) == len(step_calls) == 1
+    assert len(collected_models) == 2
+    assert len(step_calls) == len(evaluated_models) == 1
+    assert collected_models[1] is evaluated_models[0] is result.model
     expected_platform = "gpu" if device == "cuda" else "cpu"
     assert init_state_platforms == [expected_platform]
-    assert {
-        value.device.platform for value in jax_train_module._array_leaves(collected_models[0])
-    } == {expected_platform}
+    for collected_model in collected_models:
+        assert {
+            value.device.platform for value in jax_train_module._array_leaves(collected_model)
+        } == {expected_platform}
     assert {value.device.platform for value in jax_train_module._array_leaves(init_calls[0])} == {
         expected_platform
     }
@@ -579,6 +787,14 @@ def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monk
             strict=True,
         )
     )
+    for actual, expected in zip(
+        jax_train_module._array_leaves(result.model),
+        jax_train_module._array_leaves(step_calls[0][2]),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(
+            np.asarray(jax.device_get(actual)), np.asarray(jax.device_get(expected))
+        )
     assert result.log["config_n_epochs"] == 1
     assert all(
         result.log[name].shape == (1,) for name in ("losses_total", "losses_shape", "losses_l2")

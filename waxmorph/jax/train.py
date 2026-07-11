@@ -38,9 +38,8 @@ class TrainConfig:
     upper bound on the number of edges/pairs.
 
     Attributes:
-        n_epochs: Number of optimization epochs (AdamW updates). Each epoch
-            replays a full ``t_rollout``-step trajectory. Convergence typically
-            occurs near 200-300 epochs; the default 2000 is a generous ceiling.
+        n_epochs: Number of optimizer updates. Histories contain the rollout
+            after each update, requiring one additional rollout evaluation.
         t_rollout: Number of emulation (Euler) steps unrolled per epoch, i.e.
             the trajectory length ``T``. The reference configuration uses
             ``T = 100`` (the default here).
@@ -67,19 +66,16 @@ class TrainConfig:
             0.1). With ``dt_diff`` it sets how fast latent fields homogenize;
             ``D_emu * dt_diff`` near/above the inverse max node degree risks
             instability.
-        lambda_reg: Strength :math:`\lambda` of the squared-displacement
-            regularizer that penalizes large frame-to-frame motion,
+        lambda_reg: Weight :math:`\lambda` of the learned-displacement
+            regularizer,
 
             .. math::
 
-                L_{reg} = \lambda \sum_{t} \lVert X_t - X_{t+1} \rVert_F^2,
+                L_{reg} = \lambda \sum_t
+                \lVert \Delta t_{GNS}\,GNS_{X,t} \rVert_F^2.
 
-            with :math:`\lVert \cdot \rVert_F` the Frobenius norm (summed over
-            the per-step ``dX`` deltas). It discourages trajectories that satisfy
-            the goals only at the supervised target frames by spreading motion
-            smoothly across the rollout. Small (default 1e-3): too large
-            over-smooths and prevents reaching the target, too small permits
-            erratic jumps.
+            This is computed before mechanics and excludes prescribed
+            displacements.
         grad_clip_norm: Maximum global gradient L2 norm; gradients are rescaled
             when they exceed it. ``None`` disables clipping. Default 1.0.
         log_every: Epoch interval used for progress logging.
@@ -116,24 +112,22 @@ class TrainConfig:
 class TrainResult:
     """Result returned by :func:`waxmorph.jax.train.train`.
 
-    Mirrors :class:`waxmorph.torch.train.TrainResult`; the ``log`` keys are
-    identical across backends.
+    Shares the Torch result's common log keys; JAX also records
+    ``config_max_edges_factor``.
 
     Attributes:
-        model: Best :class:`equinox.Module` found during training, or the
-            latest model if no finite improvement was recorded.
+        model: Best post-update :class:`equinox.Module`.
         log: Diagnostics for the run. Per-epoch loss histories (each a 1-D
-            array of length ``n_epochs``):
+            array of length ``n_epochs``) describe post-update rollouts:
 
             - ``losses_total``: total loss ``L_shape + lambda_reg * L_reg``.
             - ``losses_shape``: shape (distributional) loss at the target
               frames only.
-            - ``losses_l2``: unweighted squared-displacement term
-              ``sum||dX||^2`` (multiply by ``lambda_reg`` for its loss
-              contribution).
+            - ``losses_l2``: unweighted
+              ``sum||dt_gns * GNS_X||^2`` term.
 
-            Best trajectory (the rollout from the best-loss epoch; leading axis
-            is ``t_rollout + 1`` because frame 0 is the source state):
+            Best post-update trajectory (leading axis is ``t_rollout + 1``
+            because frame 0 is the source state):
 
             - ``best_traj_pos``: positions, shape ``[t_rollout+1, N, 3]``.
             - ``best_traj_pol``: polarities, shape ``[t_rollout+1, N, 3]``.
@@ -337,6 +331,24 @@ def _clip_grads(grads, max_norm: float):
 
 def _as_numpy(array: jax.Array) -> np.ndarray:
     return np.asarray(jax.device_get(array)).copy()
+
+
+def _checked_loss_values(
+    loss: jax.Array,
+    loss_shape: jax.Array,
+    loss_l2: jax.Array,
+    *,
+    epoch: int,
+    phase: str,
+) -> tuple[float, float, float]:
+    values = tuple(
+        (name, float(jax.device_get(value)))
+        for name, value in (("loss", loss), ("shape loss", loss_shape), ("L2 loss", loss_l2))
+    )
+    for name, value in values:
+        if not np.isfinite(value):
+            raise ValueError(f"Non-finite {name} during {phase} at epoch {epoch}: value={value!r}")
+    return tuple(value for _name, value in values)
 
 
 def _max_edges_for_config(config: TrainConfig, particle_count: int) -> int:
@@ -625,70 +637,6 @@ def _native_warp_diffusion_step(
     return c_out
 
 
-def _graph_features_from_topology(
-    X: jax.Array,
-    P: jax.Array,
-    c: jax.Array,
-    topology: _StepTopology,
-    particle_count: int,
-) -> tuple[jax.Array, jax.Array]:
-    node_feats = build_node_features(c, particle_count)
-    edge_feats = build_edge_features(X, P, topology.edge_index, particle_count)
-    return node_feats, edge_feats
-
-
-def _apply_rollout_step(
-    *,
-    model,
-    config: TrainConfig,
-    X: jax.Array,
-    P: jax.Array,
-    c: jax.Array,
-    R: jax.Array,
-    topology: _StepTopology,
-    particle_count: int,
-    device: str,
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    node_feats, edge_feats = _graph_features_from_topology(X, P, c, topology, particle_count)
-
-    out = model(node_feats, topology.edge_index, edge_feats, num_edges=topology.num_edges)
-    dX = out["dX"] * config.dt_gns
-    dP = out["dP"] * config.dt_gns
-    dc = out["dc"] * config.dt_gns
-
-    X = X + dX
-    P = P + dP
-    P = P / jnp.maximum(jnp.linalg.norm(P, axis=-1, keepdims=True), EPS_POLARITY)
-    c = jnp.maximum(c + dc, jnp.asarray(0.0, dtype=c.dtype))
-
-    if topology.mech_pairs or topology.diff_pairs:
-        from waxmorph.jax.warp_autograd import warp_diffusion_step, warp_mech_step
-
-        for pairs in topology.mech_pairs:
-            X = warp_mech_step(
-                X,
-                R,
-                pairs.pair_i,
-                pairs.pair_j,
-                config.dt_mech,
-                num_pairs=pairs.num_pairs,
-                device=device,
-            )
-
-        for pairs in topology.diff_pairs:
-            c = warp_diffusion_step(
-                c,
-                pairs.pair_i,
-                pairs.pair_j,
-                config.D_emu,
-                config.dt_diff,
-                num_pairs=pairs.num_pairs,
-                device=device,
-            )
-
-    return X, P, c, jnp.sum(dX**2)
-
-
 @eqx.filter_jit
 def _collection_gns_step(
     model,
@@ -700,13 +648,8 @@ def _collection_gns_step(
     particle_count: int,
     dt_gns: float,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
-    topology = _StepTopology(
-        edge_index=edge_index,
-        num_edges=num_edges,
-        mech_pairs=(),
-        diff_pairs=(),
-    )
-    node_feats, edge_feats = _graph_features_from_topology(X, P, c, topology, particle_count)
+    node_feats = build_node_features(c, particle_count)
+    edge_feats = build_edge_features(X, P, edge_index, particle_count)
     out = model(node_feats, edge_index, edge_feats, num_edges=num_edges)
     dX = out["dX"] * dt_gns
     dP = out["dP"] * dt_gns
@@ -1168,116 +1111,6 @@ def _epoch_loss_with_topology_batch(
     return loss_shape, loss_l2
 
 
-def _epoch_loss_with_topologies(
-    *,
-    model,
-    config: TrainConfig,
-    X_source: jax.Array,
-    P_source: jax.Array,
-    c_source: jax.Array,
-    R: jax.Array,
-    particle_count: int,
-    targets_by_frame: dict[int, jax.Array],
-    topologies: tuple[_StepTopology, ...],
-    loss_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    device: str,
-) -> tuple[jax.Array, jax.Array]:
-    X = X_source
-    P = P_source
-    c = c_source
-    loss_shape = jnp.asarray(0.0, dtype=X.dtype)
-    loss_l2 = jnp.asarray(0.0, dtype=X.dtype)
-
-    for t, topology in enumerate(topologies):
-        X, P, c, step_l2 = _apply_rollout_step(
-            model=model,
-            config=config,
-            X=X,
-            P=P,
-            c=c,
-            R=R,
-            topology=topology,
-            particle_count=particle_count,
-            device=device,
-        )
-        loss_l2 = loss_l2 + step_l2
-        if t in targets_by_frame:
-            loss_shape = loss_shape + loss_fn(X, targets_by_frame[t])
-
-    return loss_shape, loss_l2
-
-
-def _run_epoch(
-    *,
-    model,
-    config: TrainConfig,
-    source_pos: np.ndarray,
-    polarities: np.ndarray,
-    c: np.ndarray,
-    R: jax.Array,
-    particle_count: int,
-    targets_by_frame: dict[int, jax.Array],
-    loss_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    device: str,
-    jax_device: jax.Device | None = None,
-) -> tuple[jax.Array, jax.Array, list[dict[str, np.ndarray]]]:
-    """Run one rollout forward with frozen topology and differentiable physics.
-
-    Drives the JAX two-phase epoch: first collect the per-step neighbor topology
-    and a host trajectory under ``stop_gradient``
-    (:func:`_collect_topologies_and_trajectory`), then replay those frozen
-    topologies with gradients on to accumulate the loss
-    (:func:`_epoch_loss_with_topologies`).
-
-    A shape loss is accumulated at every rollout step tagged in
-    ``targets_by_frame``, where frame indices are zero-based steps measured
-    *after* the per-step updates; frame ``0`` therefore supervises the state
-    after the first rollout update, not the initial source state -- the same
-    convention as the torch backend.
-
-    Returns:
-        Tuple ``(loss_shape, loss_l2, trajectory)``: the summed shape loss over
-        supervised frames, the unweighted ``sum||dX||^2`` regularizer term, and
-        a list of ``t_rollout + 1`` host snapshots starting with the source
-        frame.
-
-    See Also:
-        waxmorph.torch.train._run_epoch: single-pass torch counterpart.
-    """
-    if jax_device is None:
-        jax_device = _resolve_jax_device(device, require_cuda=_uses_warp_bridge(config))
-
-    with jax.default_device(jax_device):
-        X_source = jnp.asarray(source_pos, dtype=jnp.float32)
-        P_source = jnp.asarray(polarities, dtype=jnp.float32)
-        c_source = jnp.asarray(c, dtype=jnp.float32)
-
-    topologies, trajectory = _collect_topologies_and_trajectory(
-        model=model,
-        config=config,
-        X=X_source,
-        P=P_source,
-        c=c_source,
-        R=R,
-        particle_count=particle_count,
-        device=device,
-    )
-    loss_shape, loss_l2 = _epoch_loss_with_topologies(
-        model=model,
-        config=config,
-        X_source=X_source,
-        P_source=P_source,
-        c_source=c_source,
-        R=R,
-        particle_count=particle_count,
-        targets_by_frame=targets_by_frame,
-        topologies=topologies,
-        loss_fn=loss_fn,
-        device=device,
-    )
-    return loss_shape, loss_l2, trajectory
-
-
 def _zero_grads_if_nonfinite(grads, finite: jax.Array):
     return jax.tree.map(
         lambda g: jnp.where(finite, g, jnp.zeros_like(g)) if isinstance(g, jax.Array) else g,
@@ -1363,8 +1196,8 @@ def train(
     into the supervised target morphologies, then composes the prescribed
     soft-sphere mechanics and graph diffusion on top so the trajectory stays
     biophysically coherent. Optimizes ``L = L_shape + lambda_reg * L_reg`` with
-    Optax, tracking the best-loss epoch. Each epoch uses the two-phase
-    collect-then-replay design (see
+    Optax, tracking post-update losses and the best model. Each evaluation uses
+    the two-phase collect-then-replay design (see
     :func:`_collect_topologies_and_trajectory`) so the dynamic neighbor graph
     fits JAX's static-shape compilation.
     State and target arrays are converted to C-contiguous ``float32``; state
@@ -1373,8 +1206,9 @@ def train(
     Args:
         model: Equinox Graph Network Simulator model.
         optimizer: :class:`optax.GradientTransformation`.
-        opt_state: Optimizer state corresponding to ``model``. Existing
-            checkpoints discard it because they do not store optimizer state.
+        opt_state: Optimizer state corresponding to ``model``. It is not
+            returned. Existing checkpoints discard it because they do not
+            store optimizer state.
         loss_fn: Shape loss function mapping predicted positions with shape
             ``[N, 3]`` and target positions with shape ``[M, 3]`` to a scalar.
         source_pos: Initial particle positions with shape ``[N, 3]``.
@@ -1398,8 +1232,8 @@ def train(
         device: Device string such as ``"cuda"``, ``"cuda:0"``, or ``"cpu"``.
 
     Returns:
-        Best model and full training log; see :class:`TrainResult` for the
-        ``log`` keys.
+        Best post-update model and full training log; see :class:`TrainResult`
+        for the ``log`` keys.
 
     Raises:
         TypeError: If config types, array dtypes, or target frames are invalid.
@@ -1466,21 +1300,50 @@ def train(
         device=device,
     )
 
+    def collect_model(candidate_model):
+        with jax.default_device(jax_device):
+            topologies, trajectory = _collect_topologies_and_trajectory(
+                model=candidate_model,
+                config=config,
+                X=X_source,
+                P=P_source,
+                c=c_source,
+                R=R,
+                particle_count=N,
+                device=device,
+            )
+            topology_batch = _stack_topologies(
+                topologies,
+                config=config,
+                max_pairs=max_pairs,
+            )
+        return topology_batch, trajectory
+
+    def record_evaluation(epoch, candidate_model, trajectory, values):
+        nonlocal best_loss, best_model, best_trajectory, best_epoch
+        nonlocal best_shape_loss, best_l2_loss
+        epoch_loss, epoch_shape_loss, epoch_l2_loss = values
+        losses_total.append(epoch_loss)
+        losses_shape.append(epoch_shape_loss)
+        losses_l2.append(epoch_l2_loss)
+
+        if epoch_loss < best_loss:
+            best_loss = epoch_loss
+            best_shape_loss = epoch_shape_loss
+            best_l2_loss = epoch_l2_loss
+            best_model = candidate_model
+            best_trajectory = trajectory
+            best_epoch = epoch
+
+        if (epoch + 1) % config.log_every == 0:
+            print(
+                f"Epoch {epoch + 1:4d}/{config.n_epochs}  "
+                f"best={best_loss:.4f}  shape={best_shape_loss:.4f}  l2={best_l2_loss:.4f}"
+            )
+
+    topology_batch, epoch_trajectory = collect_model(model)
     for epoch in trange(config.n_epochs):
-        topologies, epoch_trajectory = _collect_topologies_and_trajectory(
-            model=model,
-            config=config,
-            X=X_source,
-            P=P_source,
-            c=c_source,
-            R=R,
-            particle_count=N,
-            device=device,
-        )
-        topology_batch = _stack_topologies(topologies, config=config, max_pairs=max_pairs)
-
         pre_update_model = model
-
         (
             model,
             opt_state,
@@ -1500,6 +1363,13 @@ def train(
             topology_batch,
         )
 
+        loss_values = _checked_loss_values(
+            loss,
+            loss_shape,
+            loss_l2,
+            epoch=0 if epoch == 0 else epoch - 1,
+            phase="pre-update evaluation" if epoch == 0 else "post-update evaluation",
+        )
         if not bool(jax.device_get(grads_finite)):
             raise ValueError(
                 f"Non-finite values detected in model gradients during post-backward "
@@ -1516,28 +1386,45 @@ def train(
                 f"at epoch {epoch}."
             )
 
-        epoch_loss = float(loss)
-        epoch_shape_loss = float(loss_shape)
-        epoch_l2_loss = float(loss_l2)
-
-        losses_total.append(epoch_loss)
-        losses_shape.append(epoch_shape_loss)
-        losses_l2.append(epoch_l2_loss)
-
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
-            best_shape_loss = epoch_shape_loss
-            best_l2_loss = epoch_l2_loss
-            best_model = pre_update_model
-            best_trajectory = epoch_trajectory
-            best_epoch = epoch
-
-        if (epoch + 1) % config.log_every == 0:
-            print(
-                f"Epoch {epoch + 1:4d}/{config.n_epochs}  "
-                f"best={best_loss:.4f}  shape={best_shape_loss:.4f}  l2={best_l2_loss:.4f}"
+        if epoch > 0:
+            record_evaluation(
+                epoch - 1,
+                pre_update_model,
+                epoch_trajectory,
+                loss_values,
             )
+        if epoch + 1 < config.n_epochs:
+            topology_batch, epoch_trajectory = collect_model(model)
 
+    topology_batch, final_trajectory = collect_model(model)
+    with jax.default_device(jax_device):
+        final_shape_loss, final_l2_loss = _epoch_loss_with_topology_batch(
+            model=model,
+            config=config,
+            X_source=X_source,
+            P_source=P_source,
+            c_source=c_source,
+            R=R,
+            particle_count=N,
+            targets_by_frame=targets_by_frame,
+            topology_batch=topology_batch,
+            loss_fn=loss_fn,
+            device=device,
+        )
+        final_loss = final_shape_loss + (final_l2_loss * config.lambda_reg)
+    final_values = _checked_loss_values(
+        final_loss,
+        final_shape_loss,
+        final_l2_loss,
+        epoch=config.n_epochs - 1,
+        phase="post-update evaluation",
+    )
+    record_evaluation(
+        config.n_epochs - 1,
+        model,
+        final_trajectory,
+        final_values,
+    )
     model = best_model
 
     traj_pos = np.stack([f["pos"] for f in best_trajectory])
