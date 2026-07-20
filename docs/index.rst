@@ -7,15 +7,15 @@ waxMorph
 
    <div class="wm-hero">
      <img class="wm-hero-logo wm-logo-light dark-light" src="_static/logo-1024w.png"
-          alt="waxMorph — interacting cells resolving into a learned graph network">
+          alt="waxMorph: interacting cells resolving into a learned graph network">
      <img class="wm-hero-logo wm-logo-dark dark-light" src="_static/logo-dark.png"
-          alt="waxMorph — interacting cells resolving into a learned graph network">
+          alt="waxMorph: interacting cells resolving into a learned graph network">
      <p class="wm-tagline">A differentiable cell-based framework for three-dimensional morphogenesis.</p>
      <p class="wm-sub">
        Cells build tissues through local exchanges of force and information.
        waxMorph represents tissue as interacting spheroidal cells and couples a
        prescribed forward simulator with a differentiable learned inverse
-       emulator. They share state conventions and provide purpose-built dynamics.
+       emulator. The two share a state representation, and each has its own dynamics.
      </p>
      <div class="wm-cta">
        <a class="wm-btn wm-btn-primary" href="installation.html">Install</a>
@@ -29,8 +29,8 @@ waxMorph
      <img src="_static/images/fig1.png"
           alt="waxMorph pipeline: forward simulation and inverse learning of shape assembly">
      <figcaption>
-       waxMorph represents tissue as interacting polarized spheroids, couples
-       forward and inverse models of morphogenesis over that representation, and
+       waxMorph represents tissue as interacting polarized spheroids, runs
+       forward and inverse models of morphogenesis on that representation, and
        recovers spatially organized latent signals.
      </figcaption>
    </figure>
@@ -95,7 +95,7 @@ Explore
       :link-type: doc
       :class-card: wm-card
 
-      Development setup, testing across both backends, and the conventions
+      Development setup, testing across both backends, and the conventions your
       changes should follow.
 
 .. toctree::

@@ -3,7 +3,7 @@ Architecture
 
 waxMorph couples a prescribed forward simulator, a learned emulator with a
 fixed agent count, and trajectory renderers. The simulator and emulator share
-spheroidal state conventions and provide purpose-built physics implementations.
+the same spheroidal state conventions, and each implements its own physics.
 
 Simulation and emulation
 ------------------------

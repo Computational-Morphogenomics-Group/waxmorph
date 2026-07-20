@@ -19,7 +19,7 @@ directed edges when
 The default :math:`\varepsilon` is ``0.01`` model units. A host
 :class:`scipy.spatial.cKDTree` first queries candidates within
 ``2 * max(radius) + eps_dist``; the variable-radius criterion then filters
-them. Candidate and output work is density-sensitive; dense graphs realize
+them. Candidate and output work is density-sensitive; dense graphs produce
 quadratic pair counts. The simulator independently uses HashGrid searches and local
 ``EPS_DIST=0.25`` for adjacency-gated polarity and chemistry terms.
 
@@ -33,8 +33,8 @@ vectors because both backends use the supplied dot products directly. Torch uses
 Euclidean edge norm and returns unpadded arrays. JAX regularizes real-edge
 distance as
 :math:`\sqrt{\lVert x_i-x_j\rVert_2^2+\mathrm{EPS\_NORM}^2}`, masks padded
-self-edges, and always returns the real-edge count; ``max_edges`` enables fixed
-capacity padding.
+self-edges, and always returns the real-edge count; ``max_edges`` enables
+fixed-capacity padding.
 
 Gradient boundary
 -----------------

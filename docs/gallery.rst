@@ -1,12 +1,12 @@
 Gallery
 =======
 
-Each scene is a learned waxMorph trajectory — a population of spheroidal
-cells assembling a target morphology — rendered live in your browser from the
+Each scene is a learned waxMorph trajectory: a population of spheroidal cells
+assembling a target morphology, rendered live in your browser from the
 reconstructed per-frame cell positions and colours. Click a scene to open the
-player: use the timeline to play, pause, or scrub; **drag to orbit**, or switch
-to the **free camera** (``Camera: Fly``) to move through the tissue with
-``W`` ``A`` ``S`` ``D`` and the mouse (``Q``/``E`` for up and down, ``Esc`` to
+player. Use the timeline to play, pause, or scrub, and drag to orbit. Switch to
+the **free camera** (``Camera: Fly``) to move through the tissue with ``W``
+``A`` ``S`` ``D`` and the mouse (``Q``/``E`` for up and down, ``Esc`` to
 release).
 
 .. raw:: html
@@ -17,8 +17,8 @@ release).
    <div id="wm-gallery" class="wm-gallery"></div>
    <noscript>The interactive gallery requires JavaScript and WebGL.</noscript>
    <script>
-     /* Opened from disk? ES modules + fetch are blocked on file:// — show how
-        to preview locally instead of a blank panel. (No effect over http.) */
+     /* ES modules and fetch are blocked on file://, so a page opened from disk
+        would render a blank panel. Point the reader at a local HTTP server. */
      if (location.protocol === "file:") {
        document.getElementById("wm-gallery").innerHTML =
          '<div class="wm-gallery-notice"><p><b>Serve this page over HTTP to view the gallery.</b></p>' +

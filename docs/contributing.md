@@ -1,8 +1,8 @@
 # Contributing
 
-A well-formed pull request answers three questions: which biological or
-computational behavior changes, where that behavior resides in the package, and
-how the change is verified.
+A good pull request answers three questions: what biological or computational
+behavior changes, where that behavior lives in the package, and how the change
+is verified.
 
 ## Development setup
 
@@ -47,26 +47,25 @@ distance stabilization, loss families, PRNG, checkpoints, and Warp bridges.
 
 ## Documentation expectations
 
-Public functions should state the biological object being represented, the
-array shapes expected by the implementation, and whether gradients are intended
-to flow through the operation. Use the concrete state variables and shapes
-catalogued in {doc}`explanation/cell_state`, together with the contact edges
-induced by spatial proximity. By convention, the per-cell
-molecular state is denoted `c` and the predicted increments are `dX`, `dP`, and
-`dc`.
+Public functions should state which biological object they represent, the array
+shapes they expect, and whether gradients flow through the operation. Use the
+concrete state variables and shapes catalogued in
+{doc}`explanation/cell_state`, together with the contact edges induced by
+spatial proximity. By convention, the per-cell molecular state is denoted `c`
+and the predicted increments are `dX`, `dP`, and `dc`.
 
-When a modelling choice is an approximation, it should be stated directly. For
-example, the contact graph is rebuilt from a detached state snapshot and treated
-as fixed within a rollout step, while the continuous node and edge features
-remain differentiable. That distinction matters when interpreting the learned
+When a modelling choice is an approximation, say so directly. For example, the
+contact graph is rebuilt from a detached state snapshot and treated as fixed
+within a rollout step, while the continuous node and edge features remain
+differentiable. That distinction matters when interpreting the learned
 biophysical update rules.
 
 ### Docstring conventions
 
 Docstrings follow the Google style that Napoleon renders:
 
-- **Open with an imperative one-line summary.** Use “Build the contact graph
-  …”. Focus the summary on the cell-state transition.
+- **Open with an imperative one-line summary.** Use "Build the contact graph
+  ...". Focus the summary on the cell-state transition.
 - **Let type hints carry types.** Argument descriptions name the biological role
   and array shape, such as `X (shape [N, 3])`;
   `autodoc_typehints = "description"` renders the type.

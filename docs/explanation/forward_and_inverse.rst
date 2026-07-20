@@ -1,13 +1,14 @@
 Forward and inverse modes
 =========================
 
-Forward simulation and inverse emulation share the spheroidal cell state in
-:doc:`cell_state` and provide purpose-built dynamics. Coordinates, radii,
-timesteps, and coefficients are model-scale values. External calibration maps
-them to SI or biological scales when an application requires that interpretation.
+Forward simulation and inverse emulation share the spheroidal cell state
+described in :doc:`cell_state`, and each defines its own dynamics. Coordinates,
+radii, timesteps, and coefficients are model-scale values. External calibration
+maps them to SI or biological scales when an application requires that
+interpretation.
 
-Related primitives, distinct implementations
---------------------------------------------
+Mechanics and diffusion in each mode
+------------------------------------
 
 Both modes use local pair interactions and graph-style molecular diffusion.
 The emulator keeps a fixed agent count and uses one uniform sticky-sphere force.
@@ -20,8 +21,8 @@ distance :math:`d=\lVert x_i-x_j\rVert_2+\epsilon_n`, direction
    F_{ij} = \left[2\max(s-\epsilon_d-d,0)
    -0.5\max(s+\epsilon_d-d,0)\mathbb{1}[d>s-\epsilon_d]\right]u,
 
-where :math:`\epsilon_d=0.01` model units. Its Euler update adds this force.
-The simulator subtracts a potential-gradient buffer, uses
+where :math:`\epsilon_d=0.01` in model units. The emulator's Euler update adds
+this force. The simulator subtracts a potential-gradient buffer, uses
 ``K_REP=3``, type-dependent attraction and ranges, and ``EPS_DIST=0.25`` for
 contact-local polarity and chemistry terms.
 

@@ -1,19 +1,20 @@
 Choose a learning backend
 =========================
 
-PyTorch provides the default learning path. JAX integrates with surrounding
-JAX, Equinox, and Optax stacks and supports static-shape compilation.
+PyTorch is the default learning path. The JAX backend fits into an existing
+JAX, Equinox, and Optax stack and supports static-shape compilation.
 
 Use PyTorch (the default)
 -------------------------
 
-The top-level imports resolve to the PyTorch backend, giving you the most direct
-path from ``build_graph`` to ``GNS`` to ``train`` shown in :ref:`gns-primer`.
+The top-level imports resolve to the PyTorch backend, so you get the most direct
+path from ``build_graph`` to ``GNS`` to ``train``, as :ref:`the mesh-to-emulator
+guide <gns-primer>` shows.
 Warp's automatic differentiation integrates directly through
 :class:`torch.autograd.Function`.
 
-Use JAX when your stack already does
-------------------------------------
+Use JAX when your stack already uses it
+---------------------------------------
 
 Switch to the JAX/Equinox backend when the surrounding analysis already depends
 on JAX, Equinox, or Optax, or when you need static-shape compilation. Reach it

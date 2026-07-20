@@ -1,12 +1,13 @@
-Running forward simulations - Epithelial / Mesenchymal Case Study
-=================================================================
+Running forward simulations: the epithelial-mesenchymal case study
+==================================================================
 
 Use the forward simulator for the prescribed epithelial-mesenchymal case study;
 the learned emulator supports source-target shape assembly. Values are in model
 units; applications may supply external calibration for SI or biological
 interpretation.
 The active particle prefix can grow to a preallocated ``max_particles``
-capacity. The ``simulation_with_autodiff`` tutorial walks through a complete run.
+capacity. The :doc:`forward simulator tutorial <../tutorials/forward_simulator>`
+walks through a complete run.
 
 1. Allocate fixed-capacity Warp arrays for centers ``X``, radii ``R``,
    equilibrium radii ``R_eq``, polarities ``P``, activator ``A``, inhibitor
@@ -35,10 +36,10 @@ radii conserve half volume; epithelial daughter radii copy.
 
 .. tip::
 
-   Drop the particle count and the number of steps when you are validating
-   a new environment.
+   Lower the particle count and the step count when you are validating a new
+   environment.
 
-For the equations behind these kernels — the soft-sphere force, the graph
-Laplacian, the activator-inhibitor reaction-diffusion system, the growth Hill
-function, and the division rules — see :doc:`../explanation/forward_and_inverse`
-and :doc:`../explanation/differentiable_physics`.
+:doc:`../explanation/forward_and_inverse` and
+:doc:`../explanation/differentiable_physics` give the equations behind these
+kernels: the soft-sphere force, the graph Laplacian, the activator-inhibitor
+reaction-diffusion system, the growth Hill function, and the division rules.

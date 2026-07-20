@@ -12,13 +12,13 @@ Each learned update may be followed by ``mech_steps`` mechanics calls and
 correction. ``dt_mech`` and ``dt_diff`` set their respective explicit step
 sizes.
 
-Pair discovery occurs outside autodiff. Topology is rebuilt between correction
-calls as the state evolves, then held fixed while that call is differentiated.
-Gradients cover continuous force, flux, and state arithmetic; neighbor topology
-remains a discrete forward input. Learned graphs use a host
-:class:`scipy.spatial.cKDTree`; prescribed emulator
-corrections use a Warp HashGrid. Candidate and output work depends on local
-density and can be quadratic for dense states.
+Pair discovery happens outside autodiff. The emulator rebuilds topology between
+correction calls as the state evolves, then holds it fixed while that call is
+differentiated. Gradients cover continuous force, flux, and state arithmetic;
+neighbor topology remains a discrete forward input. Learned graphs use a host
+:class:`scipy.spatial.cKDTree`; prescribed emulator corrections use a Warp
+HashGrid. Candidate and output work depends on local density and can be
+quadratic for dense states.
 
 Torch Tape and JAX custom VJP
 -----------------------------
@@ -39,8 +39,8 @@ work.
 Simulator derivative implementations
 ====================================
 
-The forward simulator provides its own derivative implementations.
-``mech_step_sticky`` uses explicit pair derivatives.
+The forward simulator carries its own derivative code, separate from the
+emulator bridges above. ``mech_step_sticky`` uses explicit pair derivatives.
 ``mech_step_sticky_implicit`` uses local :func:`warp.grad` evaluation for
 polarity, thickness, mesenchymal alignment, and optional WNT terms; its
 soft-sphere derivatives remain explicit. Both paths use atomic reductions, so

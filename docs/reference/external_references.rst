@@ -3,7 +3,7 @@ External API references
 
 waxMorph docstrings link to external APIs through Sphinx intersphinx
 inventories, which tie each reference to the upstream public API object rather
-than to a hand-written page URL. The packages waxMorph references are:
+than to a hand-written page URL. waxMorph references these packages:
 
 * `Python <https://docs.python.org/3/>`__
 * `NumPy <https://numpy.org/doc/stable/>`__

@@ -1,6 +1,6 @@
 # Documentation images
 
-Drop arbitrary image assets here (PNG, JPG, SVG, GIF). Anything in this
+Put image assets here (PNG, JPG, SVG, GIF). Anything in this
 directory is served by Sphinx via `html_static_path = ["_static"]` (see
 `docs/conf.py`) and copied verbatim into `_build/html/_static/images/`.
 
@@ -18,13 +18,13 @@ reference works regardless of the page's depth in the tree:
    Optional caption rendered below the image.
 ```
 
-- `.. figure::` adds a caption + is referenceable; `.. image::` is bare.
+- `.. figure::` adds a caption and can be cross-referenced; `.. image::` is bare.
 - The leading `/` means "relative to the docs source root" (`docs/`), not the
   filesystem root. A page-relative path (`../_static/...`) also works but is
   fragile across the Diátaxis quadrants.
 - Sphinx copies *referenced* images to `_build/html/_images/` automatically;
-  the `_static` path additionally serves everything here unreferenced (useful
-  for the theme logo, favicons, raw-HTML `<img>`, etc.).
+  the `_static` path also serves everything in this directory, referenced or
+  not (useful for the theme logo, favicons, and raw-HTML `<img>` tags).
 
 ## From a MyST notebook tutorial
 

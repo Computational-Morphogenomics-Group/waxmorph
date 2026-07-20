@@ -1,7 +1,7 @@
 Reference
 =========
 
-waxMorph's top-level modules default to the PyTorch backend, exposing the
+waxMorph's top-level modules default to the PyTorch backend and expose the
 graph-network-based simulator, contact-graph construction, shape losses, and the
 training entry point. Explicit JAX counterparts live under :mod:`waxmorph.jax`.
 
@@ -54,9 +54,10 @@ fields. See :doc:`../explanation/cell_state` for the field shapes and index
 conventions.
 
 For a worked ``build_graph`` → ``GNS`` → ``train`` flow, see
-:ref:`gns-primer`. JAX provides backend-specific graph returns and padding,
-loss families, PRNG, optimizer and checkpoint behavior, and CUDA execution for
-Warp physics; see :doc:`../how_to/choose_backend`.
+:ref:`the mesh-to-emulator guide <gns-primer>`. JAX provides backend-specific
+graph returns and padding, loss families, PRNG, optimizer and checkpoint
+behavior, and CUDA execution for Warp physics; see
+:doc:`../how_to/choose_backend`.
 
 Training and external APIs
 --------------------------

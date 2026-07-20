@@ -36,8 +36,7 @@ Use JAX with CUDA 12:
 
    pip install "waxmorph[jax-cuda]"
 
-Set up a development checkout with development, documentation, JAX, learning,
-simulation, and style dependencies:
+Set up a development checkout with every optional dependency group:
 
 .. code-block:: bash
 
@@ -56,8 +55,8 @@ What each extra pulls in
 ------------------------
 
 ``simulation``
-   PyVista, trimesh, VTK, OpenGL support, and ``usd-core`` — mesh processing and
-   movie-rendering paths.
+   Mesh processing and movie rendering: PyVista, trimesh, VTK, OpenGL support,
+   and ``usd-core``.
 
 ``learning``
    GeomLoss and PyKeOps for optional PyTorch point-cloud losses, plus

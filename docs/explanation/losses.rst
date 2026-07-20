@@ -7,7 +7,7 @@ When cell identity is known
 ---------------------------
 
 ``squared_loss`` applies when each predicted cell has a known target identity
-and row order is meaningful — the loss compares cell :math:`i` against target
+and row order is meaningful: the loss compares cell :math:`i` against target
 :math:`i` directly. Input shapes must match exactly. Use it for experiments
 that track cell identities.
 
@@ -19,7 +19,8 @@ clouds are unordered, so the loss must be a distributional distance between
 point sets. ``chamfer_distance`` and ``make_samples_loss`` apply here.
 
 ``chamfer_distance`` sums the mean nearest-neighbor distance in each direction,
-giving the same value when clouds with different point counts are exchanged:
+so swapping the two clouds gives the same value even when their point counts
+differ:
 
 .. math::
 
@@ -34,9 +35,9 @@ Training sums the selected distance over supervised frames,
 
    L_{\text{shape}} = \sum_{k=1}^{K} d\big(X_{\tau_k}, \tilde{X}_{\tau_k}\big),
 
-reducing to :math:`d(X_T, \tilde{X}_T)` for a single terminal target. PyTorch's
-GeomLoss-backed ``make_samples_loss`` exposes maximum mean discrepancy,
-Hausdorff divergence, and debiased Sinkhorn divergence. JAX's
+which reduces to :math:`d(X_T, \tilde{X}_T)` for a single terminal target.
+PyTorch's GeomLoss-backed ``make_samples_loss`` exposes maximum mean
+discrepancy, Hausdorff divergence, and debiased Sinkhorn divergence. JAX's
 ``make_sinkhorn_loss`` exposes debiased OTT Sinkhorn divergence. Numerical
 values follow each backend's cost, solver, and option contract. In the
 PyTorch factory, omitted ``truncate`` uses ``5`` while explicit ``None`` is

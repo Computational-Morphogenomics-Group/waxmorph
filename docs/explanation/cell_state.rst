@@ -1,7 +1,7 @@
 Cells as spheroidal agents
 ==========================
 
-waxMorph represents tissues as three-dimensional populations of spheroidal
+waxMorph represents a tissue as a three-dimensional population of spheroidal
 cellular agents.
 
 Each cell :math:`i` carries a center position :math:`x_i \in \mathbb{R}^3`, a

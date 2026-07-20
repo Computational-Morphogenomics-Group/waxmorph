@@ -2,7 +2,7 @@ Render trajectories
 ===================
 
 Pick a renderer from :mod:`waxmorph.render` to match how you want to inspect a
-trajectory — a quick static view, an interactive session, or an exported movie.
+trajectory: a quick static view, an interactive session, or an exported movie.
 
 ``MPLInterface``
    Render statically with Matplotlib for scripts and notebooks.

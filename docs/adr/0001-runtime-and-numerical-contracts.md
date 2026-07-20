@@ -3,9 +3,9 @@
 ## Context
 
 waxMorph exposes a prescribed forward simulator, a learned emulator, and Torch
-and JAX learning backends. These paths share state abstractions and provide
-purpose-built kernels, constants, interfaces, and runtime contracts.
-Cross-cutting numerical and acceptance contracts define how they compose.
+and JAX learning backends. These paths share state abstractions, but each has
+its own kernels, constants, interfaces, and runtime contracts. The decisions
+below define how they compose numerically and what release acceptance requires.
 
 ## Decision
 

@@ -3,11 +3,9 @@
 Train the emulator from meshes
 ========================================
 
-Take this path when your question is shape assembly with a fixed number of
-spheroidal agents: you have a source morphology and a target morphology, and
-you want to learn the local rollout rule that carries one into the other.
-
-The workflow has six steps.
+Use this workflow for shape assembly with a fixed number of spheroidal agents:
+you have a source morphology and a target morphology, and you want to learn the
+local rollout rule that carries one into the other.
 
 1. Prepare source and target meshes.
 2. Sample matched-size interior point clouds with
@@ -20,8 +18,8 @@ The workflow has six steps.
 
 .. _gns-primer:
 
-The build_graph → GNS → train primer
-------------------------------------
+A worked build_graph → GNS → train flow
+----------------------------------------
 
 Sample the source and target shapes. ``sample_mesh_pair`` normalizes each mesh
 and returns independent equal-count clouds with effective source and target radii:
@@ -75,8 +73,8 @@ straight from the graph:
    # out["dX"], out["dP"], out["dc"] are the predicted per-cell increments.
 
 The GNS predicts per-cell update fields. :func:`waxmorph.train.train` applies
-those fields during a rollout and
-interleaves the differentiable mechanics and diffusion corrections described in
+those fields during a rollout and interleaves the differentiable mechanics and
+diffusion corrections described in
 :doc:`../explanation/differentiable_physics`.
 
 Train and read back the result. Endpoint supervision passes a single target:
