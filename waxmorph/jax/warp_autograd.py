@@ -4,9 +4,6 @@ Backward-enabled Warp FFI differentiates dedicated per-pair kernels; JAX owns en
 gathers, masking, scatter aggregation, and state updates. ``pair_i`` and ``pair_j`` are
 constructed outside autodiff, so gradients treat topology as fixed. PyTorch records its
 emulator kernels on a :class:`warp.Tape`; JAX uses per-pair FFI kernel objects.
-
-Top-level JAX APIs are preferred; a lazy legacy fallback supports the declared Warp 1.10
-minimum.
 """
 
 from functools import cache
@@ -20,14 +17,6 @@ from waxmorph.constants import EPS_DIST, EPS_NORM
 # Separate JAX FFI kernels duplicate these emulator coefficients; keep them aligned.
 K_REP = 2.0
 K_ATT = 0.5
-
-
-@cache
-def _load_jax_kernel():
-    jax_kernel = getattr(wp, "jax_kernel", None)
-    if jax_kernel is None:
-        from warp.jax_experimental.ffi import jax_kernel
-    return jax_kernel
 
 
 def _device_requires_cuda(device: str | wp.Device | None) -> str:
@@ -107,7 +96,7 @@ def _molecule_pair_flux_kernel_impl(
 
 @cache
 def _sticky_pair_forces_jax():
-    return _load_jax_kernel()(
+    return wp.jax_kernel(
         wp.kernel(_sticky_pair_forces_kernel_impl),
         num_outputs=2,
         enable_backward=True,
@@ -116,7 +105,7 @@ def _sticky_pair_forces_jax():
 
 @cache
 def _molecule_pair_flux_jax():
-    return _load_jax_kernel()(
+    return wp.jax_kernel(
         wp.kernel(_molecule_pair_flux_kernel_impl),
         num_outputs=2,
         enable_backward=True,

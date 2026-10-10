@@ -8,9 +8,13 @@ Install the base package with pip:
    pip install waxmorph
 
 The base install includes NumPy 1.24+, SciPy 1.11+, PyTorch 2+, tqdm 4.66+, and
-Warp 1.10+. It provides the forward simulator and the default PyTorch graph,
+Warp 1.18+. It provides the forward simulator and the default PyTorch graph,
 GNS, losses, and training APIs. Extras add optional loss, backend, mesh, and
 rendering dependencies.
+
+Warp's PyPI wheels need an NVIDIA R580+ driver for CUDA. With an older driver
+(R525+), install Warp's ``+cu12`` wheel from its
+`GitHub Releases <https://github.com/NVIDIA/warp/releases>`_.
 
 Add mesh and rendering support:
 

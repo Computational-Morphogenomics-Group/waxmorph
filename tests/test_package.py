@@ -89,7 +89,7 @@ import waxmorph
             "scipy>=1.11",
             "torch>=2",
             "tqdm>=4.66",
-            "warp-lang>=1.10",
+            "warp-lang>=1.18",
         }
 
     def test_simulation_extra_includes_usd_without_core_duplicates(self):
@@ -97,5 +97,5 @@ import waxmorph
         simulation = _toml_string_array(text, "optional-dependencies.simulation")
         learning = _toml_string_array(text, "optional-dependencies.learning")
         assert "usd-core" in simulation
-        assert simulation.isdisjoint({"scipy>=1.11", "tqdm>=4.66", "warp-lang>=1.10"})
+        assert simulation.isdisjoint({"scipy>=1.11", "tqdm>=4.66", "warp-lang>=1.18"})
         assert "torch>=2" not in learning

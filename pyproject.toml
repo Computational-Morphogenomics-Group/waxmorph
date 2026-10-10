@@ -30,7 +30,7 @@ dependencies = [
   "scipy>=1.11",
   "torch>=2",
   "tqdm>=4.66",
-  "warp-lang>=1.10",
+  "warp-lang>=1.18",
 ]
 optional-dependencies.all = [
   "waxmorph[dev,docs,jax,learning,simulation]",
@@ -151,15 +151,15 @@ ini_options.filterwarnings = [
 ]
 
 [tool.coverage]
+run.source = [ "waxmorph" ]
 # ---------------------------------------------------------------------------
 # Coverage
 # ---------------------------------------------------------------------------
 run.branch = true
-run.source = [ "waxmorph" ]
 report.exclude_lines = [
   "if __name__ == .__main__.",
   "if TYPE_CHECKING:",
   "pragma: no cover",
 ]
-report.show_missing = true
 report.skip_covered = true
+report.show_missing = true
