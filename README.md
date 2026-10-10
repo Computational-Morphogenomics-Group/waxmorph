@@ -1,6 +1,6 @@
 # waxMorph
 
-[![CI](https://github.com/Computational-Morphogenomics-Group/waxmorph/actions/workflows/ci.yml/badge.svg)](https:/Computational-Morphogenomics-Group/waxmorph/actions/workflows/ci.yml)
+[![CI](https://github.com/Computational-Morphogenomics-Group/waxmorph/actions/workflows/ci.yml/badge.svg)](https://github.com/Computational-Morphogenomics-Group/waxmorph/actions/workflows/ci.yml)
 [![Documentation](https://readthedocs.org/projects/waxmorph/badge/?version=latest)](https://waxmorph.readthedocs.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](https://opensource.org/licenses/MIT)
 <a href="https://github.com/psf/black"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
@@ -51,7 +51,9 @@ pip install waxmorph
 ```
 
 This installs the default PyTorch API, Warp runtime, SciPy graph construction,
-and training progress support.
+and training progress support. Warp's PyPI wheels need an NVIDIA R580+ driver
+for CUDA; with an older driver, install Warp's `+cu12` wheel from its
+[GitHub Releases](https://github.com/NVIDIA/warp/releases).
 
 The forward simulation and PyTorch learning workflow:
 
@@ -100,7 +102,8 @@ Inputs:
 
 Outputs:
 
-- `runs/bunny_armadillo.pt`: best PyTorch model checkpoint and training log.
+- `runs/bunny_armadillo.pt`: best PyTorch model checkpoint; the training log is
+  saved beside it as `runs/bunny_armadillo.pt.log.npz`.
 - `Output/shape_assembly.usd`: USD trajectory for inspection in a USD viewer.
 - `result.log["best_traj_pos"]`: NumPy trajectory with shape
   `[time, particles, 3]`.
@@ -295,8 +298,8 @@ static-shape compilation is required.
 For learned shape assembly, `write_frame_from_numpy` takes positions, radii, and
 explicit RGB colors. For live simulations, `write_frame_from_state` takes Warp
 arrays, and `morph="A"`, `morph="I"`, or `morph="ratio"` colors particles by the
-activator, inhibitor, or activator-to-inhibitor ratio of the reaction-diffusion
-state.
+activator, the inhibitor, or the activator fraction `A/(A+I)` of the
+reaction-diffusion state.
 
 ## Citation
 
@@ -304,16 +307,16 @@ If you use waxMorph in your research, please cite the preprint:
 
 > Beker, O. and Dumitrascu, B. (2026). *Differentiable Design for Morphogenesis
 > I: Simulation and Simulacra*. bioRxiv.
-> [https://doi.org/10.64898/2026.07.02.736195](https://www.biorxiv.org/content/10.64898/2026.07.02.736195v1)
+> [https://doi.org/10.64898/2026.07.02.736195](https://doi.org/10.64898/2026.07.02.736195)
 
 ```bibtex
-@article{beker2026waxmorph,
-  title     = {Differentiable Design for Morphogenesis {I}: Simulation and Simulacra},
-  author    = {Beker, Ozgur and Dumitrascu, Bianca},
-  journal   = {bioRxiv},
-  year      = {2026},
-  publisher = {Cold Spring Harbor Laboratory},
-  doi       = {10.64898/2026.07.02.736195},
-  url       = {https://www.biorxiv.org/content/10.64898/2026.07.02.736195v1},
+@article{Beker_2026,
+  title={Differentiable Design for Morphogenesis I: Simulation and Simulacra},
+  url={http://dx.doi.org/10.64898/2026.07.02.736195},
+  DOI={10.64898/2026.07.02.736195},
+  publisher={openRxiv},
+  author={Beker, Ozgur and Dumitrascu, Bianca},
+  year={2026},
+  month=July
 }
 ```

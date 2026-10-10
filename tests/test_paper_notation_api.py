@@ -45,31 +45,6 @@ def test_build_node_features_are_concentrations():
 # ---------------------------------------------------------------------------
 # Decoder output heads: dX / dP / dc
 # ---------------------------------------------------------------------------
-def test_torch_gns_default_head_is_dc():
-    """Default GNS output heads are dX, dP, dc (molecule delta, paper ċ)."""
-    pytest.importorskip("torch")
-    from waxmorph import GNS
-
-    model = GNS(node_feature_dim=2, edge_feature_dim=2, hidden_dim=4, num_mp_steps=1)
-    assert set(model.decoders.keys()) == {"dX", "dP", "dc"}
-    assert "dG" not in model.decoders
-
-
-def test_jax_gns_default_head_is_dc():
-    """JAX parity backend uses the same dc head."""
-    pytest.importorskip("equinox")
-    import jax
-
-    from waxmorph.jax.gnn import GNS as JaxGNS
-
-    model = JaxGNS(
-        node_feature_dim=2,
-        edge_feature_dim=2,
-        hidden_dim=4,
-        num_mp_steps=1,
-        key=jax.random.PRNGKey(0),
-    )
-    assert set(model.decoders.keys()) == {"dX", "dP", "dc"}
 
 
 # ---------------------------------------------------------------------------

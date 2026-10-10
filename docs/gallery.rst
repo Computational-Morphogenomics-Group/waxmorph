@@ -2,12 +2,12 @@ Gallery
 =======
 
 Each scene is a learned waxMorph trajectory: a population of spheroidal cells
-assembling a target morphology, rendered live in your browser from the
-reconstructed per-frame cell positions and colours. Click a scene to open the
-player. Use the timeline to play, pause, or scrub, and drag to orbit. Switch to
-the **free camera** (``Camera: Fly``) to move through the tissue with ``W``
-``A`` ``S`` ``D`` and the mouse (``Q``/``E`` for up and down, ``Esc`` to
-release).
+assembling a target morphology, rendered in your browser from the
+reconstructed per-frame cell positions and colors. Click a scene to open the
+player. Use the timeline to play, pause, or scrub, and drag to orbit.
+``Camera: Fly`` switches to a free camera: click the view, then move with ``W``
+``A`` ``S`` ``D`` and the mouse, ``E`` up, ``Q`` down, and ``Esc`` to release
+the cursor.
 
 .. raw:: html
 

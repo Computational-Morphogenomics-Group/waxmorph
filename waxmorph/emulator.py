@@ -7,6 +7,8 @@ package bridges expose gradients for their documented inputs. The forward simula
 provides type-dependent forces, chemistry, growth, and division.
 """
 
+from functools import cache
+
 import warp as wp
 
 from .constants import EPS_DIST, EPS_NORM, HASH_GRID_DIM
@@ -168,6 +170,27 @@ def _build_neighbor_pairs_dynamic(
         max_edges = num_edges
 
 
+@cache
+def _hash_grid(alias: str) -> "wp.HashGrid":
+    """Return a reusable HashGrid for a device alias; every ``build`` fully resets it."""
+    return wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=alias)
+
+
+def _query_radius(R: wp.array, particle_count: int) -> float:
+    """Return the contact query radius ``2 max(R) + EPS_DIST`` (host sync)."""
+    return 2.0 * float(R.numpy()[:particle_count].max()) + EPS_DIST
+
+
+def _neighbor_pairs(X, R, particle_count, grid, query_radius):
+    """Build frozen contact pairs ``i < j`` outside any tape."""
+    if query_radius is None:
+        query_radius = _query_radius(R, particle_count)
+    if grid is None:
+        grid = _hash_grid(X.device.alias)
+    grid.build(X[:particle_count], query_radius)
+    return _build_neighbor_pairs_dynamic(X, R, particle_count, query_radius, grid, X.device)
+
+
 @wp.kernel
 def _molecule_diffusion_laplacian_from_pairs(
     c: wp.array2d(dtype=wp.float32),
@@ -232,31 +255,20 @@ def mech_step_sticky_differentiable(
     dt: float,
     f_net: wp.array,
     grid: "wp.HashGrid | None" = None,
+    query_radius: float | None = None,
 ) -> wp.array:
     """Record mechanics with frozen topology.
 
     Pair discovery remains outside the tape; radii participate in recorded force
-    arithmetic. Inactive position rows retain identity gradients. The caller
-    seeds ``X_out.grad`` and replays ``tape``.
+    arithmetic. Inactive position rows retain identity gradients. ``query_radius``
+    defaults to ``2 max(R) + EPS_DIST`` (a host sync); pass it when radii are fixed.
+    The caller seeds ``X_out.grad`` and replays ``tape``.
     """
     f_net.zero_()
     f_net.requires_grad = True
 
     device = X.device
-    r_max = float(R.numpy()[:particle_count].max())
-    query_radius = 2.0 * r_max + EPS_DIST
-    if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
-    grid.build(X[:particle_count], query_radius)
-
-    edges_i, edges_j, num_edges = _build_neighbor_pairs_dynamic(
-        X,
-        R,
-        particle_count,
-        query_radius,
-        grid,
-        device,
-    )
+    edges_i, edges_j, num_edges = _neighbor_pairs(X, R, particle_count, grid, query_radius)
 
     X_out = wp.zeros_like(X, device=device, requires_grad=True)
 
@@ -289,49 +301,38 @@ def diffusion_step_differentiable(
     D_emu: float = 0.1,
     dt: float = 1e-2,
     grid: "wp.HashGrid | None" = None,
+    query_radius: float | None = None,
+    steps: int = 1,
 ) -> wp.array:
-    """Record graph diffusion with concentration gradients.
+    """Record ``steps`` graph-diffusion steps over one frozen pair list.
 
     Positions, radii, and pair discovery remain outside the tape. Each molecule
-    channel diffuses independently over the frozen topology. The caller seeds
+    channel diffuses independently over the frozen topology. ``query_radius``
+    defaults to ``2 max(R) + EPS_DIST`` (a host sync). The caller seeds
     ``c_out.grad`` and replays ``tape``.
     """
     device = X.device
-    lap_c = wp.zeros_like(c, device=device, requires_grad=True)
+    edges_i, edges_j, num_edges = _neighbor_pairs(X, R, particle_count, grid, query_radius)
 
-    r_max = float(R.numpy()[:particle_count].max())
-    query_radius = 2.0 * r_max + EPS_DIST
-    if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
-    grid.build(X[:particle_count], query_radius)
-
-    edges_i, edges_j, num_edges = _build_neighbor_pairs_dynamic(
-        X,
-        R,
-        particle_count,
-        query_radius,
-        grid,
-        device,
-    )
-
-    num_molecules = int(c.shape[1])
-    c_out = wp.zeros_like(c, device=device, requires_grad=True)
-
-    with tape:
-        if num_edges > 0:
+    for _ in range(steps):
+        lap_c = wp.zeros_like(c, device=device, requires_grad=True)
+        c_out = wp.zeros_like(c, device=device, requires_grad=True)
+        with tape:
+            if num_edges > 0:
+                wp.launch(
+                    _molecule_diffusion_laplacian_from_pairs,
+                    dim=num_edges,
+                    inputs=[c, edges_i[:num_edges], edges_j[:num_edges]],
+                    outputs=[lap_c],
+                    device=device,
+                )
             wp.launch(
-                _molecule_diffusion_laplacian_from_pairs,
-                dim=num_edges,
-                inputs=[c, edges_i[:num_edges], edges_j[:num_edges]],
-                outputs=[lap_c],
+                _molecule_diffusion_step_out,
+                dim=(int(c.shape[0]), int(c.shape[1])),
+                inputs=[c, lap_c, float(D_emu), float(dt), particle_count],
+                outputs=[c_out],
                 device=device,
             )
-        wp.launch(
-            _molecule_diffusion_step_out,
-            dim=(int(c.shape[0]), num_molecules),
-            inputs=[c, lap_c, float(D_emu), float(dt), particle_count],
-            outputs=[c_out],
-            device=device,
-        )
+        c = c_out
 
-    return c_out
+    return c

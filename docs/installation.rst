@@ -1,46 +1,35 @@
 Installation
 ============
 
-Install the base package with pip:
-
 .. code-block:: bash
 
    pip install waxmorph
 
-The base install includes NumPy 1.24+, SciPy 1.11+, PyTorch 2+, tqdm 4.66+, and
-Warp 1.18+. It provides the forward simulator and the default PyTorch graph,
-GNS, losses, and training APIs. Extras add optional loss, backend, mesh, and
-rendering dependencies.
+The base install (NumPy 1.24+, SciPy 1.11+, PyTorch 2+, tqdm 4.66+, Warp 1.18+) provides the
+forward simulator and the PyTorch graph, GNS, loss, and training APIs.
 
-Warp's PyPI wheels need an NVIDIA R580+ driver for CUDA. With an older driver
-(R525+), install Warp's ``+cu12`` wheel from its
-`GitHub Releases <https://github.com/NVIDIA/warp/releases>`_.
+Warp's PyPI wheels need an NVIDIA R580+ driver for CUDA. With an older driver (R525+), install
+Warp's ``+cu12`` wheel from its `GitHub Releases <https://github.com/NVIDIA/warp/releases>`_.
 
-Add mesh and rendering support:
+Extras
+------
 
-.. code-block:: bash
+Install an extra with ``pip install "waxmorph[<extra>]"``.
 
-   pip install "waxmorph[simulation]"
+``simulation``
+   Mesh sampling and rendering: trimesh, Matplotlib, PyVista, VTK, pyglet, imageio, hsluv, and
+   ``usd-core``.
+``learning``
+   GeomLoss and PyKeOps for ``make_samples_loss``, plus ``simulation``.
+``jax``
+   JAX, Equinox, Optax, and ott-jax, plus ``simulation``.
+``jax-cuda``
+   CUDA 12 JAX, plus ``jax``.
+``all``
+   ``dev``, ``docs``, ``jax``, ``learning``, and ``simulation``, with CPU JAX.
 
-Add GeomLoss and PyKeOps; this extra currently includes ``simulation``:
-
-.. code-block:: bash
-
-   pip install "waxmorph[learning]"
-
-Add the explicit JAX/Equinox backend:
-
-.. code-block:: bash
-
-   pip install "waxmorph[jax]"
-
-Use JAX with CUDA 12:
-
-.. code-block:: bash
-
-   pip install "waxmorph[jax-cuda]"
-
-Set up a development checkout with every optional dependency group:
+Development
+-----------
 
 .. code-block:: bash
 
@@ -49,43 +38,12 @@ Set up a development checkout with every optional dependency group:
    pip install -e ".[all]"
    pre-commit install
 
-``all`` contains the CPU JAX stack. GPU development adds ``jax-cuda``:
+GPU JAX development installs ``".[all,jax-cuda]"`` instead.
 
-.. code-block:: bash
+Hardware
+--------
 
-   pip install -e ".[all,jax-cuda]"
-
-What each extra pulls in
-------------------------
-
-``simulation``
-   Mesh processing and movie rendering: PyVista, trimesh, VTK, OpenGL support,
-   and ``usd-core``.
-
-``learning``
-   GeomLoss and PyKeOps for optional PyTorch point-cloud losses, plus
-   ``simulation``.
-
-``jax``
-   JAX, Equinox, Optax, and ott-jax, plus ``simulation``.
-
-``jax-cuda``
-   CUDA 12 JAX support plus ``jax``.
-
-``all``
-   Development, documentation, JAX, learning, and simulation dependencies.
-   ``jax-cuda`` supplies CUDA JAX support.
-
-Hardware notes
---------------
-
-The forward simulator and PyTorch/Warp training bridge accept supported CPU or
-CUDA devices; examples default to CUDA. JAX training with mechanics or diffusion
-uses custom VJPs on CUDA. JAX CPU training uses ``mech_steps=0`` and
-``diff_steps=0``. ``WarpMovieRenderer`` defaults to CUDA; its OpenGL
-backend also requires a working graphics and video stack.
-
-.. note::
-
-   USD export uses Warp's USD renderer and the ``usd-core`` package installed by
-   the ``simulation`` extra.
+The simulator and the PyTorch training bridge run on CPU or CUDA; examples default to CUDA.
+JAX training with mechanics or diffusion requires CUDA, so JAX CPU training sets
+``mech_steps=0`` and ``diff_steps=0``. ``WarpMovieRenderer`` defaults to CUDA; its OpenGL
+backend also needs a working graphics and video stack.

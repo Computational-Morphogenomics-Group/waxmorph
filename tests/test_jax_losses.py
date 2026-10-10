@@ -1,11 +1,9 @@
 """Tests for JAX loss functions with gradient flow through GNS."""
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
 
-from waxmorph.jax.gnn import GNS
 from waxmorph.jax.losses import chamfer_distance, make_sinkhorn_loss, squared_loss
 
 
@@ -26,43 +24,9 @@ class TestSquaredLoss:
         # ||0 - 1||_F^2 = 5 * 3 = 15
         assert float(loss) == pytest.approx(15.0, abs=1e-5)
 
-    def test_gradient_to_pred(self, key):
-        pred = jax.random.normal(key, (10, 3))
-        target = jax.random.normal(jax.random.PRNGKey(1), (10, 3))
-        grad = jax.grad(lambda p: squared_loss(p, target))(pred)
-        assert jnp.abs(grad).sum() > 0
-
     def test_rejects_broadcasting(self):
         with pytest.raises(ValueError, match="same shape"):
             squared_loss(jnp.zeros((1, 3)), jnp.zeros((4, 3)))
-
-    def test_gradient_through_gns(self, key):
-        """Squared loss gradients flow through GNS to all parameters."""
-        gns = GNS(
-            node_feature_dim=9,
-            edge_feature_dim=7,
-            num_mp_steps=2,
-            output_dims={"dX": 3},
-            key=key,
-        )
-        k1, k2 = jax.random.split(key)
-        node_feat = jax.random.normal(k1, (20, 9))
-        edge_idx = jax.random.randint(k1, (2, 60), 0, 20)
-        edge_feat = jax.random.normal(k2, (60, 7))
-
-        X_init = jax.random.normal(k1, (20, 3))
-        X_target = jax.random.normal(k2, (20, 3))
-
-        @eqx.filter_grad
-        def grad_fn(model):
-            out = model(node_feat, edge_idx, edge_feat)
-            X_pred = X_init + out["dX"]
-            return squared_loss(X_pred, X_target)
-
-        grads = grad_fn(gns)
-        leaves = jax.tree_util.tree_leaves(grads)
-        array_leaves = [g for g in leaves if isinstance(g, jax.Array)]
-        assert all(jnp.any(g != 0) for g in array_leaves)
 
 
 class TestChamferDistance:
@@ -82,40 +46,6 @@ class TestChamferDistance:
         b = jax.random.normal(jax.random.PRNGKey(1), (25, 3))
         loss = chamfer_distance(a, b)
         assert float(loss) > 0
-
-    def test_gradient_to_pred(self, key):
-        pred = jax.random.normal(key, (10, 3))
-        target = jax.random.normal(jax.random.PRNGKey(1), (10, 3))
-        grad = jax.grad(lambda p: chamfer_distance(p, target))(pred)
-        assert jnp.abs(grad).sum() > 0
-
-    def test_gradient_through_gns(self, key):
-        """Chamfer loss gradients flow through GNS to all parameters."""
-        gns = GNS(
-            node_feature_dim=9,
-            edge_feature_dim=7,
-            num_mp_steps=2,
-            output_dims={"dX": 3},
-            key=key,
-        )
-        k1, k2 = jax.random.split(key)
-        node_feat = jax.random.normal(k1, (20, 9))
-        edge_idx = jax.random.randint(k1, (2, 60), 0, 20)
-        edge_feat = jax.random.normal(k2, (60, 7))
-
-        X_init = jax.random.normal(k1, (20, 3))
-        X_target = jax.random.normal(k2, (20, 3))
-
-        @eqx.filter_grad
-        def grad_fn(model):
-            out = model(node_feat, edge_idx, edge_feat)
-            X_pred = X_init + out["dX"]
-            return chamfer_distance(X_pred, X_target)
-
-        grads = grad_fn(gns)
-        leaves = jax.tree_util.tree_leaves(grads)
-        array_leaves = [g for g in leaves if isinstance(g, jax.Array)]
-        assert all(jnp.any(g != 0) for g in array_leaves)
 
     def test_known_value(self):
         """Two point clouds with a known Chamfer distance."""

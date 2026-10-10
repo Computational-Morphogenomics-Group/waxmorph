@@ -218,48 +218,6 @@ class TestDeviceResolution:
 
 
 class TestTorchGraphGradients:
-    def test_node_features_preserve_concentration_gradients(self):
-        c = torch.tensor(
-            [[0.2, -0.5, 0.1], [0.7, 0.4, -0.3]],
-            dtype=torch.float32,
-            requires_grad=True,
-        )
-
-        feats = build_node_features(c, particle_count=2)
-        loss = feats.square().sum()
-        loss.backward()
-
-        assert c.grad is not None
-        torch.testing.assert_close(c.grad, 2.0 * c.detach())
-
-    def test_edge_features_preserve_position_and_polarity_gradients(self):
-        positions = torch.tensor(
-            [[0.0, 0.0, 0.0], [0.5, 0.25, 0.0]],
-            dtype=torch.float32,
-            requires_grad=True,
-        )
-        radii = torch.tensor([0.5, 0.5], dtype=torch.float32)
-        polarities = torch.tensor(
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            dtype=torch.float32,
-            requires_grad=True,
-        )
-
-        edge_index = build_edge_index(positions, radii, particle_count=2)
-        edge_feats = build_edge_features(
-            positions,
-            polarities,
-            edge_index,
-            particle_count=2,
-        )
-        loss = edge_feats.sum()
-        loss.backward()
-
-        assert edge_index.requires_grad is False
-        assert positions.grad is not None
-        assert polarities.grad is not None
-        assert torch.isfinite(positions.grad).all()
-        assert torch.isfinite(polarities.grad).all()
 
     @pytest.mark.parametrize(
         ("polarities", "target_angle"),

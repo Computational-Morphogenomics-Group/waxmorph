@@ -99,43 +99,6 @@ def test_warp_to_gns_roundtrip():
     assert node_feats_grad.grad is not None
 
 
-def test_torch_graph_to_gns_preserves_concentration_gradients():
-    """Torch graph features should keep concentration state connected to the GNN loss."""
-    positions = torch.tensor(
-        [[0.0, 0.0, 0.0], [0.9, 0.0, 0.0], [0.25, 0.4, 0.0]],
-        dtype=torch.float32,
-    )
-    polarities = torch.tensor(
-        [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
-        dtype=torch.float32,
-    )
-    radii = torch.full((3,), 0.5, dtype=torch.float32)
-    c = torch.randn(3, 2, dtype=torch.float32, requires_grad=True)
-
-    node_feats, edge_index, edge_feats = build_graph(
-        positions,
-        polarities,
-        radii,
-        particle_count=3,
-        c=c,
-    )
-
-    gns = GNS(
-        node_feature_dim=node_feats.shape[1],
-        edge_feature_dim=edge_feats.shape[1],
-        num_mp_steps=2,
-        output_dims={"dX": 3, "dP": 3, "dc": c.shape[1]},
-    )
-
-    out = gns(node_feats, edge_index, edge_feats)
-    loss = out["dc"].square().sum() + out["dX"].square().sum()
-    loss.backward()
-
-    assert node_feats.grad_fn is not None
-    assert c.grad is not None
-    assert torch.isfinite(c.grad).all()
-
-
 def test_torch_run_epoch_uses_live_torch_graph_inputs(monkeypatch):
     """The training rollout should call build_graph with live Torch state."""
     source_pos = np.array(

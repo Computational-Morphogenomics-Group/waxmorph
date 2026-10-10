@@ -35,6 +35,7 @@ class WarpMechStep(torch.autograd.Function):
         dt: float,
         f_net_wp: wp.array,
         grid: wp.HashGrid | None,
+        query_radius: float | None = None,
     ) -> torch.Tensor:
         # Warp shares storage with the contiguous detached tensor.
         X_wp = wp.from_torch(X_torch.detach().contiguous(), dtype=wp.vec3f)
@@ -42,7 +43,7 @@ class WarpMechStep(torch.autograd.Function):
 
         tape = wp.Tape()
         X_out = mech_step_sticky_differentiable(
-            tape, X_wp, R_wp, particle_count, dt, f_net_wp, grid
+            tape, X_wp, R_wp, particle_count, dt, f_net_wp, grid, query_radius
         )
 
         ctx.tape = tape
@@ -53,18 +54,19 @@ class WarpMechStep(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
-        ctx.X_out.grad = wp.from_torch(grad_output.detach().contiguous(), dtype=wp.vec3f)
-        ctx.tape.backward()
+        # X_out owns its gradient buffer, so Warp copies grad_output instead of zeroing torch storage.
+        grad = wp.from_torch(grad_output.detach().contiguous(), dtype=wp.vec3f)
+        ctx.tape.backward(grads={ctx.X_out: grad})
         # Clone before tape.zero() clears the shared gradient buffer in place.
         grad_input = wp.to_torch(ctx.X_wp.grad).view(-1, 3).clone()
         ctx.tape.zero()
-        return grad_input, None, None, None, None, None
+        return grad_input, None, None, None, None, None, None
 
 
 class WarpDiffusionStep(torch.autograd.Function):
-    r"""Graph diffusion step with concentration gradients.
+    r"""Graph diffusion steps with concentration gradients.
 
-    On frozen pairs, forward records
+    On one frozen pair list, forward records ``steps`` updates
     :math:`c_{out}=\max(c-D_{emu}L_Gc\,\Delta t,0)` independently per molecule.
     Positions and radii determine fixed topology; concentrations receive the gradient. Warp
     views contiguous flattened Torch storage reshaped to ``[N, C]``.
@@ -80,6 +82,8 @@ class WarpDiffusionStep(torch.autograd.Function):
         D_emu: float,
         dt: float,
         grid: wp.HashGrid | None,
+        query_radius: float | None = None,
+        steps: int = 1,
     ) -> torch.Tensor:
         n, num_molecules = c_torch.shape
         c_wp = wp.from_torch(c_torch.detach().contiguous().view(-1), dtype=wp.float32)
@@ -88,7 +92,7 @@ class WarpDiffusionStep(torch.autograd.Function):
 
         tape = wp.Tape()
         c_out = diffusion_step_differentiable(
-            tape, X_wp, R_wp, c_wp, particle_count, D_emu, dt, grid
+            tape, X_wp, R_wp, c_wp, particle_count, D_emu, dt, grid, query_radius, steps
         )
 
         ctx.tape = tape
@@ -101,11 +105,10 @@ class WarpDiffusionStep(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
         n, num_molecules = ctx.shape
-        ctx.c_out.grad = wp.from_torch(
-            grad_output.detach().contiguous().view(-1), dtype=wp.float32
-        ).reshape((n, num_molecules))
-        ctx.tape.backward()
+        # c_out owns its gradient buffer, so Warp copies grad_output instead of zeroing torch storage.
+        grad = wp.from_torch(grad_output.detach().contiguous().view(-1), dtype=wp.float32)
+        ctx.tape.backward(grads={ctx.c_out: grad.reshape((n, num_molecules))})
         # Clone before tape.zero() clears the shared gradient buffer in place.
         grad_input = wp.to_torch(ctx.c_wp.grad).view(n, num_molecules).clone()
         ctx.tape.zero()
-        return grad_input, None, None, None, None, None, None
+        return grad_input, None, None, None, None, None, None, None, None

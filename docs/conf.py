@@ -47,7 +47,6 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.mathjax",
     "sphinx.ext.viewcode",
-    "sphinxcontrib.bibtex",
     "sphinx_design",
 ]
 
@@ -121,10 +120,6 @@ intersphinx_mapping = {
     # build does not emit a fetch warning. ``warp.*`` cross-refs stay unlinked.
     "geomloss": ("https://www.kernel-operations.io/geomloss/", None),
 }
-
-# -- Bibliography -------------------------------------------------------------
-
-bibtex_bibfiles = ["references.bib"]
 
 # -- HTML output --------------------------------------------------------------
 

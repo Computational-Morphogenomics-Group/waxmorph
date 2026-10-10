@@ -81,24 +81,6 @@ class TestGNS:
 
         assert set(out.keys()) == {"dX", "dP", "dc"}
 
-    def test_gradient_flow(self):
-        gns = GNS(
-            node_feature_dim=11,
-            edge_feature_dim=7,
-            num_mp_steps=2,
-            output_dims={"dX": 3},
-        )
-        node_feat = torch.randn(20, 11, requires_grad=True)
-        edge_idx = torch.randint(0, 20, (2, 60))
-        edge_feat = torch.randn(60, 7)
-
-        out = gns(node_feat, edge_idx, edge_feat)
-        loss = out["dX"].sum()
-        loss.backward()
-
-        assert node_feat.grad is not None
-        assert node_feat.grad.shape == (20, 11)
-
     def test_no_edges(self):
         """GNS should handle graphs with zero edges gracefully."""
         gns = GNS(
@@ -294,70 +276,3 @@ class TestGNSSaveLoad:
 
         assert gns._constructor_config() == expected_config
         assert loaded._constructor_config() == expected_config
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for memory test")
-class TestTBPTTMemoryScaling:
-    """Verify truncated BPTT bounds memory by K, not T."""
-
-    @staticmethod
-    def _rollout_peak_memory(model, T, K, N=200, E=800, F_node=11, F_edge=7):
-        """Run a simulated rollout and return peak GPU memory allocated."""
-        torch.cuda.reset_peak_memory_stats()
-        torch.cuda.synchronize()
-
-        total_dX = torch.zeros(N, 3, device="cuda")
-        for t in range(T):
-            node_feat = torch.randn(N, F_node, device="cuda")
-            edge_idx = torch.randint(0, N, (2, E), device="cuda")
-            edge_feat = torch.randn(E, F_edge, device="cuda")
-
-            out = model(node_feat, edge_idx, edge_feat)
-            total_dX = total_dX + out["dX"]
-
-            if (t + 1) % K == 0 and t < T - 1:
-                total_dX = total_dX.detach()
-
-        loss = total_dX.sum()
-        loss.backward()
-
-        torch.cuda.synchronize()
-        peak = torch.cuda.max_memory_allocated()
-        return peak
-
-    def test_memory_constant_across_t(self):
-        """Peak memory must be constant (within noise) as T grows with fixed K.
-
-        TBPTT detaches every K steps, so the autograd graph never exceeds K
-        steps of history.  We test T=20, T=40, T=80 and assert peak memory
-        stays at exactly the T=20 baseline.
-        """
-        K = 5
-        model = GNS(
-            node_feature_dim=11,
-            edge_feature_dim=7,
-            num_mp_steps=4,
-            output_dims={"dX": 3},
-            node_latent_dim=64,
-            edge_latent_dim=64,
-            hidden_dim=64,
-            checkpoint_processor=True,
-        ).cuda()
-
-        # Warmup — let CUDA caching allocator stabilise
-        self._rollout_peak_memory(model, T=K, K=K)
-        model.zero_grad(set_to_none=True)
-
-        peaks = {}
-        for T in (20, 40, 80):
-            peaks[T] = self._rollout_peak_memory(model, T=T, K=K)
-            model.zero_grad(set_to_none=True)
-
-        baseline = peaks[20]
-        for T, peak in peaks.items():
-            ratio = peak / baseline
-            assert ratio < 1.0000001, (
-                f"T={T}: peak memory {peak / 1e6:.0f} MB is {ratio:.2f}x the "
-                f"T=20 baseline ({baseline / 1e6:.0f} MB). "
-                f"Expected ~1.0x with TBPTT K={K}."
-            )

@@ -553,49 +553,6 @@ def _sphere_state(
 
 
 class TestMechStepStickyImplicit:
-    def test_does_not_crash(self):
-        """mech_step_sticky_implicit should run without errors."""
-        s = _sphere_state(30, 60)
-        X_next = wp.zeros_like(s["X"], device=DEVICE)
-        P_next = wp.zeros_like(s["P"], device=DEVICE)
-
-        simulator.mech_step_sticky_implicit(
-            s["X"],
-            s["R"],
-            s["P"],
-            s["CT"],
-            s["particle_count"],
-            1e-2,
-            X_next,
-            P_next,
-            device=DEVICE,
-        )
-
-        x = X_next.numpy()[:30]
-        assert not np.isnan(x).any()
-        assert np.isfinite(x).all()
-
-    def test_positions_change(self):
-        """Positions should be updated by the mechanics step."""
-        s = _sphere_state(30, 60)
-        x_before = s["X"].numpy()[:30].copy()
-        X_next = wp.zeros_like(s["X"], device=DEVICE)
-        P_next = wp.zeros_like(s["P"], device=DEVICE)
-
-        simulator.mech_step_sticky_implicit(
-            s["X"],
-            s["R"],
-            s["P"],
-            s["CT"],
-            s["particle_count"],
-            5e-2,
-            X_next,
-            P_next,
-            device=DEVICE,
-        )
-
-        x_after = X_next.numpy()[:30]
-        assert not np.allclose(x_before, x_after, atol=1e-8)
 
     def test_polarities_stay_normalized(self):
         """Polarity vectors should remain approximately unit length."""

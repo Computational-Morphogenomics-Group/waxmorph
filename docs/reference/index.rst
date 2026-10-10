@@ -1,75 +1,59 @@
-Reference
-=========
+API reference
+=============
 
-waxMorph's top-level modules default to the PyTorch backend and expose the
-graph-network-based simulator, contact-graph construction, shape losses, and the
-training entry point. Explicit JAX counterparts live under :mod:`waxmorph.jax`.
+Top-level ``waxmorph`` and ``waxmorph.{gnn, graph, losses, mlp, train}`` re-export the PyTorch
+backend :mod:`waxmorph.torch`. The JAX/Equinox backend :mod:`waxmorph.jax` is imported explicitly.
 
-Module map
-----------
+Modules
+-------
 
+``waxmorph.simulator``
+   Forward simulator (Warp): cell-type-dependent mechanics, activator-inhibitor
+   reaction-diffusion, growth, and division into preallocated capacity.
+``waxmorph.emulator``
+   Differentiable physics for learned rollouts with a fixed agent count: sticky-sphere mechanics
+   and graph-Laplacian diffusion on frozen contact pairs.
 ``waxmorph.data``
-   Loads, normalizes, and volumetrically samples meshes. Provides helpers for
-   source-target shape pairs and for the intermediate target sequences used as
-   supervision frames.
-
-``waxmorph.graph``
-   Builds the contact graph induced by spatial proximity. Node features carry
-   per-cell signaling-molecule concentrations; edge features encode pairwise
-   distance and relative polarity. Re-exports the PyTorch implementation.
-
-``waxmorph.gnn``
-   The graph-network-based simulator (GNS) that learns local,
-   neighbor-dependent update rules over the contact graph.
-
-``waxmorph.train``
-   Trains the emulator with a fixed agent count by coupling learned updates with
-   differentiable physical constraints. Re-exports the PyTorch training API.
-
-``waxmorph.losses``
-   Point-cloud shape losses for assigned (squared) and unassigned (Chamfer,
-   optimal-transport) target morphologies.
-
-``waxmorph.simulator`` and ``waxmorph.emulator``
-   Warp kernels for explicit mechanochemical forward simulation and for the
-   differentiable physics corrections used in rollouts with a fixed agent
-   count. The simulator integrates soft-sphere mechanics, reaction-diffusion,
-   growth, and division; the emulator freezes neighbor topology within a step
-   so gradients propagate through the physics.
-
+   Mesh loading, normalization, and volume sampling: ``sample_mesh_pair`` for one target,
+   ``sample_mesh_sequence`` for frame-tagged targets.
+``waxmorph.graph``, ``waxmorph.gnn``, ``waxmorph.losses``, ``waxmorph.train``
+   Contact graph, graph network simulator (GNS), shape losses, and training.
 ``waxmorph.render``
-   Static, interactive, and movie renderers for trajectories of spheroidal
-   agents.
+   Matplotlib, PyVista, and Warp (USD or OpenGL video) renderers.
 
-The backend-specific APIs live under :mod:`waxmorph.torch` and
-:mod:`waxmorph.jax`.
+.. _state-and-notation:
 
 State and notation
 ------------------
 
-waxMorph represents a tissue as spheroidal agents carrying positions ``X``,
-polarities ``P``, radii ``R``, and signaling-molecule concentrations ``c``; the
-graph-network processor predicts increments ``dX``, ``dP``, and ``dc`` over these
-fields. See :doc:`../explanation/cell_state` for the field shapes and index
-conventions.
+``X`` ``[N, 3]`` positions, ``P`` ``[N, 3]`` unit polarities, ``R`` ``[N]`` radii, ``c``
+``[N, C]`` signaling-molecule concentrations, and optional ``CT`` cell types (``0`` mesenchymal,
+``1`` epithelial). The GNS predicts increments ``dX``, ``dP``, and ``dc``. All values are
+nondimensional model units.
 
-For a worked ``build_graph`` → ``GNS`` → ``train`` flow, see
-:ref:`the mesh-to-emulator guide <gns-primer>`. JAX provides backend-specific
-graph returns and padding, loss families, PRNG, optimizer and checkpoint
-behavior, and CUDA execution for Warp physics; see
-:doc:`../how_to/choose_backend`.
+.. _backends:
 
-Training and external APIs
---------------------------
+Backends
+--------
+
+The JAX backend differs from PyTorch in these contracts:
+
+* ``build_graph`` also returns the real-edge count, and pads to ``max_edges`` when given. Edge
+  distances are :math:`\sqrt{\lVert x_i-x_j\rVert^2+\mathrm{EPS\_NORM}^2}` (PyTorch uses the
+  exact norm), and padded self-edges have zero features.
+* ``GNS`` takes an explicit PRNG ``key``; ``train`` takes an Optax optimizer and its state.
+* The loss factory is ``make_sinkhorn_loss`` (OTT) instead of ``make_samples_loss`` (GeomLoss).
+* Warp mechanics and diffusion require CUDA; CPU training sets ``mech_steps=0`` and
+  ``diff_steps=0``. Training bounds edges and neighbor pairs by ``N * max_edges_factor``.
+* Checkpoints are Equinox leaves plus ``<path>.json`` instead of one ``torch.save`` file.
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
 
-   training
-   external_references
-
-Module index
-------------
+   waxmorph.train
+   waxmorph.torch.train
+   waxmorph.jax.train
+   Runtime and numerical contracts <../adr/0001-runtime-and-numerical-contracts>
 
 .. autosummary::
    :toctree: ../generated

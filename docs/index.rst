@@ -66,22 +66,6 @@ Explore
       Play reconstructed morphogenesis trajectories in an interactive 3D
       viewer, with a timeline and a free-flying camera.
 
-   .. grid-item-card:: How-to guides
-      :link: how_to/index
-      :link-type: doc
-      :class-card: wm-card
-
-      Task-focused recipes for people who already know waxMorph and want to get
-      something specific done.
-
-   .. grid-item-card:: Explanation
-      :link: explanation/index
-      :link-type: doc
-      :class-card: wm-card
-
-      The modelling choices: cell state, locality, differentiable
-      physics, forward and inverse modes.
-
    .. grid-item-card:: API reference
       :link: reference/index
       :link-type: doc
@@ -98,6 +82,26 @@ Explore
       Development setup, testing across both backends, and the conventions your
       changes should follow.
 
+Citation
+--------
+
+If you use waxMorph in your research, please cite the preprint:
+
+   Beker, O. and Dumitrascu, B. (2026). *Differentiable Design for Morphogenesis I:
+   Simulation and Simulacra*. bioRxiv. https://doi.org/10.64898/2026.07.02.736195
+
+.. code-block:: bibtex
+
+   @article{Beker_2026,
+     title={Differentiable Design for Morphogenesis I: Simulation and Simulacra},
+     url={http://dx.doi.org/10.64898/2026.07.02.736195},
+     DOI={10.64898/2026.07.02.736195},
+     publisher={openRxiv},
+     author={Beker, Ozgur and Dumitrascu, Bianca},
+     year={2026},
+     month=July
+   }
+
 .. toctree::
    :hidden:
    :maxdepth: 1
@@ -105,9 +109,6 @@ Explore
    installation
    tutorials/index
    gallery
-   how_to/index
-   explanation/index
    reference/index
    contributing
    changelog
-   references

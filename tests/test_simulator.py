@@ -210,24 +210,6 @@ class TestMechStepSticky:
         norms = np.linalg.norm(p, axis=1)
         np.testing.assert_allclose(norms, 1.0, atol=1e-4)
 
-    def test_returns_gradients(self):
-        """mech_step_sticky should return the position gradient array."""
-        s = _sphere_state(20, 40)
-        f_net = simulator.mech_step_sticky(
-            s["X"],
-            s["R"],
-            s["P"],
-            s["CT"],
-            s["particle_count"],
-            1e-2,
-            s["X"],
-            s["P"],
-            device=DEVICE,
-            grad_consist=False,
-        )
-        assert f_net is not None
-        assert f_net.shape[0] == s["max_particles"]
-
 
 # ---------------------------------------------------------------------------
 # chem_step

@@ -24,6 +24,10 @@ the `waxmorph` package. The full suite exercises both the PyTorch and JAX
 backends, so a development environment should install `.[all]`, or at minimum
 `.[learning,simulation,jax]`, before running it.
 
+CI runs on CPU, where CUDA tests skip. `tests/conftest.py` sets `JAX_PLATFORMS=cpu`
+unless it is already set, so on a GPU machine run the JAX/Warp CUDA tests with
+`JAX_PLATFORMS=cuda,cpu pytest tests/`.
+
 ## Code style
 
 This project uses [ruff](https://docs.astral.sh/ruff/) for linting and
@@ -49,8 +53,8 @@ distance stabilization, loss families, PRNG, checkpoints, and Warp bridges.
 
 Public functions should state which biological object they represent, the array
 shapes they expect, and whether gradients flow through the operation. Use the
-concrete state variables and shapes catalogued in
-{doc}`explanation/cell_state`, together with the contact edges induced by
+concrete state variables and shapes listed in
+{ref}`state-and-notation`, together with the contact edges induced by
 spatial proximity. By convention, the per-cell molecular state is denoted `c`
 and the predicted increments are `dX`, `dP`, and `dc`.
 

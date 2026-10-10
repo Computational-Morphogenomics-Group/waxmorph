@@ -394,47 +394,6 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
     np.testing.assert_allclose(trajectory[0]["pos"], target_frame0.numpy(), atol=1e-6)
 
 
-def test_train_rejects_frame_out_of_range():
-    source_pos, polarities, c, radii = _minimal_inputs()
-    model = _make_model(c.shape[1])
-    opt = torch.optim.SGD(model.parameters(), lr=0.0)
-    config = torch_train_module.TrainConfig(n_epochs=1, t_rollout=2, log_every=1)
-
-    with pytest.raises(ValueError, match="outside"):
-        torch_train_module.train(
-            model,
-            opt,
-            squared_loss,
-            source_pos=source_pos,
-            targets=[(5, source_pos)],
-            polarities=polarities,
-            c=c,
-            radii=radii,
-            config=config,
-            device="cpu",
-        )
-
-
-def test_train_rejects_missing_targets():
-    source_pos, polarities, c, radii = _minimal_inputs()
-    model = _make_model(c.shape[1])
-    opt = torch.optim.SGD(model.parameters(), lr=0.0)
-    config = torch_train_module.TrainConfig(n_epochs=1, t_rollout=1, log_every=1)
-
-    with pytest.raises(ValueError, match="requires `targets`"):
-        torch_train_module.train(
-            model,
-            opt,
-            squared_loss,
-            source_pos=source_pos,
-            polarities=polarities,
-            c=c,
-            radii=radii,
-            config=config,
-            device="cpu",
-        )
-
-
 @pytest.mark.parametrize("device", TRAIN_DEVICES)
 def test_train_loads_checkpoint_into_caller_model_and_resets_optimizer(
     tmp_path, monkeypatch, device

@@ -1,15 +1,9 @@
 Tutorials
 =========
 
-Each tutorial runs a complete workflow from initial state to rendered
-trajectory. Together they cover both framework modes across both learning
-backends.
-
-Start with the forward simulator to see the mechanochemical primitives on their
-own, then train a learned emulator to assemble a target morphology. The two
-emulator tutorials run the same workflow on the PyTorch and JAX backends;
-compare them to understand the backend differences described in
-:doc:`../explanation/architecture`.
+Each notebook runs a complete workflow, from initial state to a rendered trajectory: the
+forward simulator, then the learned emulator on the PyTorch and JAX backends.
+:ref:`backends` lists how the two emulator backends differ.
 
 .. toctree::
    :maxdepth: 1

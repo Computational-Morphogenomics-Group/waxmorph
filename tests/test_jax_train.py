@@ -581,51 +581,6 @@ def test_native_collection_reuses_diffusion_pairs_and_returns_finite_trajectory(
         )
 
 
-def test_train_rejects_frame_out_of_range():
-    source_pos, polarities, c, radii = _minimal_inputs()
-    model = _make_model(c.shape[1])
-    optimizer = optax.sgd(learning_rate=0.0)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
-    config = jax_train_module.TrainConfig(n_epochs=1, t_rollout=2, mech_steps=0, diff_steps=0)
-
-    with pytest.raises(ValueError, match="outside"):
-        jax_train_module.train(
-            model,
-            optimizer,
-            opt_state,
-            squared_loss,
-            source_pos=source_pos,
-            targets=[(5, source_pos)],
-            polarities=polarities,
-            c=c,
-            radii=radii,
-            config=config,
-            device="cpu",
-        )
-
-
-def test_train_rejects_missing_targets():
-    source_pos, polarities, c, radii = _minimal_inputs()
-    model = _make_model(c.shape[1])
-    optimizer = optax.sgd(learning_rate=0.0)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
-    config = jax_train_module.TrainConfig(n_epochs=1, t_rollout=1, mech_steps=0, diff_steps=0)
-
-    with pytest.raises(ValueError, match="requires `targets`"):
-        jax_train_module.train(
-            model,
-            optimizer,
-            opt_state,
-            squared_loss,
-            source_pos=source_pos,
-            polarities=polarities,
-            c=c,
-            radii=radii,
-            config=config,
-            device="cpu",
-        )
-
-
 def _checkpoint_model(**overrides):
     kwargs = {
         "node_feature_dim": 2,

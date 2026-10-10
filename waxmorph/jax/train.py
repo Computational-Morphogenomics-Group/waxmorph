@@ -178,6 +178,18 @@ def _validate_finite_array(name: str, array: jax.Array, *, rollout_step: int, ph
     )
 
 
+@jax.jit
+def _all_finite(*arrays: jax.Array) -> jax.Array:
+    return jnp.all(jnp.stack([jnp.all(jnp.isfinite(a)) for a in arrays]))
+
+
+def _validate_finite_arrays(checks, *, rollout_step: int) -> None:
+    """Apply :func:`_validate_finite_array` to ``(name, array, phase)`` checks after one fetch."""
+    if not bool(_all_finite(*(array for _, array, _ in checks))):
+        for name, array, phase in checks:
+            _validate_finite_array(name, array, rollout_step=rollout_step, phase=phase)
+
+
 def _array_leaves(tree) -> list[jax.Array]:
     return [leaf for leaf in jax.tree_util.tree_leaves(tree) if isinstance(leaf, jax.Array)]
 
@@ -382,8 +394,6 @@ def _build_warp_collection_pairs(
     X_wp,
     ctx: _WarpCollectionContext,
 ) -> tuple[_PairTopology, Any, Any, int]:
-    import warp as wp
-
     from waxmorph.emulator import _build_neighbor_pairs_dynamic
 
     ctx.grid.build(X_wp[: ctx.particle_count], ctx.query_radius)
@@ -400,15 +410,12 @@ def _build_warp_collection_pairs(
             f"Neighbor pair list has {num_pairs} entries but max_edges_factor allows only "
             f"{ctx.max_pairs}. Increase TrainConfig.max_edges_factor."
         )
-    if num_pairs == 0:
-        empty = jnp.zeros((0,), dtype=jnp.int32)
-        topology = _PairTopology(empty, empty, jnp.asarray(0, dtype=jnp.int32))
-    else:
-        topology = _PairTopology(
-            pair_i=jnp.asarray(wp.to_jax(edges_i[:num_pairs]), dtype=jnp.int32),
-            pair_j=jnp.asarray(wp.to_jax(edges_j[:num_pairs]), dtype=jnp.int32),
-            num_pairs=jnp.asarray(num_pairs, dtype=jnp.int32),
-        )
+    # Pairs are only stacked on the host for replay, so copy them there once.
+    topology = _PairTopology(
+        pair_i=edges_i[:num_pairs].numpy(),
+        pair_j=edges_j[:num_pairs].numpy(),
+        num_pairs=num_pairs,
+    )
     return topology, edges_i, edges_j, num_pairs
 
 
@@ -546,9 +553,6 @@ def _collect_topologies_and_trajectory(
     )
 
     for t in range(config.t_rollout):
-        for name, array in (("X", X), ("P", P), ("c", c)):
-            _validate_finite_array(name, array, rollout_step=t, phase="pre-graph build")
-
         edge_index, num_edges = build_edge_index(
             X,
             R,
@@ -567,13 +571,18 @@ def _collect_topologies_and_trajectory(
         )
         edge_index_for_replay = edge_index[:, : _scalar_int(num_edges)]
 
-        for name, array in (("dX", dX), ("dP", dP), ("dc", dc)):
-            _validate_finite_array(name, array, rollout_step=t, phase="gns output")
-
         X, P, c = map(jax.lax.stop_gradient, (X_next, P_next, c_next))
-
-        for name, array in (("X", X), ("P", P), ("c", c)):
-            _validate_finite_array(name, array, rollout_step=t, phase="post-gns update")
+        _validate_finite_arrays(
+            [
+                ("dX", dX, "gns output"),
+                ("dP", dP, "gns output"),
+                ("dc", dc, "gns output"),
+                ("X", X, "post-gns update"),
+                ("P", P, "post-gns update"),
+                ("c", c, "post-gns update"),
+            ],
+            rollout_step=t,
+        )
 
         mech_pairs: list[_PairTopology] = []
         if warp_ctx is not None and config.mech_steps > 0:
@@ -616,7 +625,7 @@ def _collect_topologies_and_trajectory(
                     )
                 )
 
-        _validate_finite_array("X", X, rollout_step=t, phase="post-mechanics")
+        _validate_finite_arrays([("X", X, "post-mechanics")], rollout_step=t)
 
         diff_pairs: list[_PairTopology] = []
         if warp_ctx is not None and config.diff_steps > 0:
@@ -663,7 +672,7 @@ def _collect_topologies_and_trajectory(
                     )
                 )
 
-        _validate_finite_array("c", c, rollout_step=t, phase="post-diffusion")
+        _validate_finite_arrays([("c", c, "post-diffusion")], rollout_step=t)
 
         topologies.append(
             _StepTopology(

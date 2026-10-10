@@ -16,6 +16,7 @@ from tqdm import trange
 
 from waxmorph._train_core import _prepare_training_inputs
 from waxmorph.constants import EPS_POLARITY, HASH_GRID_DIM
+from waxmorph.emulator import _query_radius
 from waxmorph.torch.gnn import GNS
 from waxmorph.torch.graph import build_graph
 from waxmorph.torch.warp_autograd import WarpDiffusionStep, WarpMechStep
@@ -106,6 +107,13 @@ def _validate_finite_tensor(
         )
 
 
+def _validate_finite_tensors(checks, *, rollout_step: int) -> None:
+    """Apply :func:`_validate_finite_tensor` to ``(name, tensor, phase)`` checks after one sync."""
+    if not bool(torch.stack([torch.isfinite(t).all() for _, t, _ in checks]).all()):
+        for name, tensor, phase in checks:
+            _validate_finite_tensor(name, tensor, rollout_step=rollout_step, phase=phase)
+
+
 def _raise_on_nonfinite_named_tensors(
     kind: str,
     named_tensors,
@@ -188,6 +196,7 @@ def _run_epoch(
     R_wp,
     f_net,
     grid,
+    query_radius=None,
     N,
     targets_by_frame,
     X_source_t,
@@ -199,9 +208,10 @@ def _run_epoch(
 
     Features remain attached to the Torch graph, while each step's COO topology comes from a
     detached state snapshot. Each Warp bridge call owns a tape; Torch autograd composes the
-    calls through the rollout. ``targets_by_frame`` uses post-step indices, so frame 0 follows
-    the first learned and prescribed updates. Returns the summed supervised shape loss, the
-    unweighted ``sum_t ||dt_gns * GNS_X,t||^2`` measured before mechanics, and the detached
+    calls through the rollout, and the diffusion substeps of a step share one pair list.
+    ``targets_by_frame`` uses post-step indices, so frame 0 follows the first learned and
+    prescribed updates. Returns the summed supervised shape loss, the unweighted
+    ``sum_t ||dt_gns * GNS_X,t||^2`` measured before mechanics, and the detached
     source-plus-``t_rollout`` trajectory.
     """
     X_t = X_source_t.clone().requires_grad_(True)
@@ -210,14 +220,14 @@ def _run_epoch(
 
     loss_l2 = torch.tensor(0.0, device=torch_device)
     loss_shape = torch.tensor(0.0, device=torch_device)
+    frames = []
 
-    for name, tensor in (("X_t", X_t), ("P_t", P_t), ("c_t", c_t)):
-        _validate_finite_tensor(name, tensor, rollout_step=0, phase="epoch start")
+    _validate_finite_tensors(
+        [("X_t", X_t, "epoch start"), ("P_t", P_t, "epoch start"), ("c_t", c_t, "epoch start")],
+        rollout_step=0,
+    )
 
     for _t in range(config.t_rollout):
-        for name, tensor in (("X_t", X_t), ("P_t", P_t), ("c_t", c_t)):
-            _validate_finite_tensor(name, tensor, rollout_step=_t, phase="pre-graph build")
-
         node_feats, edge_index, edge_feats = build_graph(
             X_t,
             P_t,
@@ -230,39 +240,52 @@ def _run_epoch(
         dX = out["dX"] * config.dt_gns
         dP = out["dP"] * config.dt_gns
         dc = out["dc"] * config.dt_gns
-        for name, tensor in (("dX", dX), ("dP", dP), ("dc", dc)):
-            _validate_finite_tensor(name, tensor, rollout_step=_t, phase="gns output")
 
         loss_l2 = loss_l2 + dX.square().sum()
 
         X_t = X_t + dX
         P_t = torch.nn.functional.normalize(P_t + dP, dim=-1, eps=EPS_POLARITY)
         c_t = torch.clamp_min(c_t + dc, 0.0)
-        for name, tensor in (("X_t", X_t), ("P_t", P_t), ("c_t", c_t)):
-            _validate_finite_tensor(name, tensor, rollout_step=_t, phase="post-gns update")
+        _validate_finite_tensors(
+            [
+                ("dX", dX, "gns output"),
+                ("dP", dP, "gns output"),
+                ("dc", dc, "gns output"),
+                ("X_t", X_t, "post-gns update"),
+                ("P_t", P_t, "post-gns update"),
+                ("c_t", c_t, "post-gns update"),
+            ],
+            rollout_step=_t,
+        )
 
         for _ in range(config.mech_steps):
-            X_t = WarpMechStep.apply(X_t, R_wp, N, config.dt_mech, f_net, grid)
+            X_t = WarpMechStep.apply(X_t, R_wp, N, config.dt_mech, f_net, grid, query_radius)
         _validate_finite_tensor("X_t", X_t, rollout_step=_t, phase="post-mechanics")
 
-        for _ in range(config.diff_steps):
+        if config.diff_steps:
             X_wp_diff = wp.from_torch(X_t.detach().contiguous(), dtype=wp.vec3f)
             c_t = WarpDiffusionStep.apply(
-                c_t, X_wp_diff, R_wp, N, config.D_emu, config.dt_diff, grid
+                c_t,
+                X_wp_diff,
+                R_wp,
+                N,
+                config.D_emu,
+                config.dt_diff,
+                grid,
+                query_radius,
+                config.diff_steps,
             )
         _validate_finite_tensor("c_t", c_t, rollout_step=_t, phase="post-diffusion")
 
-        epoch_trajectory.append(
-            {
-                "pos": X_t.detach().cpu().numpy().copy(),
-                "pol": P_t.detach().cpu().numpy().copy(),
-                "c": c_t.detach().cpu().numpy().copy(),
-            }
-        )
+        frames.append((X_t.detach(), P_t.detach(), c_t.detach()))
 
         if _t in targets_by_frame:
             loss_shape = loss_shape + loss_fn(X_t, targets_by_frame[_t])
 
+    pos, pol, conc = (torch.stack(frame).cpu().numpy() for frame in zip(*frames, strict=True))
+    epoch_trajectory.extend(
+        {"pos": p, "pol": q, "c": r} for p, q, r in zip(pos, pol, conc, strict=True)
+    )
     return loss_shape, loss_l2, epoch_trajectory
 
 
@@ -335,8 +358,10 @@ def train(
         model = model.to(torch_device)
 
     f_net = wp.zeros(N, dtype=wp.vec3f, device=wp_device)
-    R_t = torch.from_numpy(radii.copy()).to(torch_device)
+    # Contact search reads host radii; fixed radii give one query radius for every substep.
+    R_t = torch.from_numpy(radii.copy())
     R_wp = wp.from_numpy(radii.copy(), dtype=wp.float32, device=wp_device)
+    query_radius = _query_radius(R_wp, N)
 
     targets_by_frame: dict[int, torch.Tensor] = {}
     for frame, pos in targets:
@@ -369,6 +394,7 @@ def train(
             R_wp=R_wp,
             f_net=f_net,
             grid=grid,
+            query_radius=query_radius,
             N=N,
             targets_by_frame=targets_by_frame,
             X_source_t=X_source_t,

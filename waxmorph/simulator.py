@@ -11,7 +11,8 @@ from math import isfinite as _isfinite
 
 import warp as wp
 
-from .constants import EPS_DEN, EPS_NORM, FOUR_THIRDS_PI, HASH_GRID_DIM, RAND_EPS
+from .constants import EPS_DEN, EPS_NORM, FOUR_THIRDS_PI, RAND_EPS
+from .emulator import _hash_grid
 
 EPS_DIST = 25e-2
 
@@ -458,7 +459,7 @@ def mech_step_sticky(
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + ATR_EE_CUTOFF
     if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+        grid = _hash_grid(wp.get_device(device).alias)
     grid.build(X[:particle_count], query_radius)
 
     wp.launch(
@@ -724,7 +725,7 @@ def mech_step_sticky_implicit(
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + ATR_EE_CUTOFF
     if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+        grid = _hash_grid(wp.get_device(device).alias)
     grid.build(X[:particle_count], query_radius)
 
     wp.launch(
@@ -971,7 +972,7 @@ def chem_step(
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + EPS_DIST
     if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+        grid = _hash_grid(wp.get_device(device).alias)
     grid.build(X[:particle_count], query_radius)
 
     wp.launch(
@@ -1081,7 +1082,7 @@ def count_neighbors_step(
     r_max = float(R.numpy()[:particle_count].max())
     query_radius = 2.0 * r_max + EPS_DIST
     if grid is None:
-        grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=device)
+        grid = _hash_grid(wp.get_device(device).alias)
     grid.build(X[:particle_count], query_radius)
 
     wp.launch(

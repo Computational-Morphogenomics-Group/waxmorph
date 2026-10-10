@@ -46,10 +46,8 @@ optional-dependencies.dev = [
 optional-dependencies.docs = [
   "myst-nb>=1.1",
   "sphinx>=8.1",
-  "sphinx-autodoc-typehints>=2.3",
   "sphinx-book-theme>=1.1",
   "sphinx-design>=0.6",
-  "sphinxcontrib-bibtex>=2.6",
 ]
 optional-dependencies.jax = [
   "equinox>=0.11",
