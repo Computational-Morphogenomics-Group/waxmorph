@@ -172,7 +172,7 @@ model = GNS(
     checkpoint_processor=True,
 ).to(torch_device)
 
-config = TrainConfig(n_epochs=2000, t_rollout=100)
+config = TrainConfig(n_epochs=2000, t_rollout=100, compile=True)
 loss_fn = make_samples_loss(loss="sinkhorn")
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
@@ -267,7 +267,9 @@ example, `(99, target_pos)` supervises the state after 100 complete rollout
 steps under `TrainConfig(t_rollout=100)`. Molecule diffusion during the rollout is
 controlled by `TrainConfig.D_emu`; `TrainConfig.lambda_reg` weights the squared
 learned position increments before mechanics. The corresponding concentration
-trajectory is recorded in `result.log["best_traj_c"]`.
+trajectory is recorded in `result.log["best_traj_c"]`. `TrainConfig(compile=True)`
+runs the GNS through `torch.compile`: the first epoch compiles, later epochs run
+faster, and results match eager mode up to floating-point rounding.
 
 The JAX/Equinox backend follows the corresponding workflow with explicit backend
 imports:

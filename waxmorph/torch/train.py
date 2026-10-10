@@ -42,8 +42,10 @@ class TrainConfig:
 
     The regularizer measures learned displacement before the mechanics correction.
     ``grad_clip_norm`` caps the global L2 gradient norm; ``None`` keeps the computed gradients.
-    ``log_every`` controls progress output. JAX adds ``max_edges_factor`` for its static edge
-    capacity.
+    ``log_every`` controls progress output. ``compile`` runs the GNS through
+    :func:`torch.compile` with dynamic shapes: the first epoch compiles (tens of seconds), later
+    epochs run faster, and results match eager mode up to floating-point rounding. JAX adds
+    ``max_edges_factor`` for its static edge capacity and always compiles.
 
     Examples:
         >>> cfg = TrainConfig(n_epochs=3, t_rollout=2)
@@ -62,6 +64,7 @@ class TrainConfig:
     lambda_reg: float = 1e-3
     grad_clip_norm: float | None = 1.0
     log_every: int = 10
+    compile: bool = False
 
 
 @dataclasses.dataclass
@@ -75,7 +78,8 @@ class TrainResult:
     ``best_traj_pol`` have shape ``[t_rollout + 1, N, 3]``; ``best_traj_c`` has shape
     ``[t_rollout + 1, N, C]``. ``best_epoch`` is zero-based; other metadata keys are
     ``best_loss``, sorted ``target_frames``, and one ``config_<field>`` per
-    :class:`TrainConfig` field. JAX adds ``config_max_edges_factor``.
+    :class:`TrainConfig` field. Torch logs ``config_compile``; JAX logs
+    ``config_max_edges_factor``.
     """
 
     model: Any
@@ -381,11 +385,13 @@ def train(
     best_l2_loss = 0.0
 
     grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=wp_device)
+    # The rollout calls the compiled wrapper; it shares parameters with `model`.
+    forward = torch.compile(model, dynamic=True) if config.compile else model
 
     def evaluate_model(*, epoch, phase):
         epoch_trajectory = [{"pos": source_pos.copy(), "pol": polarities.copy(), "c": c.copy()}]
         loss_shape, loss_l2, epoch_trajectory = _run_epoch(
-            model=model,
+            model=forward,
             config=config,
             source_pos=source_pos,
             polarities=polarities,
