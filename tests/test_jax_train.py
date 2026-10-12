@@ -145,7 +145,6 @@ def test_batched_epoch_accumulates_loss_across_tagged_frames():
         mech_steps=0,
         diff_steps=0,
         dt_gns=0.0,
-        log_every=1,
     )
     target_a = jnp.asarray(source_pos + 0.1)
     target_b = jnp.asarray(source_pos + 0.3)
@@ -187,7 +186,6 @@ def test_batched_epoch_frame_zero_supervises_post_step_state():
         mech_steps=0,
         diff_steps=0,
         dt_gns=1.0,
-        log_every=1,
     )
     target_frame0 = jnp.asarray(source_pos + 0.25)
 
@@ -214,7 +212,6 @@ def test_train_uses_max_edges_factor_for_padded_topology_capacity():
         diff_steps=0,
         dt_gns=0.0,
         grad_clip_norm=None,
-        log_every=1,
         max_edges_factor=1,
     )
     optimizer = optax.sgd(learning_rate=0.0)
@@ -366,7 +363,7 @@ def test_train_logs_post_update_model_rollouts(monkeypatch, device, n_epochs):
         dt_gns=1.0,
         lambda_reg=0.0,
         grad_clip_norm=None,
-        log_every=n_epochs + 1,
+        max_increase=None,
     )
 
     result = jax_train_module.train(
@@ -387,7 +384,8 @@ def test_train_logs_post_update_model_rollouts(monkeypatch, device, n_epochs):
     expected_losses = source_pos.size * np.square(weights[1:])
     expected_platform = "gpu" if device == "cuda" else "cpu"
     assert len(evaluations) == n_epochs + 1
-    assert len(train_steps) == n_epochs
+    # The last train step only evaluates the final model; its update is discarded.
+    assert len(train_steps) == n_epochs + 1
     assert {platform for _weight, platform in evaluations} == {expected_platform}
     assert result.model.weight.device.platform == expected_platform
     assert all(before != after for before, after in train_steps)
@@ -459,7 +457,6 @@ def test_train_rejects_nonfinite_post_update_loss():
                 dt_gns=1.0,
                 lambda_reg=0.0,
                 grad_clip_norm=None,
-                log_every=2,
             ),
             device="cpu",
         )
@@ -545,7 +542,6 @@ def test_native_collection_reuses_diffusion_pairs_and_returns_finite_trajectory(
         mech_steps=1,
         diff_steps=2,
         dt_gns=0.0,
-        log_every=1,
     )
     with jax.default_device(jax.devices("gpu")[0]):
         X = jnp.asarray(source_pos)
@@ -618,7 +614,6 @@ def _train_from_checkpoint(model, optimizer, opt_state, save_path, device="cpu")
             diff_steps=0,
             lambda_reg=0.0,
             grad_clip_norm=None,
-            log_every=10,
         ),
         save_path=save_path,
         device=device,
@@ -658,7 +653,6 @@ def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monk
     stale_state = {"count": jnp.array(99, dtype=jnp.int32)}
     source_pos, polarities, c, _ = _minimal_inputs()
     collected_models = []
-    evaluated_models = []
     step_calls = []
 
     def collect_topologies(*, model, **_kwargs):
@@ -684,6 +678,9 @@ def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monk
             return (
                 updated_model,
                 {"count": scalar(1, jnp.int32)},
+                jax.tree.map(
+                    lambda value: jnp.full_like(value, 1e-3), eqx.filter(model, eqx.is_array)
+                ),
                 scalar(1.0, jnp.float32),
                 scalar(1.0, jnp.float32),
                 scalar(0.0, jnp.float32),
@@ -694,18 +691,9 @@ def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monk
 
         return train_step
 
-    def evaluate_batch(*, model, **_kwargs):
-        evaluated_models.append(model)
-        first_leaf = jax_train_module._array_leaves(model)[0]
-        return (
-            jax.device_put(jnp.array(1.0, dtype=jnp.float32), first_leaf.device),
-            jax.device_put(jnp.array(0.0, dtype=jnp.float32), first_leaf.device),
-        )
-
     monkeypatch.setattr(jax_train_module, "_collect_topologies_and_trajectory", collect_topologies)
     monkeypatch.setattr(jax_train_module, "_stack_topologies", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(jax_train_module, "_make_train_step", make_train_step)
-    monkeypatch.setattr(jax_train_module, "_epoch_loss_with_topology_batch", evaluate_batch)
 
     result = _train_from_checkpoint(
         _checkpoint_model(), optimizer, stale_state, checkpoint_path, device=device
@@ -713,8 +701,9 @@ def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monk
 
     assert len(init_calls) == 1
     assert len(collected_models) == 2
-    assert len(step_calls) == len(evaluated_models) == 1
-    assert collected_models[1] is evaluated_models[0] is result.model
+    # The second train step only evaluates the refined model.
+    assert len(step_calls) == 2
+    assert collected_models[1] is step_calls[1][0] is result.model
     expected_platform = "gpu" if device == "cuda" else "cpu"
     assert init_state_platforms == [expected_platform]
     for collected_model in collected_models:

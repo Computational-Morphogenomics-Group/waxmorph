@@ -22,6 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
@@ -50,8 +51,10 @@ optional-dependencies.docs = [
   "sphinx-design>=0.6",
 ]
 optional-dependencies.jax = [
+  "chex",
   "equinox>=0.11",
   "jax>=0.4.30",
+  "jaxtyping",
   "optax>=0.2",
   "ott-jax>=0.4",
   "waxmorph[simulation]",
@@ -63,6 +66,7 @@ optional-dependencies.jax-cuda = [
 optional-dependencies.learning = [
   "geomloss>=0.2.6",
   "pykeops>=2.1",
+  "pytorch-optimizer>=4",
   "waxmorph[simulation]",
 ]
 # ---------------------------------------------------------------------------
@@ -111,6 +115,8 @@ extend-exclude = """/(
   | docs/_build
 )/
 """
+# Third-party code kept verbatim.
+force-exclude = "waxmorph/jax/soap_jax\\.py"
 
 # ---------------------------------------------------------------------------
 # Ruff
@@ -124,7 +130,9 @@ extend-exclude = [
   "MeshStarts",
   "OLD",
   "Output",
+  "waxmorph/jax/soap_jax.py",
 ]
+force-exclude = true
 # ---------------------------------------------------------------------------
 # Ruff lint
 # ---------------------------------------------------------------------------
@@ -139,7 +147,7 @@ lint.per-file-ignores."waxmorph/simulator.py" = [ "E741", "RUF059" ]
 lint.isort.known-first-party = [ "waxmorph" ]
 
 [tool.pyproject-fmt]
-max_supported_python = "3.13"
+max_supported_python = "3.14"
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]
@@ -150,6 +158,7 @@ ini_options.filterwarnings = [
 
 [tool.coverage]
 run.source = [ "waxmorph" ]
+run.omit = [ "waxmorph/jax/soap_jax.py" ]
 # ---------------------------------------------------------------------------
 # Coverage
 # ---------------------------------------------------------------------------

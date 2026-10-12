@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import os
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ import torch
 import warp as wp
 from tqdm import trange
 
-from waxmorph._train_core import _prepare_training_inputs
+from waxmorph._train_core import _backtrack, _prepare_training_inputs
 from waxmorph.constants import EPS_POLARITY, HASH_GRID_DIM
 from waxmorph.emulator import _query_radius
 from waxmorph.torch.gnn import GNS
@@ -42,7 +43,12 @@ class TrainConfig:
 
     The regularizer measures learned displacement before the mechanics correction.
     ``grad_clip_norm`` caps the global L2 gradient norm; ``None`` keeps the computed gradients.
-    ``log_every`` controls progress output. ``compile`` runs the GNS through
+    ``trainer="epochs"`` runs all ``n_epochs`` updates; ``trainer="patience"`` stops earlier once
+    ``patience`` updates in a row lower the best loss by at most ``convergence_threshold``.
+    An update that raises the loss by more than ``max_increase`` is shrunk by backtracking
+    (factor 0.8, at most 15 times, one rollout each), which removes loss spikes; ``None`` keeps
+    every update.
+    A progress bar shows each epoch's loss terms and the best loss. ``compile`` runs the GNS through
     :func:`torch.compile` with dynamic shapes: the first epoch compiles (tens of seconds), later
     epochs run faster, and results match eager mode up to floating-point rounding. JAX adds
     ``max_edges_factor`` for its static edge capacity and always compiles.
@@ -63,7 +69,10 @@ class TrainConfig:
     D_emu: float = 0.1
     lambda_reg: float = 1e-3
     grad_clip_norm: float | None = 1.0
-    log_every: int = 10
+    trainer: str = "epochs"
+    patience: int = 100
+    convergence_threshold: float = 1e-3
+    max_increase: float | None = 0.3
     compile: bool = False
 
 
@@ -72,7 +81,7 @@ class TrainResult:
     """Best post-update model and its training log.
 
     The supplied optimizer state is restored alongside ``model``. ``losses_total``,
-    ``losses_shape``, and ``losses_l2`` are length-``n_epochs`` post-update histories; shape
+    ``losses_shape``, and ``losses_l2`` hold one post-update entry per update; shape
     loss sums supervised frames and L2 is the unweighted learned-displacement regularizer.
     ``best_traj_pos`` and
     ``best_traj_pol`` have shape ``[t_rollout + 1, N, 3]``; ``best_traj_c`` has shape
@@ -335,6 +344,7 @@ def train(
     source_pos, polarities, c, radii, targets = _prepare_training_inputs(
         config, source_pos, polarities, c, radii, targets
     )
+    stops_early = {"epochs": False, "patience": True}[config.trainer]
 
     wp_device = device
     torch_device = torch.device(device)
@@ -381,8 +391,6 @@ def train(
     best_optimizer_state = None
     best_trajectory = None
     best_epoch = 0
-    best_shape_loss = 0.0
-    best_l2_loss = 0.0
 
     grid = wp.HashGrid(HASH_GRID_DIM, HASH_GRID_DIM, HASH_GRID_DIM, device=wp_device)
     # The rollout calls the compiled wrapper; it shares parameters with `model`.
@@ -417,12 +425,24 @@ def train(
                 )
         return loss, loss_shape, loss_l2, epoch_trajectory
 
+    params = list(model.parameters())
+
+    def evaluate_candidate(before, after, epoch, step_size):
+        if step_size < 1:
+            with torch.no_grad():
+                for param, start, end in zip(params, before, after, strict=True):
+                    param.copy_(start.lerp(end, step_size))
+        evaluation = evaluate_model(epoch=epoch, phase="post-update evaluation")
+        return evaluation[0].item(), evaluation
+
     optimizer.zero_grad(set_to_none=True)
     loss, loss_shape, loss_l2, epoch_trajectory = evaluate_model(
         epoch=0, phase="pre-update evaluation"
     )
+    epoch_loss, stalled, step_size = loss.item(), 0, 1.0
 
-    for epoch in trange(config.n_epochs):
+    progress = trange(config.n_epochs, desc="Training", unit="epoch", dynamic_ncols=True)
+    for epoch in progress:
         loss.backward()
         _raise_on_nonfinite_named_tensors(
             "gradients",
@@ -433,6 +453,7 @@ def train(
         if config.grad_clip_norm is not None:
             _clip_grad_norm_stable(model.named_parameters(), config.grad_clip_norm, epoch=epoch)
 
+        before = [param.detach().clone() for param in params]
         optimizer.step()
         _raise_on_nonfinite_named_tensors(
             "parameters",
@@ -441,33 +462,43 @@ def train(
             phase="post-optimizer step",
         )
         optimizer.zero_grad(set_to_none=True)
+        after = [param.detach().clone() for param in params]
 
         with torch.set_grad_enabled(epoch + 1 < config.n_epochs):
-            loss, loss_shape, loss_l2, epoch_trajectory = evaluate_model(
-                epoch=epoch, phase="post-update evaluation"
+            epoch_loss, evaluation, step_size = _backtrack(
+                partial(evaluate_candidate, before, after, epoch),
+                epoch_loss,
+                config.max_increase,
+                step_size,
             )
+        loss, loss_shape, loss_l2, epoch_trajectory = evaluation
 
-        epoch_loss = loss.item()
         epoch_shape_loss = loss_shape.item()
         epoch_l2_loss = loss_l2.item()
         losses_total.append(epoch_loss)
         losses_shape.append(epoch_shape_loss)
         losses_l2.append(epoch_l2_loss)
 
+        stalled = 0 if best_loss - epoch_loss > config.convergence_threshold else stalled + 1
         if epoch_loss < best_loss:
             best_loss = epoch_loss
-            best_shape_loss = epoch_shape_loss
-            best_l2_loss = epoch_l2_loss
             best_model_state = copy.deepcopy(model.state_dict())
             best_optimizer_state = copy.deepcopy(optimizer.state_dict())
             best_trajectory = epoch_trajectory
             best_epoch = epoch
 
-        if (epoch + 1) % config.log_every == 0:
-            print(
-                f"Epoch {epoch + 1:4d}/{config.n_epochs}  "
-                f"best={best_loss:.4f}  shape={best_shape_loss:.4f}  l2={best_l2_loss:.4f}"
-            )
+        progress.set_postfix(
+            loss=f"{epoch_loss:.4f}",
+            shape=f"{epoch_shape_loss:.4f}",
+            l2=f"{epoch_l2_loss:.4f}",
+            best=f"{best_loss:.4f}",
+            best_epoch=best_epoch,
+            patience=f"{stalled}/{config.patience}" if stops_early else "off",
+            refresh=False,
+        )
+        if stops_early and stalled >= config.patience:
+            break
+    progress.close()
 
     model.load_state_dict(best_model_state)
     optimizer.load_state_dict(best_optimizer_state)

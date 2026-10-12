@@ -139,7 +139,6 @@ def test_torch_run_epoch_uses_live_torch_graph_inputs(monkeypatch):
         t_rollout=1,
         mech_steps=0,
         diff_steps=0,
-        log_every=1,
     )
 
     loss_shape, loss_l2, _trajectory = torch_train_module._run_epoch(
@@ -208,7 +207,6 @@ def test_torch_run_epoch_clamps_genes_nonnegative_after_dg_update():
         mech_steps=0,
         diff_steps=0,
         dt_gns=1.0,
-        log_every=1,
     )
 
     loss_shape, loss_l2, trajectory = torch_train_module._run_epoch(
@@ -282,7 +280,6 @@ def test_train_raises_before_optimizer_step_on_nonfinite_gradients():
         mech_steps=0,
         diff_steps=0,
         dt_gns=1.0,
-        log_every=1,
     )
 
     with pytest.raises(ValueError, match=r"model gradients.*scale"):

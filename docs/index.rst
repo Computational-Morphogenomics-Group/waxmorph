@@ -82,6 +82,16 @@ Explore
       Development setup, testing across both backends, and the conventions your
       changes should follow.
 
+Third-party code
+----------------
+
+``waxmorph.jax.soap_jax`` is borrowed from `SOAP_JAX <https://github.com/haydn-jones/SOAP_JAX>`_
+by Haydn Jones (release v0.2.2), copied without modification under its MIT license, which is
+reproduced at the top of the file. All credit for that code goes to its author. SOAP was
+introduced by `Vyas et al. (2024) <https://arxiv.org/abs/2409.11321>`_; the PyTorch examples
+use the SOAP implementation of `pytorch-optimizer <https://github.com/kozistr/pytorch_optimizer>`_,
+installed by the ``learning`` extra.
+
 Citation
 --------
 

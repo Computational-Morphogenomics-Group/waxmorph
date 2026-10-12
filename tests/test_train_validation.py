@@ -35,7 +35,6 @@ def _config(module):
         t_rollout=2,
         mech_steps=0,
         diff_steps=0,
-        log_every=1,
     )
 
 
@@ -66,9 +65,6 @@ def _call_train(backend, *, config=None, targets=_DEFAULT_TARGETS, **updates):
         ("t_rollout", True, TypeError),
         ("t_rollout", 1.5, TypeError),
         ("t_rollout", 0, ValueError),
-        ("log_every", True, TypeError),
-        ("log_every", 1.5, TypeError),
-        ("log_every", 0, ValueError),
         ("mech_steps", True, TypeError),
         ("mech_steps", 1.5, TypeError),
         ("mech_steps", -1, ValueError),
@@ -169,7 +165,6 @@ def test_prepare_training_inputs_normalizes_float32_contiguous_without_changing_
         t_rollout=np.int64(2),
         mech_steps=np.int64(0),
         diff_steps=np.int64(0),
-        log_every=np.int64(1),
     )
     values = _inputs()
     values["source_pos"] = np.asfortranarray(values["source_pos"])

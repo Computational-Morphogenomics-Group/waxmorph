@@ -82,7 +82,6 @@ def _train_from_checkpoint(model, optimizer, save_path, device="cpu"):
             diff_steps=0,
             lambda_reg=0.0,
             grad_clip_norm=None,
-            log_every=10,
         ),
         save_path=save_path,
         device=device,
@@ -142,7 +141,7 @@ def _train_scalar(model, optimizer, *, n_epochs, device="cpu", loss_fn=squared_l
             dt_gns=1.0,
             lambda_reg=0.0,
             grad_clip_norm=None,
-            log_every=n_epochs + 1,
+            max_increase=None,
         ),
         device=device,
     )
@@ -274,7 +273,6 @@ def test_run_epoch_accumulates_loss_across_tagged_frames():
         mech_steps=0,
         diff_steps=0,
         dt_gns=0.0,  # freeze physics so X_t stays at source_pos
-        log_every=1,
     )
 
     target_a = torch.from_numpy(source_pos + 0.1)
@@ -320,7 +318,6 @@ def test_run_epoch_skips_untagged_frames():
         mech_steps=0,
         diff_steps=0,
         dt_gns=0.0,
-        log_every=1,
     )
 
     torch.manual_seed(0)
@@ -367,7 +364,6 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
         mech_steps=0,
         diff_steps=0,
         dt_gns=1.0,
-        log_every=1,
     )
 
     target_frame0 = torch.from_numpy(source_pos + 0.25)

@@ -114,6 +114,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import warp as wp
+from pytorch_optimizer import SOAP
 
 from waxmorph.data import sample_mesh_pair
 from waxmorph.gnn import GNS
@@ -174,7 +175,7 @@ model = GNS(
 
 config = TrainConfig(n_epochs=2000, t_rollout=100, compile=True)
 loss_fn = make_samples_loss(loss="sinkhorn")
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+optimizer = SOAP(model.parameters(), lr=1e-3)
 
 result = train(
     model,
@@ -270,6 +271,11 @@ learned position increments before mechanics. The corresponding concentration
 trajectory is recorded in `result.log["best_traj_c"]`. `TrainConfig(compile=True)`
 runs the GNS through `torch.compile`: the first epoch compiles, later epochs run
 faster, and results match eager mode up to floating-point rounding.
+`TrainConfig(trainer="patience")` stops once `patience` updates in a row lower the
+best loss by at most `convergence_threshold`; the default `trainer="epochs"` runs all
+`n_epochs` updates. An update that raises the loss by more than `max_increase`
+(default 0.3) is shrunk by a backtracking line search, which removes loss spikes;
+`max_increase=None` keeps every update. Both backends share these options.
 
 The JAX/Equinox backend follows the corresponding workflow with explicit backend
 imports:
@@ -278,13 +284,16 @@ imports:
 from waxmorph.jax.gnn import GNS
 from waxmorph.jax.graph import build_graph
 from waxmorph.jax.losses import make_sinkhorn_loss
+from waxmorph.jax.soap_jax import soap
 from waxmorph.jax.train import TrainConfig, train
 ```
 
 On the JAX backend, `build_graph` additionally returns the active edge count as
 `(node_features, edge_index, edge_features, num_edges)`, and the training call
-takes an Optax optimizer and optimizer state. The JAX backend is appropriate
-when downstream analysis already depends on JAX, Equinox, or Optax, or when
+takes an Optax optimizer and optimizer state, such as
+`soap(1e-3, weight_decay=1e-4)` from the bundled SOAP_JAX (see
+[Third-party code](#third-party-code)). The JAX backend is appropriate when
+downstream analysis already depends on JAX, Equinox, or Optax, or when
 static-shape compilation is required.
 
 ## Rendering workflow
@@ -302,6 +311,17 @@ explicit RGB colors. For live simulations, `write_frame_from_state` takes Warp
 arrays, and `morph="A"`, `morph="I"`, or `morph="ratio"` colors particles by the
 activator, the inhibitor, or the activator fraction `A/(A+I)` of the
 reaction-diffusion state.
+
+## Third-party code
+
+`waxmorph/jax/soap_jax.py` is borrowed from
+[SOAP_JAX](https://github.com/haydn-jones/SOAP_JAX) by Haydn Jones (release
+v0.2.2), copied without modification under its MIT license, which is reproduced
+at the top of the file. All credit for that code goes to its author. SOAP was
+introduced by [Vyas et al. (2024)](https://arxiv.org/abs/2409.11321); the
+PyTorch examples use the SOAP implementation of
+[pytorch-optimizer](https://github.com/kozistr/pytorch_optimizer), installed by
+the `learning` extra.
 
 ## Citation
 

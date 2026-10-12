@@ -114,7 +114,7 @@ class GNS(nn.Module):
         num_mp_steps: int = 10,
         num_mlp_layers: int = 2,
         output_dims: dict[str, int] | None = None,
-        activation: str = "silu",
+        activation: str = "relu",
         layer_norm: bool = True,
         checkpoint_processor: bool = False,
     ):

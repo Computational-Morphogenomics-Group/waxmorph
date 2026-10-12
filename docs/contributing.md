@@ -38,6 +38,11 @@ Pre-commit hooks enforce style automatically:
 pre-commit run --all-files
 ```
 
+`waxmorph/jax/soap_jax.py` is third-party code, copied unmodified from
+[SOAP_JAX](https://github.com/haydn-jones/SOAP_JAX) by Haydn Jones; ruff,
+black, and coverage skip it. Do not edit it; update it only by copying a newer
+upstream release and its version and commit into the file's header.
+
 ## Pull requests
 
 1. Create a feature branch from `main`.

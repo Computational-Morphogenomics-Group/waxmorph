@@ -20,9 +20,11 @@ Install an extra with ``pip install "waxmorph[<extra>]"``.
    Mesh sampling and rendering: trimesh, Matplotlib, PyVista, VTK, pyglet, imageio, hsluv, and
    ``usd-core``.
 ``learning``
-   GeomLoss and PyKeOps for ``make_samples_loss``, plus ``simulation``.
+   GeomLoss and PyKeOps for ``make_samples_loss``, pytorch-optimizer for SOAP, plus
+   ``simulation``.
 ``jax``
-   JAX, Equinox, Optax, and ott-jax, plus ``simulation``.
+   JAX, Equinox, Optax, ott-jax, and chex and jaxtyping for the bundled SOAP_JAX optimizer
+   (``waxmorph.jax.soap_jax``), plus ``simulation``.
 ``jax-cuda``
    CUDA 12 JAX, plus ``jax``.
 ``all``

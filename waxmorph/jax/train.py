@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import os
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -13,9 +14,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from tqdm import trange
+from tqdm import tqdm
 
-from waxmorph._train_core import _prepare_training_inputs
+from waxmorph._train_core import _backtrack, _prepare_training_inputs
 from waxmorph.constants import EPS_POLARITY
 from waxmorph.jax.gnn import GNS as JaxGNS
 from waxmorph.jax.graph import (
@@ -47,9 +48,13 @@ class TrainConfig:
         \lVert \Delta t_{GNS}\,GNS_{X,t}\rVert_F^2,
 
     where the displacement term is measured before mechanics. ``grad_clip_norm=None`` keeps
-    the computed gradients. JAX adds ``max_edges_factor``: both directed-edge and
-    neighbor-pair buffers are bounded by ``N * max_edges_factor``; overflow raises while
-    preserving the configured static shape.
+    the computed gradients. ``trainer="epochs"`` runs all ``n_epochs`` updates;
+    ``trainer="patience"`` stops earlier once ``patience`` updates in a row lower the best loss
+    by at most ``convergence_threshold``. An update that raises the loss by more than
+    ``max_increase`` is shrunk by backtracking (factor 0.8, at most 15 times, one rollout each),
+    which removes loss spikes; ``None`` keeps every update. JAX adds ``max_edges_factor``: both
+    directed-edge and neighbor-pair buffers are bounded by ``N * max_edges_factor``; overflow
+    raises while preserving the configured static shape.
 
     Examples:
         >>> cfg = TrainConfig(n_epochs=3, t_rollout=2)
@@ -67,7 +72,10 @@ class TrainConfig:
     D_emu: float = 0.1
     lambda_reg: float = 1e-3
     grad_clip_norm: float | None = 1.0
-    log_every: int = 10
+    trainer: str = "epochs"
+    patience: int = 100
+    convergence_threshold: float = 1e-3
+    max_increase: float | None = 0.3
     max_edges_factor: int = 10
 
 
@@ -75,8 +83,8 @@ class TrainConfig:
 class TrainResult:
     """Best post-update model and its run diagnostics.
 
-    ``losses_total``, ``losses_shape``, and unweighted ``losses_l2`` each have length
-    ``n_epochs`` and describe post-update rollouts. The best trajectory includes the source
+    ``losses_total``, ``losses_shape``, and unweighted ``losses_l2`` hold one entry per update
+    and describe post-update rollouts. The best trajectory includes the source
     frame and has shapes ``[t_rollout+1, N, 3]`` for ``best_traj_pos`` and
     ``best_traj_pol``, and ``[t_rollout+1, N, num_molecules]`` for ``best_traj_c``.
     ``best_epoch`` is zero-based; ``best_loss`` matches that model and trajectory.
@@ -955,9 +963,19 @@ def _make_train_step(
             opt_state,
             eqx.filter(model, eqx.is_array),
         )
-        model = eqx.apply_updates(model, updates)
-        params_finite = _tree_all_finite(model)
-        return model, opt_state, loss, loss_shape, loss_l2, grad_norm, grads_finite, params_finite
+        new_model = eqx.apply_updates(model, updates)
+        params_finite = _tree_all_finite(new_model)
+        return (
+            new_model,
+            opt_state,
+            updates,
+            loss,
+            loss_shape,
+            loss_l2,
+            grad_norm,
+            grads_finite,
+            params_finite,
+        )
 
     return train_step
 
@@ -1011,6 +1029,7 @@ def train(
     source_pos, polarities, c, radii, targets = _prepare_training_inputs(
         config, source_pos, polarities, c, radii, targets
     )
+    stops_early = {"epochs": False, "patience": True}[config.trainer]
 
     N = len(source_pos)
     jax_device = _resolve_jax_device(device, require_cuda=_uses_warp_bridge(config))
@@ -1036,7 +1055,6 @@ def train(
 
     losses_total, losses_shape, losses_l2 = [], [], []
     best_loss, best_model, best_trajectory, best_epoch = float("inf"), None, None, 0
-    best_shape_loss = best_l2_loss = 0.0
     max_pairs = _max_edges_for_config(config, N)
     train_step = _make_train_step(
         config=config,
@@ -1063,36 +1081,33 @@ def train(
         return batch, trajectory
 
     def record_evaluation(epoch, candidate_model, trajectory, values):
-        nonlocal best_loss, best_model, best_trajectory, best_epoch, best_shape_loss, best_l2_loss
+        nonlocal best_loss, best_model, best_trajectory, best_epoch, stalled
         epoch_loss, epoch_shape_loss, epoch_l2_loss = values
         losses_total.append(epoch_loss)
         losses_shape.append(epoch_shape_loss)
         losses_l2.append(epoch_l2_loss)
 
+        stalled = 0 if best_loss - epoch_loss > config.convergence_threshold else stalled + 1
         if epoch_loss < best_loss:
-            best_loss, best_shape_loss, best_l2_loss = values
+            best_loss = epoch_loss
             best_model, best_trajectory, best_epoch = candidate_model, trajectory, epoch
 
-        if (epoch + 1) % config.log_every == 0:
-            print(
-                f"Epoch {epoch + 1:4d}/{config.n_epochs}  "
-                f"best={best_loss:.4f}  shape={best_shape_loss:.4f}  l2={best_l2_loss:.4f}"
-            )
+        progress.set_postfix(
+            loss=f"{epoch_loss:.4f}",
+            shape=f"{epoch_shape_loss:.4f}",
+            l2=f"{epoch_l2_loss:.4f}",
+            best=f"{best_loss:.4f}",
+            best_epoch=best_epoch,
+            patience=f"{stalled}/{config.patience}" if stops_early else "off",
+            refresh=False,
+        )
+        progress.update(1)
 
-    topology_batch, epoch_trajectory = collect_model(model)
-    for epoch in trange(config.n_epochs):
-        pre_update_model = model
-        (
-            model,
-            opt_state,
-            loss,
-            loss_shape,
-            loss_l2,
-            grad_norm,
-            grads_finite,
-            params_finite,
-        ) = train_step(
-            model,
+    def evaluate(candidate_model, opt_state, epoch, phase):
+        """Return the loss of ``candidate_model`` and, from the same rollout, its next update."""
+        topology_batch, trajectory = collect_model(candidate_model)
+        new_model, opt_state, updates, loss, loss_shape, loss_l2, grad_norm, *finite = train_step(
+            candidate_model,
             opt_state,
             X_source,
             P_source,
@@ -1100,15 +1115,9 @@ def train(
             R,
             topology_batch,
         )
-
-        loss_values = _checked_loss_values(
-            loss,
-            loss_shape,
-            loss_l2,
-            epoch=0 if epoch == 0 else epoch - 1,
-            phase="pre-update evaluation" if epoch == 0 else "post-update evaluation",
-        )
-        if not bool(jax.device_get(grads_finite)):
+        values = _checked_loss_values(loss, loss_shape, loss_l2, epoch=epoch, phase=phase)
+        grads_finite, params_finite = (bool(jax.device_get(flag)) for flag in finite)
+        if not grads_finite:
             raise ValueError(
                 f"Non-finite values detected in model gradients during post-backward "
                 f"at epoch {epoch}."
@@ -1118,46 +1127,33 @@ def train(
                 f"Non-finite gradient norm after clipping at epoch {epoch}: "
                 f"grad_norm={float(grad_norm)!r}"
             )
-        if not bool(jax.device_get(params_finite)):
+        if not params_finite:
             raise ValueError(
                 f"Non-finite values detected in model parameters during post-optimizer step "
                 f"at epoch {epoch}."
             )
+        return values[0], (candidate_model, trajectory, values, (new_model, opt_state, updates))
 
-        if epoch > 0:
-            record_evaluation(
-                epoch - 1,
-                pre_update_model,
-                epoch_trajectory,
-                loss_values,
-            )
-        if epoch + 1 < config.n_epochs:
-            topology_batch, epoch_trajectory = collect_model(model)
+    def evaluate_candidate(model, update, epoch, step_size):
+        new_model, opt_state, updates = update
+        if step_size < 1:
+            new_model = eqx.apply_updates(model, jax.tree.map(lambda u: step_size * u, updates))
+        return evaluate(new_model, opt_state, epoch, "post-update evaluation")
 
-    topology_batch, final_trajectory = collect_model(model)
-    with jax.default_device(jax_device):
-        final_shape_loss, final_l2_loss = _epoch_loss_with_topology_batch(
-            model=model,
-            config=config,
-            X_source=X_source,
-            P_source=P_source,
-            c_source=c_source,
-            R=R,
-            particle_count=N,
-            targets_by_frame=targets_by_frame,
-            topology_batch=topology_batch,
-            loss_fn=loss_fn,
-            device=device,
+    stalled, step_size = 0, 1.0
+    progress = tqdm(total=config.n_epochs, desc="Training", unit="epoch", dynamic_ncols=True)
+    loss, (*_, update) = evaluate(model, opt_state, 0, "pre-update evaluation")
+    for epoch in range(config.n_epochs):
+        loss, (model, trajectory, values, update), step_size = _backtrack(
+            partial(evaluate_candidate, model, update, epoch),
+            loss,
+            config.max_increase,
+            step_size,
         )
-        final_loss = final_shape_loss + (final_l2_loss * config.lambda_reg)
-    final_values = _checked_loss_values(
-        final_loss,
-        final_shape_loss,
-        final_l2_loss,
-        epoch=config.n_epochs - 1,
-        phase="post-update evaluation",
-    )
-    record_evaluation(config.n_epochs - 1, model, final_trajectory, final_values)
+        record_evaluation(epoch, model, trajectory, values)
+        if stops_early and stalled >= config.patience:
+            break
+    progress.close()
 
     log = {
         "losses_total": np.array(losses_total),

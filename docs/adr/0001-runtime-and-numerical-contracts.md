@@ -26,7 +26,10 @@ below define how they compose numerically and what release acceptance requires.
    ties remain nonsmooth and follow backend-specific gradient conventions.
 4. `n_epochs` counts optimizer updates. Histories and model selection describe
    the resulting models, requiring one extra evaluation. The returned model,
-   best loss, epoch, and trajectory refer to the same post-update state.
+   best loss, epoch, and trajectory refer to the same post-update state. An
+   update that raises the loss by more than `max_increase` is shrunk by
+   backtracking before it is accepted, and `trainer="patience"` may stop before
+   `n_epochs` updates.
 5. Top-level imports eagerly expose the default Torch API. NumPy, SciPy, Torch,
    tqdm, and Warp are core dependencies; JAX, GeomLoss, and rendering stacks
    remain optional.
@@ -46,7 +49,7 @@ below define how they compose numerically and what release acceptance requires.
 - Growth passes through incoming radii at or above their targets.
 - The initial model evaluation supplies the first gradient. The updated models
   form the selection candidates, and evaluation cost is one rollout greater
-  than the update count.
+  than the update count, plus one rollout per backtracking shrink.
 - Differentiation follows a piecewise-smooth surrogate within each fixed
   topology.
 - Eager imports provide an unconditional default API with its core dependency

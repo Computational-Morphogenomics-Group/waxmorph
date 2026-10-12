@@ -12,9 +12,16 @@ _INTEGER_MINIMUMS = {
     "t_rollout": 1,
     "mech_steps": 0,
     "diff_steps": 0,
-    "log_every": 1,
+    "patience": 1,
 }
-_NONNEGATIVE_SCALARS = ("dt_mech", "dt_diff", "dt_gns", "D_emu", "lambda_reg")
+_NONNEGATIVE_SCALARS = (
+    "dt_mech",
+    "dt_diff",
+    "dt_gns",
+    "D_emu",
+    "lambda_reg",
+    "convergence_threshold",
+)
 
 
 def _validate_train_config(config: Any) -> None:
@@ -33,6 +40,34 @@ def _validate_train_config(config: Any) -> None:
 
     if config.grad_clip_norm is not None:
         _validate_real_scalar("grad_clip_norm", config.grad_clip_norm, minimum=0.0, strict=True)
+    if config.max_increase is not None:
+        _validate_real_scalar("max_increase", config.max_increase, minimum=0.0)
+
+
+def _backtrack(evaluate, reference: float, max_increase: float | None, step_size: float):
+    """Shrink an update until its loss rises by at most ``max_increase``, as optax's backtracking.
+
+    Step sizes ``min(1.5 * step_size, 1) * 0.8**k`` are tried for ``k = 0, ..., 15``; the first
+    within ``reference + max_increase`` is kept, else the last. ``None`` keeps the full update.
+
+    Args:
+        evaluate: Maps a step size in ``(0, 1]`` to ``(loss, result)`` of the scaled update.
+        reference: Loss before the update.
+        max_increase: Largest accepted loss increase, or ``None``.
+        step_size: Step size kept by the previous search, 1 for the first.
+
+    Returns:
+        ``(loss, result, step_size)`` of the kept update; a failed search returns step size 1,
+        so the next search starts from the full update.
+    """
+    start = min(1.5 * step_size, 1.0)
+    for k in range(16):
+        result = None  # Frees the rejected candidate before the next rollout.
+        step_size = start * 0.8**k
+        loss, result = evaluate(step_size)
+        if max_increase is None or loss <= reference + max_increase:
+            return loss, result, step_size
+    return loss, result, 1.0
 
 
 def _validate_real_scalar(name: str, value: Any, *, minimum: float, strict: bool = False) -> None:
