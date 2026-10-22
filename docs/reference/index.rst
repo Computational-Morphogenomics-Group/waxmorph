@@ -19,7 +19,7 @@ Modules
 ``waxmorph.graph``, ``waxmorph.gnn``, ``waxmorph.losses``, ``waxmorph.train``
    Contact graph, graph network simulator (GNS), shape losses, and training.
 ``waxmorph.render``
-   Matplotlib, PyVista, and Warp (USD or OpenGL video) renderers.
+   Matplotlib, PyVista, K3D, and Warp (USD, OpenGL video, or K3D HTML animation) renderers.
 ``waxmorph.jax.soap_jax``
    SOAP optimizer for Optax, borrowed without modification from
    `SOAP_JAX <https://github.com/haydn-jones/SOAP_JAX>`_ by Haydn Jones (MIT license).

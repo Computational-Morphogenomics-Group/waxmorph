@@ -17,8 +17,8 @@ Extras
 Install an extra with ``pip install "waxmorph[<extra>]"``.
 
 ``simulation``
-   Mesh sampling and rendering: trimesh, Matplotlib, PyVista, VTK, pyglet, imageio, hsluv, and
-   ``usd-core``.
+   Mesh sampling and rendering: trimesh, Matplotlib, PyVista, VTK, K3D, pyglet, imageio, hsluv,
+   and ``usd-core``.
 ``learning``
    GeomLoss and PyKeOps for ``make_samples_loss``, pytorch-optimizer for SOAP, plus
    ``simulation``.

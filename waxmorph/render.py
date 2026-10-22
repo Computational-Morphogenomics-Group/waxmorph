@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Literal
 
 import imageio
@@ -25,6 +28,84 @@ def _require_pyvista() -> None:
             "waxmorph.render requires optional dependency 'pyvista'. "
             "Install extras with: pip install -e .[simulation]"
         )
+
+
+def _point_arrays(centers, radii, morphogens, polarities=None, n=None, *, cell_types=None):
+    """Trim render inputs to one count and derive colors and unit polarities.
+
+    Categories override morphogens as the color source. The count is bounded by ``n`` and the
+    shortest selected center, radius, and color input. Polarities must have shape ``[N,3]`` with
+    at least that many rows; norms below ``1e-12`` use ``1e-12`` as the denominator.
+
+    Returns:
+        Centers ``[n,3]``, radii ``[n]``, uint8 RGB ``[n,3]``, color values ``[n]``, and unit
+        polarities ``[n,3]`` (``None`` without polarities).
+    """
+    c = np.asarray(centers, dtype=float)
+    r = np.asarray(radii, dtype=float).reshape(-1)
+    by_morph = cell_types is None
+    values = np.asarray(morphogens, dtype=float) if by_morph else np.asarray(cell_types)
+    values = values.reshape(-1)
+    n = min(len(c) if n is None else n, len(c), len(r), len(values))
+    to_rgb = PyVistaInterface._rgb_from_morph if by_morph else PyVistaInterface._rgb_from_categories
+
+    if polarities is not None:
+        polarities = np.asarray(polarities, dtype=float)
+        if polarities.ndim != 2 or polarities.shape[1] != 3:
+            raise ValueError(f"polarities must have shape (N,3); got {polarities.shape}")
+        if len(polarities) < n:
+            raise ValueError(f"polarities has {len(polarities)} rows but {n} points are rendered")
+        polarities = polarities[:n]
+        polarities = polarities / np.clip(
+            np.linalg.norm(polarities, axis=1, keepdims=True), 1e-12, None
+        )
+
+    return c[:n], r[:n], to_rgb(values[:n]), values[:n], polarities
+
+
+def _pack_rgb(rgb) -> np.ndarray:
+    """Pack RGB floats in ``[0, 1]``, shape ``[..., 3]``, into K3D's ``0xRRGGBB`` integers."""
+    rgb = np.round(np.clip(np.asarray(rgb, dtype=float), 0.0, 1.0) * 255).astype(np.uint32)
+    return rgb @ np.array([1 << 16, 1 << 8, 1], dtype=np.uint32)
+
+
+def _b64(array: np.ndarray) -> str:
+    return base64.b64encode(np.ascontiguousarray(array).tobytes()).decode()
+
+
+def _controls_js(keys, c_frames) -> str:
+    """Return the K3D gene panel (``k3d_controls.js``) with its data.
+
+    Each gene maps to 8-bit levels over its own range across frames, and the panel colors
+    cells with coolwarm (cool lowest, warm highest).
+
+    Args:
+        keys: Keyframe times as strings, or ``None`` for a static view.
+        c_frames: Concentrations, shape ``[K, n, C]``.
+
+    Returns:
+        Code for ``k3d.plot.Plot.additional_js_code``.
+    """
+    c_frames = np.asarray(c_frames, dtype=float)
+    lo, hi = c_frames.min(axis=(0, 1)), c_frames.max(axis=(0, 1))
+    levels = np.round((c_frames - lo) / np.where(hi > lo, hi - lo, 1) * 255).astype(np.uint8)
+    lut = np.round(plt.get_cmap("coolwarm")(np.linspace(0, 1, 256))[:, :3] * 255)
+    genes = {
+        "levels": _b64(levels.transpose(2, 0, 1)),
+        "ranges": np.stack([lo, hi], axis=1).tolist(),
+        "lut": _b64(lut.astype(np.uint8)),
+    }
+    code = Path(__file__).with_name("k3d_controls.js").read_text()
+    return f"{code}\nwaxmorphControls(K3DInstance, {json.dumps({'keys': keys, 'genes': genes})});\n"
+
+
+def _backfill(frames, n) -> list[np.ndarray]:
+    """Pad frames to ``n`` rows; missing rows take the next frame's values."""
+    padded, following = [], np.zeros((n, *frames[-1].shape[1:]), frames[-1].dtype)
+    for array in reversed(frames):
+        following = np.concatenate([array, following[len(array) :]])
+        padded.append(following)
+    return padded[::-1]
 
 
 class RenderInterface(ABC):
@@ -176,54 +257,19 @@ class PyVistaInterface(RenderInterface):
         *,
         cell_types: np.ndarray | None = None,
     ) -> pv.PolyData:
-        """Build glyph data; categories override morphogens as the color source.
-
-        The rendered count is bounded by the shortest selected center, radius,
-        and color input. Polarities must have shape ``[N,3]`` with at least that
-        many rows. Norms at least ``1e-12`` are normalized; smaller vectors use
-        ``1e-12`` as the denominator.
-        """
-        c = np.asarray(centers, dtype=float)
-        r = np.asarray(radii, dtype=float).reshape(-1)
-        if cell_types is None:
-            color_values = np.asarray(morphogens, dtype=float).reshape(-1)
-        else:
-            color_values = np.asarray(cell_types).reshape(-1)
-
-        if n is None:
-            n = len(c)
-        n = min(n, len(c), len(r), len(color_values))
-
-        pts = c[:n]
-        rad = r[:n]
-
+        """Build glyph data from :func:`_point_arrays`; categories override morphogen colors."""
+        pts, rad, rgb, values, pol = _point_arrays(
+            centers, radii, morphogens, polarities, n, cell_types=cell_types
+        )
         _require_pyvista()
-
-        if cell_types is not None:
-            rgb = PyVistaInterface._rgb_from_categories(color_values[:n])
-        else:
-            rgb = PyVistaInterface._rgb_from_morph(color_values[:n])
 
         pd = pv.PolyData(pts)
         pd["radius"] = rad
         pd["rgb"] = rgb
-
         if cell_types is not None:
-            pd["cell_type"] = color_values[:n].astype(np.int32, copy=False)
-
-        if polarities is not None:
-            p = np.asarray(polarities, dtype=float)
-            if p.ndim != 2 or p.shape[1] != 3:
-                raise ValueError(f"polarities must have shape (N,3); got {p.shape}")
-            if len(p) < n:
-                raise ValueError(f"polarities has {len(p)} rows but {n} points are rendered")
-            p = p[:n]
-
-            norms = np.linalg.norm(p, axis=1, keepdims=True)
-            p = p / np.clip(norms, 1e-12, None)
-
-            pd["polarity"] = p
-
+            pd["cell_type"] = values.astype(np.int32, copy=False)
+        if pol is not None:
+            pd["polarity"] = pol
         return pd
 
     @staticmethod
@@ -367,6 +413,124 @@ class PyVistaInterface(RenderInterface):
         return plotter
 
 
+class K3DInterface(RenderInterface):
+    """Interactive K3D (WebGL) spheres with morphogen or categorical colors.
+
+    Plots display as Jupyter widgets; :meth:`embed` shows a saved page without a live kernel.
+    Colors and count trimming follow :class:`PyVistaInterface`.
+    """
+
+    @staticmethod
+    def cleanup(plot, blim: float = -10, tlim: float = 20, show_bounds: bool = True):
+        """Fix the grid to the cube ``[blim, tlim]^3`` with X, Y, Z labels.
+
+        Args:
+            plot: ``k3d.plot.Plot``, edited in place.
+            blim: Lower grid bound on every axis.
+            tlim: Upper grid bound on every axis.
+            show_bounds: Whether the grid is drawn.
+        """
+        plot.grid_auto_fit = False
+        plot.grid = (blim, blim, blim, tlim, tlim, tlim)
+        plot.grid_visible = show_bounds
+        plot.axes = ["X", "Y", "Z"]
+
+    @staticmethod
+    def draw_3d_view(
+        centers,
+        radii,
+        morphogens,
+        polarities,
+        particle_count,
+        blim=-10,
+        tlim=20,
+        alpha=0.5,
+        show_polarities: bool = True,
+        polarity_length: float = 1.0,
+        polarity_color="black",
+        cell_types: np.ndarray | None = None,
+        c: np.ndarray | None = None,
+    ):
+        """Build a K3D plot; ``particle_count`` must be nonnegative.
+
+        Spheres have diameter ``2 * radii``; polarity arrows of ``polarity_length`` are centered
+        on their cells. Snapshots inline K3D's JavaScript (about 1.2 MB), so saved pages work
+        offline. The shortest selected input limits the drawn count. With ``c``, a Gene tab
+        colors cells by one chosen gene with coolwarm over that gene's range.
+
+        Args:
+            centers: Cell centers, shape ``[N, 3]``.
+            radii: Cell radii, shape ``[N]``.
+            morphogens: Morphogen levels, shape ``[N]``, clipped to ``[0, 1]`` as color
+                saturation; ignored when ``cell_types`` is given.
+            polarities: Polarity vectors, shape ``[N, 3]``, normalized before drawing, or ``None``.
+            particle_count: Number of leading cells to draw.
+            blim: Lower grid bound on every axis.
+            tlim: Upper grid bound on every axis.
+            alpha: Sphere opacity.
+            show_polarities: Whether polarity arrows are drawn.
+            polarity_length: Arrow length.
+            polarity_color: Matplotlib color of the arrows.
+            cell_types: Integer cell categories, shape ``[N]``, colored by a categorical palette.
+            c: Signaling-molecule concentrations (genes), shape ``[N, C]``, with at least the drawn
+                count of rows, or ``None``.
+
+        Returns:
+            ``k3d.plot.Plot``.
+
+        See Also:
+            :meth:`PyVistaInterface.draw_3d_view`: the same view rendered with PyVista.
+        """
+        import k3d
+
+        pts, rad, rgb, _, pol = _point_arrays(
+            centers, radii, morphogens, polarities, int(particle_count), cell_types=cell_types
+        )
+        plot = k3d.plot(snapshot_type="full")
+        plot += k3d.points(
+            pts.astype(np.float32),
+            colors=_pack_rgb(rgb / 255.0),
+            point_sizes=(2 * rad).astype(np.float32),
+            opacity=float(alpha),
+            name="cells",
+        )
+        if show_polarities and pol is not None:
+            arrows = (polarity_length * pol).astype(np.float32)
+            plot += k3d.vectors(
+                (pts - 0.5 * arrows).astype(np.float32),
+                arrows,
+                color=int(_pack_rgb(colors.to_rgb(polarity_color))),
+                name="polarities",
+            )
+        if c is not None:
+            plot.additional_js_code = _controls_js(None, np.asarray(c)[None, : len(pts)])
+        K3DInterface.cleanup(plot, blim, tlim)
+        return plot
+
+    @staticmethod
+    def embed(page: str, height: int = 480):
+        """Show a K3D page, from ``plot.get_snapshot()`` or a saved file, in an isolated iframe.
+
+        The output renders in built docs without widget state, and in Jupyter once the notebook
+        is trusted: JupyterLab strips iframes from untrusted outputs.
+
+        Args:
+            page: HTML of a K3D page.
+            height: Frame height in pixels.
+
+        Returns:
+            ``IPython.display.HTML``.
+        """
+        from html import escape
+
+        from IPython.display import HTML
+
+        return HTML(
+            f'<div><iframe srcdoc="{escape(page)}" '
+            f'style="width:100%;height:{int(height)}px;border:0"></iframe></div>'
+        )
+
+
 class _BaseBackend:
     """Backend contract for fixed-capacity Warp rendering.
 
@@ -455,6 +619,7 @@ class _OpenGLVideoBackend(_BaseBackend):
         name: str,
         mesh_points=None,
         mesh_indices=None,
+        c=None,
     ) -> None:
         self.renderer.clear()
 
@@ -544,6 +709,7 @@ class _UsdStageBackend(_BaseBackend):
         name: str,
         mesh_points=None,
         mesh_indices=None,
+        c=None,
     ) -> None:
         self.renderer.begin_frame(float(t))
         self.renderer.render_points(
@@ -563,13 +729,78 @@ class _UsdStageBackend(_BaseBackend):
         self.renderer.save()
 
 
+class _K3DBackend(_BaseBackend):
+    """K3D keyframe animation written as one standalone HTML page on close.
+
+    Frames keep their active prefix; closing pads every frame to the largest count. Slots not yet
+    active hold their next position, color, and concentrations at zero size, so new cells grow in
+    place while K3D interpolates between keyframes. Concentrations ``c`` given for every frame
+    add the gene panel. Mesh overlays are ignored.
+    """
+
+    def __init__(self, filename: str, *, fps: int, snapshot_type: str):
+        import k3d
+
+        os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
+        self.filename = filename
+        self.plot = k3d.plot(fps=float(fps), snapshot_type=snapshot_type)
+        self.frames = []
+
+    def render_points_frame(
+        self,
+        *,
+        t: float,
+        points,
+        radius,
+        colors,
+        name: str,
+        mesh_points=None,
+        mesh_indices=None,
+        c=None,
+    ) -> None:
+        self.name = name
+        self.frames.append(
+            (
+                str(float(t)),
+                np.array(points, dtype=np.float32),
+                2 * np.array(radius, dtype=np.float32),
+                _pack_rgb(colors),
+                None if c is None else np.array(c, dtype=float),
+            )
+        )
+
+    def close(self) -> None:
+        import k3d
+
+        panel = ""
+        if self.frames:
+            keys, points, sizes, packed, c = map(list, zip(*self.frames, strict=True))
+            n = max(len(p) for p in points)
+            sizes = [np.concatenate([s, np.zeros(n - len(s), np.float32)]) for s in sizes]
+            self.plot += k3d.points(
+                positions=dict(zip(keys, _backfill(points, n), strict=True)),
+                point_sizes=dict(zip(keys, sizes, strict=True)),
+                colors=dict(zip(keys, _backfill(packed, n), strict=True)),
+                name=self.name,
+            )
+            if all(g is not None for g in c):
+                panel = _controls_js(keys, np.stack(_backfill(c, n)))
+        # Passed to the page only: as the plot's ``additional_js_code`` it would also be stored,
+        # compressed, inside the snapshot's plot settings.
+        with open(self.filename, "w") as f:
+            f.write(self.plot.get_snapshot(additional_js_code=panel))
+
+
 class WarpMovieRenderer:
-    """Context-managed OpenGL video or USD animation from fixed Warp buffers.
+    """Context-managed OpenGL video, USD animation, or K3D HTML animation from fixed Warp buffers.
 
     NumPy frames provide RGB directly; Warp-state frames derive HSV colors on
     the selected device before this implementation copies them to NumPy. USD
     uses ``usd-core`` and ``usd_*`` options; OpenGL uses camera, scene,
-    encoding, and ``opengl_*`` options.
+    encoding, and ``opengl_*`` options. K3D writes one standalone HTML page on
+    close: ``k3d_snapshot_type="full"`` inlines K3D's JavaScript (about 1.2 MB)
+    so the page works offline; ``"online"`` loads it from a CDN. Concentrations
+    ``c`` passed to :meth:`write_frame_from_numpy` add a gene panel to the page.
     """
 
     def __init__(
@@ -577,7 +808,7 @@ class WarpMovieRenderer:
         filename: str,
         max_particles: int,
         *,
-        backend: Literal["opengl", "usd"] = "usd",
+        backend: Literal["opengl", "usd", "k3d"] = "usd",
         width: int = 1280,
         height: int = 720,
         fps: int = 60,
@@ -598,6 +829,7 @@ class WarpMovieRenderer:
         usd_scaling: float = 1.0,
         usd_save_every_frame: bool = False,
         opengl_reset_instancers_each_frame: bool = True,
+        k3d_snapshot_type: Literal["online", "full"] = "full",
         prim_name: str = "cells",
     ):
         wp.init()
@@ -642,6 +874,8 @@ class WarpMovieRenderer:
                 scaling=usd_scaling,
                 save_every_frame=usd_save_every_frame,
             )
+        elif backend == "k3d":
+            self._backend = _K3DBackend(filename, fps=self.fps, snapshot_type=k3d_snapshot_type)
         else:
             raise ValueError(f"Unknown backend: {backend}")
 
@@ -794,8 +1028,8 @@ class WarpMovieRenderer:
         )
         return n
 
-    def _render(self, t: float, n_active: int, mesh_points=None, mesh_indices=None) -> None:
-        # USD receives full capacity with zero-radius inactive slots; OpenGL receives n_active.
+    def _render(self, t: float, n_active: int, mesh_points=None, mesh_indices=None, c=None) -> None:
+        # USD receives full capacity with zero-radius inactive slots; OpenGL and K3D receive n_active.
         if self._backend.needs_full_buffer:
             pts = self._points_f32.numpy()
             rad = self._radii_f32.numpy()
@@ -813,6 +1047,7 @@ class WarpMovieRenderer:
             name=self.prim_name,
             mesh_points=mesh_points,
             mesh_indices=mesh_indices,
+            c=c,
         )
 
     def write_frame_from_numpy(
@@ -825,6 +1060,7 @@ class WarpMovieRenderer:
         particle_count: int,
         mesh_points=None,
         mesh_indices=None,
+        c: np.ndarray | None = None,
     ) -> None:
         """Write clipped RGB from NumPy state.
 
@@ -832,27 +1068,35 @@ class WarpMovieRenderer:
         sliced to that count, then zero-padded. Centers and colors must have
         shape ``[N,3]`` and radii ``[N]``, with ``N`` at least the clamped count.
         OpenGL frames include supplied mesh overlays; USD frames render packed particles.
+        K3D frames also take concentrations ``c`` ``[N,C]``, sliced the same way, for the
+        gene panel; the other backends ignore them.
         """
         n = int(particle_count)
         n = max(0, min(n, self.max_particles))
 
-        c = np.asarray(centers, dtype=np.float32)[:n]
+        x = np.asarray(centers, dtype=np.float32)[:n]
         r = np.asarray(radii, dtype=np.float32).ravel()[:n]
         col = np.clip(np.asarray(colors, dtype=np.float32)[:n], 0.0, 1.0)
 
-        c_pad = np.zeros((self.max_particles, 3), dtype=np.float32)
+        x_pad = np.zeros((self.max_particles, 3), dtype=np.float32)
         r_pad = np.zeros(self.max_particles, dtype=np.float32)
         col_pad = np.zeros((self.max_particles, 3), dtype=np.float32)
 
-        c_pad[:n] = c
+        x_pad[:n] = x
         r_pad[:n] = r
         col_pad[:n] = col
 
-        wp.copy(self._points_f32, wp.from_numpy(c_pad, dtype=wp.vec3, device=self.device))
+        wp.copy(self._points_f32, wp.from_numpy(x_pad, dtype=wp.vec3, device=self.device))
         wp.copy(self._radii_f32, wp.from_numpy(r_pad, dtype=wp.float32, device=self.device))
         wp.copy(self._colors_f32, wp.from_numpy(col_pad, dtype=wp.vec3, device=self.device))
 
-        self._render(t=float(t), n_active=n, mesh_points=mesh_points, mesh_indices=mesh_indices)
+        self._render(
+            t=float(t),
+            n_active=n,
+            mesh_points=mesh_points,
+            mesh_indices=mesh_indices,
+            c=None if c is None else np.asarray(c)[:n],
+        )
 
     def write_frame_from_state(
         self,

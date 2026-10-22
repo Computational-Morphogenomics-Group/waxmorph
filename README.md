@@ -298,19 +298,26 @@ static-shape compilation is required.
 
 ## Rendering workflow
 
-`waxmorph.render` provides three rendering styles:
+`waxmorph.render` provides four rendering styles:
 
 - `MPLInterface`: static Matplotlib inspection for scripts or notebooks.
 - `PyVistaInterface`: interactive PyVista/VTK views of spheroids, polarities,
   signaling molecule concentrations, and cell-type colors.
+- `K3DInterface`: interactive K3D (WebGL) views with the same arguments as
+  `PyVistaInterface`; `K3DInterface.embed` shows a saved K3D page in built docs and
+  in Jupyter once the notebook is trusted. Passing concentrations `c` adds a Gene
+  tab that colors cells by one chosen signaling molecule.
 - `WarpMovieRenderer`: trajectory export through Warp, with `backend="usd"` for
-  the principal USD-stage path and `backend="opengl"` for a headless video file.
+  the principal USD-stage path, `backend="opengl"` for a headless video file, and
+  `backend="k3d"` for an interactive HTML animation that works offline, with
+  K3D's JavaScript inlined (`k3d_snapshot_type="online"` loads it from a CDN
+  for smaller files).
 
 For learned shape assembly, `write_frame_from_numpy` takes positions, radii, and
-explicit RGB colors. For live simulations, `write_frame_from_state` takes Warp
-arrays, and `morph="A"`, `morph="I"`, or `morph="ratio"` colors particles by the
-activator, the inhibitor, or the activator fraction `A/(A+I)` of the
-reaction-diffusion state.
+explicit RGB colors, plus concentrations `c` for the Gene tab of K3D pages. For
+live simulations, `write_frame_from_state` takes Warp arrays, and `morph="A"`,
+`morph="I"`, or `morph="ratio"` colors particles by the activator, the
+inhibitor, or the activator fraction `A/(A+I)` of the reaction-diffusion state.
 
 ## Third-party code
 
