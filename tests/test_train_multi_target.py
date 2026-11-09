@@ -281,7 +281,7 @@ def test_run_epoch_accumulates_loss_across_tagged_frames():
     torch.manual_seed(0)
     model = _make_model(c.shape[1])
 
-    loss_shape, _loss_l2, trajectory = torch_train_module._run_epoch(
+    loss_shape, _loss_l2, _loss_conn, trajectory = torch_train_module._run_epoch(
         model=model,
         config=config,
         source_pos=source_pos,
@@ -367,7 +367,7 @@ def test_run_epoch_frame_zero_supervises_post_step_state():
     )
 
     target_frame0 = torch.from_numpy(source_pos + 0.25)
-    loss_shape, _loss_l2, trajectory = torch_train_module._run_epoch(
+    loss_shape, _loss_l2, _loss_conn, trajectory = torch_train_module._run_epoch(
         model=FixedStepModel(),
         config=config,
         source_pos=source_pos,

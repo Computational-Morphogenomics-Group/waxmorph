@@ -20,6 +20,7 @@ _NONNEGATIVE_SCALARS = (
     "dt_gns",
     "D_emu",
     "lambda_reg",
+    "lambda_conn",
     "convergence_threshold",
 )
 

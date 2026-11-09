@@ -94,7 +94,7 @@ def _run_batched_epoch(model, config, source_pos, polarities, c, radii, targets_
             config=config,
             max_pairs=jax_train_module._max_edges_for_config(config, len(source_pos)),
         )
-        loss_shape, loss_l2 = jax_train_module._epoch_loss_with_topology_batch(
+        loss_shape, loss_l2, _loss_conn = jax_train_module._epoch_loss_with_topology_batch(
             model=model,
             config=config,
             X_source=X,
@@ -104,6 +104,7 @@ def _run_batched_epoch(model, config, source_pos, polarities, c, radii, targets_
             particle_count=len(source_pos),
             targets_by_frame=targets,
             topology_batch=topology_batch,
+            bridges=jax_train_module._stack_bridges(trajectory[1:], radii, config.lambda_conn),
             loss_fn=squared_loss,
             device="cpu",
         )
@@ -408,6 +409,7 @@ def test_train_logs_post_update_model_rollouts(monkeypatch, device, n_epochs):
         "losses_total",
         "losses_shape",
         "losses_l2",
+        "losses_conn",
         "best_traj_pos",
         "best_traj_pol",
         "best_traj_c",
@@ -417,8 +419,8 @@ def test_train_logs_post_update_model_rollouts(monkeypatch, device, n_epochs):
         *(f"config_{name}" for name in config.__dataclass_fields__),
     ]
     assert list(result.log) == expected_keys
-    assert all(result.log[name].shape == (n_epochs,) for name in expected_keys[:3])
-    assert all(result.log[name].dtype == np.float64 for name in expected_keys[:3])
+    assert all(result.log[name].shape == (n_epochs,) for name in expected_keys[:4])
+    assert all(result.log[name].dtype == np.float64 for name in expected_keys[:4])
     assert result.log["best_traj_pos"].shape == (2, len(source_pos), 3)
     assert result.log["best_traj_pol"].shape == (2, len(source_pos), 3)
     assert result.log["best_traj_c"].shape == (2, len(source_pos), c.shape[1])
@@ -683,6 +685,7 @@ def test_train_reinitializes_optimizer_from_compatible_checkpoint(tmp_path, monk
                 ),
                 scalar(1.0, jnp.float32),
                 scalar(1.0, jnp.float32),
+                scalar(0.0, jnp.float32),
                 scalar(0.0, jnp.float32),
                 scalar(1.0, jnp.float32),
                 scalar(True, jnp.bool_),

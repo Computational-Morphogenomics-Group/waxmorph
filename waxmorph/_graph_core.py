@@ -3,6 +3,8 @@
 from numbers import Integral
 
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 
 from .constants import EPS_DIST
@@ -120,3 +122,41 @@ def build_edge_index_np(
     senders = np.concatenate([ii, jj]).astype(np.int64)
     receivers = np.concatenate([jj, ii]).astype(np.int64)
     return senders, receivers
+
+
+def bridge_pairs_np(
+    pos: np.ndarray,
+    rad: np.ndarray,
+    eps_dist: float = EPS_DIST,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return detached pairs that join separate contact components, as ``int64`` arrays ``[K]``.
+
+    Contacts follow :func:`build_edge_index_np`, and ``K = 0`` exactly when they connect every
+    particle. Otherwise, as in Borůvka's minimum spanning tree, every component links its
+    center nearest to another component's, until one component remains.
+
+    Examples:
+        >>> pos = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        >>> rad = np.array([0.6, 0.6, 0.6])
+        >>> ii, jj = bridge_pairs_np(pos, rad, eps_dist=0.0)
+        >>> print(ii.tolist(), jj.tolist())
+        [1] [2]
+    """
+    pos = np.asarray(pos)
+    senders, receivers = build_edge_index_np(pos, rad, eps_dist)
+    pairs = np.zeros((0, 2), dtype=np.int64)
+    while True:
+        rows, cols = np.r_[senders, pairs[:, 0]], np.r_[receivers, pairs[:, 1]]
+        graph = coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(pos), len(pos)))
+        count, labels = connected_components(graph, directed=False)
+        if count <= 1:
+            return pairs[:, 0], pairs[:, 1]
+
+        bridges = []
+        for component in range(count):
+            inside = np.flatnonzero(labels == component)
+            outside = np.flatnonzero(labels != component)
+            dist, nearest = cKDTree(pos[outside]).query(pos[inside])
+            k = np.argmin(dist)
+            bridges.append(sorted((inside[k], outside[nearest[k]])))
+        pairs = np.unique(np.concatenate([pairs, bridges]), axis=0)

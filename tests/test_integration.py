@@ -141,7 +141,7 @@ def test_torch_run_epoch_uses_live_torch_graph_inputs(monkeypatch):
         diff_steps=0,
     )
 
-    loss_shape, loss_l2, _trajectory = torch_train_module._run_epoch(
+    loss_shape, loss_l2, _loss_conn, _trajectory = torch_train_module._run_epoch(
         model=model,
         config=config,
         source_pos=source_pos,
@@ -209,7 +209,7 @@ def test_torch_run_epoch_clamps_genes_nonnegative_after_dg_update():
         dt_gns=1.0,
     )
 
-    loss_shape, loss_l2, trajectory = torch_train_module._run_epoch(
+    loss_shape, loss_l2, _loss_conn, trajectory = torch_train_module._run_epoch(
         model=FixedNegativeGeneUpdate(),
         config=config,
         source_pos=source_pos,

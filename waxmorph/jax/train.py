@@ -16,8 +16,9 @@ import numpy as np
 import optax
 from tqdm import tqdm
 
+from waxmorph._graph_core import bridge_pairs_np
 from waxmorph._train_core import _backtrack, _prepare_training_inputs
-from waxmorph.constants import EPS_POLARITY
+from waxmorph.constants import EPS_DIST, EPS_NORM, EPS_POLARITY
 from waxmorph.jax.gnn import GNS as JaxGNS
 from waxmorph.jax.graph import (
     build_edge_features,
@@ -45,10 +46,15 @@ class TrainConfig:
     .. math::
 
         L=L_{shape}+\lambda_{reg}\sum_t
-        \lVert \Delta t_{GNS}\,GNS_{X,t}\rVert_F^2,
+        \lVert \Delta t_{GNS}\,GNS_{X,t}\rVert_F^2
+        +\lambda_{conn}\sum_t\sum_{(i,j)\in B_t}\max(d_{ij}-r_i-r_j-\varepsilon,0)^2,
 
-    where the displacement term is measured before mechanics. ``grad_clip_norm=None`` keeps
-    the computed gradients. ``trainer="epochs"`` runs all ``n_epochs`` updates;
+    where the displacement term is measured before mechanics. :math:`B_t` holds the shortest
+    pairs that join separate contact components of frame ``t`` (contact slack
+    :math:`\varepsilon=` ``EPS_DIST``, :math:`d_{ij}=\sqrt{\lVert x_i-x_j\rVert^2+EPS_{NORM}^2}`),
+    so the last term is zero while contacts connect every cell; it is computed only when
+    ``lambda_conn > 0``. ``grad_clip_norm=None`` keeps the computed gradients.
+    ``trainer="epochs"`` runs all ``n_epochs`` updates;
     ``trainer="patience"`` stops earlier once ``patience`` updates in a row lower the best loss
     by at most ``convergence_threshold``. An update that raises the loss by more than
     ``max_increase`` is shrunk by backtracking (factor 0.8, at most 15 times, one rollout each),
@@ -71,6 +77,7 @@ class TrainConfig:
     dt_gns: float = 1e-2
     D_emu: float = 0.1
     lambda_reg: float = 1e-3
+    lambda_conn: float = 0.0
     grad_clip_norm: float | None = 1.0
     trainer: str = "epochs"
     patience: int = 100
@@ -83,9 +90,9 @@ class TrainConfig:
 class TrainResult:
     """Best post-update model and its run diagnostics.
 
-    ``losses_total``, ``losses_shape``, and unweighted ``losses_l2`` hold one entry per update
-    and describe post-update rollouts. The best trajectory includes the source
-    frame and has shapes ``[t_rollout+1, N, 3]`` for ``best_traj_pos`` and
+    ``losses_total``, ``losses_shape``, and unweighted ``losses_l2`` and ``losses_conn`` hold
+    one entry per update and describe post-update rollouts. The best trajectory includes the
+    source frame and has shapes ``[t_rollout+1, N, 3]`` for ``best_traj_pos`` and
     ``best_traj_pol``, and ``[t_rollout+1, N, num_molecules]`` for ``best_traj_c``.
     ``best_epoch`` is zero-based; ``best_loss`` matches that model and trajectory.
     ``target_frames`` is sorted, and every config field appears as ``config_<field>``. JAX
@@ -286,12 +293,14 @@ def _checked_loss_values(
     loss: jax.Array,
     loss_shape: jax.Array,
     loss_l2: jax.Array,
+    loss_conn: jax.Array,
     *,
     epoch: int,
     phase: str,
-) -> tuple[float, float, float]:
-    values = tuple(float(jax.device_get(value)) for value in (loss, loss_shape, loss_l2))
-    for name, value in zip(("loss", "shape loss", "L2 loss"), values, strict=True):
+) -> tuple[float, float, float, float]:
+    values = tuple(float(jax.device_get(v)) for v in (loss, loss_shape, loss_l2, loss_conn))
+    names = ("loss", "shape loss", "L2 loss", "connectivity loss")
+    for name, value in zip(names, values, strict=True):
         if not np.isfinite(value):
             raise ValueError(f"Non-finite {name} during {phase} at epoch {epoch}: value={value!r}")
     return values
@@ -815,6 +824,20 @@ def _stack_topologies(
     )
 
 
+def _stack_bridges(frames, radii: np.ndarray, lambda_conn: float) -> jax.Array:
+    """Stack each frame's :func:`bridge_pairs_np` pairs as ``int32`` indices ``[2, T, N - 1]``.
+
+    ``frames`` are post-step trajectory snapshots. Unused slots pair particle 0 with itself,
+    whose gap is negative; without ``lambda_conn`` the shape is ``[2, T, 0]``.
+    """
+    size = len(radii) - 1 if lambda_conn else 0
+    bridges = np.zeros((2, len(frames), size), dtype=np.int32)
+    for t, frame in enumerate(frames if size else ()):
+        ii, jj = bridge_pairs_np(frame["pos"], radii)
+        bridges[:, t, : len(ii)] = ii, jj
+    return jnp.asarray(bridges)
+
+
 def _apply_rollout_step_from_batch(
     *,
     model,
@@ -877,9 +900,10 @@ def _epoch_loss_with_topology_batch(
     particle_count: int,
     targets_by_frame: dict[int, jax.Array],
     topology_batch: _TopologyBatch,
+    bridges: jax.Array,
     loss_fn: Callable[[jax.Array, jax.Array], jax.Array],
     device: str,
-) -> tuple[jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     def scan_step(carry, topology):
         X, P, c = carry
         X, P, c, step_l2 = _apply_rollout_step_from_batch(
@@ -903,7 +927,12 @@ def _epoch_loss_with_topology_batch(
     loss_shape = jnp.asarray(0.0, dtype=X_source.dtype)
     for frame, target in targets_by_frame.items():
         loss_shape = loss_shape + loss_fn(positions[int(frame)], target)
-    return loss_shape, jnp.sum(step_l2)
+
+    ii, jj = bridges
+    steps = jnp.arange(positions.shape[0])[:, None]
+    rel = positions[steps, ii] - positions[steps, jj]
+    gap = jnp.sqrt(jnp.sum(rel * rel, axis=-1) + EPS_NORM**2) - (R[ii] + R[jj] + EPS_DIST)
+    return loss_shape, jnp.sum(step_l2), jnp.sum(jnp.maximum(gap, 0.0) ** 2)
 
 
 def _zero_grads_if_nonfinite(grads, finite: jax.Array):
@@ -931,9 +960,10 @@ def _make_train_step(
         c_source: jax.Array,
         R: jax.Array,
         topology_batch: _TopologyBatch,
+        bridges: jax.Array,
     ):
         def loss_fn_inner(candidate_model):
-            loss_shape, loss_l2 = _epoch_loss_with_topology_batch(
+            loss_shape, loss_l2, loss_conn = _epoch_loss_with_topology_batch(
                 model=candidate_model,
                 config=config,
                 X_source=X_source,
@@ -943,12 +973,14 @@ def _make_train_step(
                 particle_count=particle_count,
                 targets_by_frame=targets_by_frame,
                 topology_batch=topology_batch,
+                bridges=bridges,
                 loss_fn=loss_fn,
                 device=device,
             )
-            return loss_shape + (loss_l2 * config.lambda_reg), (loss_shape, loss_l2)
+            loss = loss_shape + (loss_l2 * config.lambda_reg) + (loss_conn * config.lambda_conn)
+            return loss, (loss_shape, loss_l2, loss_conn)
 
-        (loss, (loss_shape, loss_l2)), grads = eqx.filter_value_and_grad(
+        (loss, (loss_shape, loss_l2, loss_conn)), grads = eqx.filter_value_and_grad(
             loss_fn_inner, has_aux=True
         )(model)
 
@@ -972,6 +1004,7 @@ def _make_train_step(
             loss,
             loss_shape,
             loss_l2,
+            loss_conn,
             grad_norm,
             grads_finite,
             params_finite,
@@ -1053,7 +1086,7 @@ def train(
         R = jnp.asarray(radii, dtype=jnp.float32)
         targets_by_frame = {frame: jnp.asarray(pos, dtype=jnp.float32) for frame, pos in targets}
 
-    losses_total, losses_shape, losses_l2 = [], [], []
+    losses_total, losses_shape, losses_l2, losses_conn = [], [], [], []
     best_loss, best_model, best_trajectory, best_epoch = float("inf"), None, None, 0
     max_pairs = _max_edges_for_config(config, N)
     train_step = _make_train_step(
@@ -1078,14 +1111,16 @@ def train(
                 device=device,
             )
             batch = _stack_topologies(topologies, config=config, max_pairs=max_pairs)
-        return batch, trajectory
+            bridges = _stack_bridges(trajectory[1:], radii, config.lambda_conn)
+        return batch, bridges, trajectory
 
     def record_evaluation(epoch, candidate_model, trajectory, values):
         nonlocal best_loss, best_model, best_trajectory, best_epoch, stalled
-        epoch_loss, epoch_shape_loss, epoch_l2_loss = values
+        epoch_loss, epoch_shape_loss, epoch_l2_loss, epoch_conn_loss = values
         losses_total.append(epoch_loss)
         losses_shape.append(epoch_shape_loss)
         losses_l2.append(epoch_l2_loss)
+        losses_conn.append(epoch_conn_loss)
 
         stalled = 0 if best_loss - epoch_loss > config.convergence_threshold else stalled + 1
         if epoch_loss < best_loss:
@@ -1096,6 +1131,7 @@ def train(
             loss=f"{epoch_loss:.4f}",
             shape=f"{epoch_shape_loss:.4f}",
             l2=f"{epoch_l2_loss:.4f}",
+            conn=f"{epoch_conn_loss:.4f}",
             best=f"{best_loss:.4f}",
             best_epoch=best_epoch,
             patience=f"{stalled}/{config.patience}" if stops_early else "off",
@@ -1105,17 +1141,15 @@ def train(
 
     def evaluate(candidate_model, opt_state, epoch, phase):
         """Return the loss of ``candidate_model`` and, from the same rollout, its next update."""
-        topology_batch, trajectory = collect_model(candidate_model)
-        new_model, opt_state, updates, loss, loss_shape, loss_l2, grad_norm, *finite = train_step(
-            candidate_model,
-            opt_state,
-            X_source,
-            P_source,
-            c_source,
-            R,
-            topology_batch,
+        topology_batch, bridges, trajectory = collect_model(candidate_model)
+        new_model, opt_state, updates, loss, loss_shape, loss_l2, loss_conn, grad_norm, *finite = (
+            train_step(
+                candidate_model, opt_state, X_source, P_source, c_source, R, topology_batch, bridges
+            )
         )
-        values = _checked_loss_values(loss, loss_shape, loss_l2, epoch=epoch, phase=phase)
+        values = _checked_loss_values(
+            loss, loss_shape, loss_l2, loss_conn, epoch=epoch, phase=phase
+        )
         grads_finite, params_finite = (bool(jax.device_get(flag)) for flag in finite)
         if not grads_finite:
             raise ValueError(
@@ -1159,6 +1193,7 @@ def train(
         "losses_total": np.array(losses_total),
         "losses_shape": np.array(losses_shape),
         "losses_l2": np.array(losses_l2),
+        "losses_conn": np.array(losses_conn),
         "best_traj_pos": np.stack([f["pos"] for f in best_trajectory]),
         "best_traj_pol": np.stack([f["pol"] for f in best_trajectory]),
         "best_traj_c": np.stack([f["c"] for f in best_trajectory]),

@@ -15,8 +15,9 @@ import torch
 import warp as wp
 from tqdm import trange
 
+from waxmorph._graph_core import bridge_pairs_np
 from waxmorph._train_core import _backtrack, _prepare_training_inputs
-from waxmorph.constants import EPS_POLARITY, HASH_GRID_DIM
+from waxmorph.constants import EPS_DIST, EPS_POLARITY, HASH_GRID_DIM
 from waxmorph.emulator import _query_radius
 from waxmorph.torch.gnn import GNS
 from waxmorph.torch.graph import build_graph
@@ -35,13 +36,17 @@ class TrainConfig:
     whose stable range depends on the active forces and graph; nonfinite states are rejected.
     Diffusion applies :math:`c\leftarrow\max(c-D_{emu}L_Gc\,\Delta t_{diff},0)`.
 
-    The optimized loss is :math:`L=L_{shape}+\lambda_{reg}L_{reg}`, where
+    The optimized loss is :math:`L=L_{shape}+\lambda_{reg}L_{reg}+\lambda_{conn}L_{conn}`, where
 
     .. math::
 
-        L_{reg}=\sum_t\lVert\Delta t_{GNS}\,GNS_{X,t}\rVert_F^2.
+        L_{reg}=\sum_t\lVert\Delta t_{GNS}\,GNS_{X,t}\rVert_F^2,\qquad
+        L_{conn}=\sum_t\sum_{(i,j)\in B_t}\max(\lVert x_i-x_j\rVert-r_i-r_j-\varepsilon,0)^2.
 
     The regularizer measures learned displacement before the mechanics correction.
+    :math:`B_t` holds the shortest pairs that join separate contact components of frame ``t``
+    (contact slack :math:`\varepsilon=` ``EPS_DIST``), so :math:`L_{conn}` is zero while contacts
+    connect every cell; it is computed only when ``lambda_conn > 0``.
     ``grad_clip_norm`` caps the global L2 gradient norm; ``None`` keeps the computed gradients.
     ``trainer="epochs"`` runs all ``n_epochs`` updates; ``trainer="patience"`` stops earlier once
     ``patience`` updates in a row lower the best loss by at most ``convergence_threshold``.
@@ -68,6 +73,7 @@ class TrainConfig:
     dt_gns: float = 1e-2
     D_emu: float = 0.1
     lambda_reg: float = 1e-3
+    lambda_conn: float = 0.0
     grad_clip_norm: float | None = 1.0
     trainer: str = "epochs"
     patience: int = 100
@@ -81,8 +87,9 @@ class TrainResult:
     """Best post-update model and its training log.
 
     The supplied optimizer state is restored alongside ``model``. ``losses_total``,
-    ``losses_shape``, and ``losses_l2`` hold one post-update entry per update; shape
-    loss sums supervised frames and L2 is the unweighted learned-displacement regularizer.
+    ``losses_shape``, ``losses_l2``, and ``losses_conn`` hold one post-update entry per update;
+    shape loss sums supervised frames, L2 is the unweighted learned-displacement regularizer,
+    and conn the unweighted connectivity loss.
     ``best_traj_pos`` and
     ``best_traj_pol`` have shape ``[t_rollout + 1, N, 3]``; ``best_traj_c`` has shape
     ``[t_rollout + 1, N, C]``. ``best_epoch`` is zero-based; other metadata keys are
@@ -224,15 +231,18 @@ def _run_epoch(
     calls through the rollout, and the diffusion substeps of a step share one pair list.
     ``targets_by_frame`` uses post-step indices, so frame 0 follows the first learned and
     prescribed updates. Returns the summed supervised shape loss, the unweighted
-    ``sum_t ||dt_gns * GNS_X,t||^2`` measured before mechanics, and the detached
+    ``sum_t ||dt_gns * GNS_X,t||^2`` measured before mechanics, the unweighted connectivity
+    loss of :class:`TrainConfig` (zero unless ``lambda_conn > 0``), and the detached
     source-plus-``t_rollout`` trajectory.
     """
     X_t = X_source_t.clone().requires_grad_(True)
     c_t = torch.from_numpy(c.copy()).to(torch_device).requires_grad_(True)
     P_t = torch.from_numpy(polarities.copy()).to(torch_device)
+    rad = R_t.cpu().numpy()
 
     loss_l2 = torch.tensor(0.0, device=torch_device)
     loss_shape = torch.tensor(0.0, device=torch_device)
+    loss_conn = torch.tensor(0.0, device=torch_device)
     frames = []
 
     _validate_finite_tensors(
@@ -295,11 +305,18 @@ def _run_epoch(
         if _t in targets_by_frame:
             loss_shape = loss_shape + loss_fn(X_t, targets_by_frame[_t])
 
+        if config.lambda_conn:
+            ii, jj = bridge_pairs_np(X_t.detach().cpu().numpy(), rad)
+            reach = torch.from_numpy(rad[ii] + rad[jj] + EPS_DIST).to(torch_device)
+            ii, jj = (torch.from_numpy(k).to(torch_device) for k in (ii, jj))
+            gap = (X_t[ii] - X_t[jj]).norm(dim=-1) - reach
+            loss_conn = loss_conn + gap.clamp_min(0.0).square().sum()
+
     pos, pol, conc = (torch.stack(frame).cpu().numpy() for frame in zip(*frames, strict=True))
     epoch_trajectory.extend(
         {"pos": p, "pol": q, "c": r} for p, q, r in zip(pos, pol, conc, strict=True)
     )
-    return loss_shape, loss_l2, epoch_trajectory
+    return loss_shape, loss_l2, loss_conn, epoch_trajectory
 
 
 def train(
@@ -318,10 +335,10 @@ def train(
 ) -> TrainResult:
     """Train through learned, mechanics, and diffusion rollout steps.
 
-    Optimizes ``L_shape + lambda_reg * sum_t ||dt_gns * GNS_X,t||^2``. Histories and
-    selection use post-update rollouts; the supplied optimizer is restored to the selected
-    model. Feature gradients remain live; each graph build and Warp substep freezes its own
-    contact or pair topology.
+    Optimizes ``L_shape + lambda_reg * sum_t ||dt_gns * GNS_X,t||^2 + lambda_conn * L_conn``
+    (see :class:`TrainConfig`). Histories and selection use post-update rollouts; the supplied
+    optimizer is restored to the selected model. Feature gradients remain live; each graph build
+    and Warp substep freezes its own contact or pair topology.
 
     State and target arrays become C-contiguous ``float32``. Positions and polarities have
     shape ``[N, 3]``, concentrations ``[N, C]``, and radii ``[N]`` with common nonzero ``N``;
@@ -386,6 +403,7 @@ def train(
     losses_total = []
     losses_shape = []
     losses_l2 = []
+    losses_conn = []
     best_loss = float("inf")
     best_model_state = None
     best_optimizer_state = None
@@ -398,7 +416,7 @@ def train(
 
     def evaluate_model(*, epoch, phase):
         epoch_trajectory = [{"pos": source_pos.copy(), "pol": polarities.copy(), "c": c.copy()}]
-        loss_shape, loss_l2, epoch_trajectory = _run_epoch(
+        loss_shape, loss_l2, loss_conn, epoch_trajectory = _run_epoch(
             model=forward,
             config=config,
             source_pos=source_pos,
@@ -416,14 +434,19 @@ def train(
             torch_device=torch_device,
             epoch_trajectory=epoch_trajectory,
         )
-        loss = loss_shape + (loss_l2 * config.lambda_reg)
-        for name, value in (("loss", loss), ("shape loss", loss_shape), ("L2 loss", loss_l2)):
+        loss = loss_shape + (loss_l2 * config.lambda_reg) + (loss_conn * config.lambda_conn)
+        for name, value in (
+            ("loss", loss),
+            ("shape loss", loss_shape),
+            ("L2 loss", loss_l2),
+            ("connectivity loss", loss_conn),
+        ):
             if not bool(torch.isfinite(value).all()):
                 raise ValueError(
                     f"Non-finite {name} during {phase} at epoch {epoch}: "
                     f"value={value.detach().cpu().item()!r}"
                 )
-        return loss, loss_shape, loss_l2, epoch_trajectory
+        return loss, loss_shape, loss_l2, loss_conn, epoch_trajectory
 
     params = list(model.parameters())
 
@@ -436,9 +459,7 @@ def train(
         return evaluation[0].item(), evaluation
 
     optimizer.zero_grad(set_to_none=True)
-    loss, loss_shape, loss_l2, epoch_trajectory = evaluate_model(
-        epoch=0, phase="pre-update evaluation"
-    )
+    loss, *_ = evaluate_model(epoch=0, phase="pre-update evaluation")
     epoch_loss, stalled, step_size = loss.item(), 0, 1.0
 
     progress = trange(config.n_epochs, desc="Training", unit="epoch", dynamic_ncols=True)
@@ -471,13 +492,15 @@ def train(
                 config.max_increase,
                 step_size,
             )
-        loss, loss_shape, loss_l2, epoch_trajectory = evaluation
+        loss, loss_shape, loss_l2, loss_conn, epoch_trajectory = evaluation
 
         epoch_shape_loss = loss_shape.item()
         epoch_l2_loss = loss_l2.item()
+        epoch_conn_loss = loss_conn.item()
         losses_total.append(epoch_loss)
         losses_shape.append(epoch_shape_loss)
         losses_l2.append(epoch_l2_loss)
+        losses_conn.append(epoch_conn_loss)
 
         stalled = 0 if best_loss - epoch_loss > config.convergence_threshold else stalled + 1
         if epoch_loss < best_loss:
@@ -491,6 +514,7 @@ def train(
             loss=f"{epoch_loss:.4f}",
             shape=f"{epoch_shape_loss:.4f}",
             l2=f"{epoch_l2_loss:.4f}",
+            conn=f"{epoch_conn_loss:.4f}",
             best=f"{best_loss:.4f}",
             best_epoch=best_epoch,
             patience=f"{stalled}/{config.patience}" if stops_early else "off",
@@ -511,6 +535,7 @@ def train(
         "losses_total": np.array(losses_total),
         "losses_shape": np.array(losses_shape),
         "losses_l2": np.array(losses_l2),
+        "losses_conn": np.array(losses_conn),
         "best_traj_pos": traj_pos,
         "best_traj_pol": traj_pol,
         "best_traj_c": traj_c,
