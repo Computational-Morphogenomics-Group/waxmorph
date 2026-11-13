@@ -19,20 +19,20 @@ repos:
         args: [--maxkb=1000]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.10
+    rev: v0.17.4
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
         files: ^(waxmorph|tests)/.*\.py$
 
   - repo: https://github.com/psf/black
-    rev: 26.10.0
+    rev: 26.10.1
     hooks:
       - id: black
         args: [--check]
         files: ^(waxmorph|tests)/.*\.py$
 
   - repo: https://github.com/tox-dev/pyproject-fmt
-    rev: v2.30.1
+    rev: v2.30.6
     hooks:
       - id: pyproject-fmt
